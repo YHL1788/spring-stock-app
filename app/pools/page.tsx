@@ -19,7 +19,6 @@ interface WatchlistItem {
 }
 
 // --- 子组件：单行股票 ---
-// 增加了 refreshTrigger 属性，当主组件点击刷新时，这个数字变化，触发重新抓取
 const StockRow = ({ item, onDelete, refreshTrigger }: { item: WatchlistItem, onDelete: (id: string) => void, refreshTrigger: number }) => {
   const [priceData, setPriceData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -28,7 +27,6 @@ const StockRow = ({ item, onDelete, refreshTrigger }: { item: WatchlistItem, onD
     const fetchPrice = async () => {
       setLoading(true);
       try {
-        // ★ 关键点：加一个时间戳参数 &t=... 防止浏览器缓存旧数据，强制获取最新价
         const res = await fetch(`/api/quote?symbol=${item.symbol}&t=${Date.now()}`);
         const data = await res.json();
         if (res.ok) setPriceData(data);
@@ -39,14 +37,13 @@ const StockRow = ({ item, onDelete, refreshTrigger }: { item: WatchlistItem, onD
       }
     };
     fetchPrice();
-  }, [item.symbol, refreshTrigger]); // 当 refreshTrigger 变化时，重新执行
+  }, [item.symbol, refreshTrigger]);
 
   const fmt = (n: number) => n?.toFixed(2) || '--';
 
   return (
     <tr className="border-b hover:bg-gray-50 transition group">
       <td className="p-3">
-        {/* ★ 功能实现：点击代码跳转回首页并自动查询新闻和分析 */}
         <Link 
           href={`/?symbol=${item.symbol}`}
           className="font-bold text-gray-800 hover:text-blue-600 hover:underline flex items-center gap-1"
@@ -95,15 +92,14 @@ export default function PoolsPage() {
   
   // 状态管理
   const [newPoolTitle, setNewPoolTitle] = useState('');
+  const [isPublic, setIsPublic] = useState(false); // ★ 恢复：公开状态
   const [editingPoolId, setEditingPoolId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
+
   const [newSymbol, setNewSymbol] = useState('');
   const [addingStock, setAddingStock] = useState(false);
-
-  // ★ 刷新触发器状态
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-  // 加载逻辑
   useEffect(() => { if (user) fetchPools(); }, [user]);
   useEffect(() => { if (selectedPool) fetchPoolItems(selectedPool.id); }, [selectedPool]);
 
@@ -118,12 +114,24 @@ export default function PoolsPage() {
     setPoolItems(data || []);
   };
 
-  // CRUD 操作
   const handleCreatePool = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPoolTitle.trim() || !user) return;
-    const { error } = await supabase.from('watchlists').insert([{ user_id: user.id, title: newPoolTitle }]);
-    if (!error) { setNewPoolTitle(''); fetchPools(); }
+    
+    // ★ 恢复：插入时带上 is_public
+    const { error } = await supabase
+      .from('watchlists')
+      .insert([{ 
+        user_id: user.id, 
+        title: newPoolTitle,
+        is_public: isPublic 
+      }]);
+
+    if (!error) { 
+      setNewPoolTitle(''); 
+      setIsPublic(false); // 重置
+      fetchPools(); 
+    }
   };
 
   const startEditing = (pool: Watchlist) => { setEditingPoolId(pool.id); setEditTitle(pool.title); };
@@ -157,9 +165,8 @@ export default function PoolsPage() {
     if (selectedPool) fetchPoolItems(selectedPool.id);
   };
 
-  // ★ 刷新按钮点击事件
   const handleRefreshAll = () => {
-    setRefreshTrigger(prev => prev + 1); // 触发器+1，通知所有子组件刷新
+    setRefreshTrigger(prev => prev + 1);
   };
 
   if (!isLoaded) return <div className="p-10 text-center">加载中...</div>;
@@ -177,9 +184,31 @@ export default function PoolsPage() {
               <Link href="/" className="text-blue-600 text-sm hover:underline">回首页</Link>
             </div>
             
-            <form onSubmit={handleCreatePool} className="flex gap-2">
-              <input type="text" value={newPoolTitle} onChange={(e) => setNewPoolTitle(e.target.value)} placeholder="新建池子名称..." className="flex-1 border p-2 rounded text-sm focus:border-blue-500 outline-none" />
-              <button disabled={!newPoolTitle} className="bg-blue-600 text-white px-3 rounded text-sm disabled:bg-gray-300">+</button>
+            {/* ★ 恢复：带有公开选项的表单 */}
+            <form onSubmit={handleCreatePool} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col gap-3">
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={newPoolTitle} 
+                  onChange={(e) => setNewPoolTitle(e.target.value)} 
+                  placeholder="新建池子名称..." 
+                  className="flex-1 border p-2 rounded text-sm focus:border-blue-500 outline-none" 
+                />
+                <button disabled={!newPoolTitle} className="bg-blue-600 text-white px-3 rounded text-sm disabled:bg-gray-300">+</button>
+              </div>
+              
+              <div className="flex items-center gap-2">
+                <input 
+                  type="checkbox" 
+                  id="publicCheck" 
+                  checked={isPublic} 
+                  onChange={e => setIsPublic(e.target.checked)}
+                  className="w-4 h-4 cursor-pointer"
+                />
+                <label htmlFor="publicCheck" className="text-xs text-gray-500 cursor-pointer select-none">
+                  设为公开 (其他人可见)
+                </label>
+              </div>
             </form>
 
             <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
@@ -188,23 +217,30 @@ export default function PoolsPage() {
                 <div key={pool.id} onClick={() => setSelectedPool(pool)} className={`p-4 border-b last:border-0 cursor-pointer transition flex justify-between items-center group ${selectedPool?.id === pool.id ? 'bg-blue-50 border-l-4 border-l-blue-600' : 'hover:bg-gray-50'}`}>
                   {editingPoolId === pool.id ? (
                     <div className="flex gap-2 flex-1" onClick={e => e.stopPropagation()}><input autoFocus value={editTitle} onChange={e => setEditTitle(e.target.value)} className="border rounded px-1 text-sm w-full" /><button onClick={saveEditing} className="text-green-600 text-xs font-bold">保存</button></div>
-                  ) : (<span className={`font-medium ${selectedPool?.id === pool.id ? 'text-blue-900' : 'text-gray-700'}`}>{pool.title}</span>)}
+                  ) : (
+                    <div className="flex items-center gap-2">
+                        <span className={`font-medium ${selectedPool?.id === pool.id ? 'text-blue-900' : 'text-gray-700'}`}>{pool.title}</span>
+                        {/* ★ 恢复：显示公开标签 */}
+                        {pool.is_public && <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded border border-yellow-200">公开</span>}
+                    </div>
+                  )}
                   <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition" onClick={e => e.stopPropagation()}>{editingPoolId !== pool.id && (<button onClick={() => startEditing(pool)} className="text-gray-400 hover:text-blue-600">✎</button>)}<button onClick={() => handleDeletePool(pool.id)} className="text-gray-400 hover:text-red-600">×</button></div>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* 右侧：详情区域 */}
+          {/* 右侧：详情区域 (保持不变) */}
           <div className="w-full md:w-2/3">
             {selectedPool ? (
               <div className="bg-white rounded-xl shadow-md border border-gray-100 p-6 animate-fade-in">
                 <div className="flex justify-between items-center mb-6 border-b pb-4">
-                  <h2 className="text-2xl font-bold text-gray-800">{selectedPool.title}</h2>
+                  <div className="flex items-center gap-3">
+                    <h2 className="text-2xl font-bold text-gray-800">{selectedPool.title}</h2>
+                    {selectedPool.is_public && <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full">公开池</span>}
+                  </div>
                   <div className="flex items-center gap-4">
                     <div className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded">{poolItems.length} 只股票</div>
-                    
-                    {/* ★ 刷新按钮 */}
                     <button 
                       onClick={handleRefreshAll}
                       className="flex items-center gap-1 text-gray-500 hover:text-blue-600 text-sm font-medium transition active:scale-95"
@@ -215,13 +251,11 @@ export default function PoolsPage() {
                   </div>
                 </div>
 
-                {/* 添加股票表单 */}
                 <form onSubmit={handleAddStock} className="flex gap-3 mb-6 bg-gray-50 p-4 rounded-lg">
                     <input type="text" value={newSymbol} onChange={e => setNewSymbol(e.target.value.toUpperCase())} placeholder="输入代码 (如 0700.HK)" className="border p-2 rounded flex-1 focus:border-blue-500 outline-none font-mono" />
                     <button disabled={addingStock || !newSymbol} className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-medium disabled:opacity-50">{addingStock ? '添加中...' : '添加股票'}</button>
                 </form>
 
-                {/* 股票表格 */}
                 <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
                         <thead>
@@ -236,7 +270,6 @@ export default function PoolsPage() {
                             {poolItems.length === 0 ? (
                                 <tr><td colSpan={4} className="p-8 text-center text-gray-400">池子里还是空的，快去添加几只关注的股票吧！</td></tr>
                             ) : (
-                                // 将 refreshTrigger 传递给子组件
                                 poolItems.map(item => (
                                     <StockRow key={item.id} item={item} onDelete={handleRemoveStock} refreshTrigger={refreshTrigger} />
                                 ))
