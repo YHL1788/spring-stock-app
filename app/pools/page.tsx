@@ -92,9 +92,12 @@ export default function PoolsPage() {
   
   // 状态管理
   const [newPoolTitle, setNewPoolTitle] = useState('');
-  const [isPublic, setIsPublic] = useState(false); // ★ 恢复：公开状态
+  const [isPublic, setIsPublic] = useState(false); 
+  
+  // 编辑状态
   const [editingPoolId, setEditingPoolId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
+  const [editIsPublic, setEditIsPublic] = useState(false); // ★ 新增：编辑时的公开状态
 
   const [newSymbol, setNewSymbol] = useState('');
   const [addingStock, setAddingStock] = useState(false);
@@ -118,7 +121,6 @@ export default function PoolsPage() {
     e.preventDefault();
     if (!newPoolTitle.trim() || !user) return;
     
-    // ★ 恢复：插入时带上 is_public
     const { error } = await supabase
       .from('watchlists')
       .insert([{ 
@@ -129,17 +131,33 @@ export default function PoolsPage() {
 
     if (!error) { 
       setNewPoolTitle(''); 
-      setIsPublic(false); // 重置
+      setIsPublic(false); 
       fetchPools(); 
     }
   };
 
-  const startEditing = (pool: Watchlist) => { setEditingPoolId(pool.id); setEditTitle(pool.title); };
+  // ★ 修改：开始编辑时，同时初始化 is_public 状态
+  const startEditing = (pool: Watchlist) => { 
+    setEditingPoolId(pool.id); 
+    setEditTitle(pool.title);
+    setEditIsPublic(pool.is_public);
+  };
+
+  // ★ 修改：保存时，同时更新 is_public
   const saveEditing = async () => {
     if (!editTitle.trim()) return;
-    await supabase.from('watchlists').update({ title: editTitle }).eq('id', editingPoolId);
-    setEditingPoolId(null); fetchPools();
-    if (selectedPool?.id === editingPoolId) setSelectedPool(prev => prev ? ({...prev, title: editTitle}) : null);
+    await supabase
+      .from('watchlists')
+      .update({ title: editTitle, is_public: editIsPublic })
+      .eq('id', editingPoolId);
+      
+    setEditingPoolId(null); 
+    fetchPools();
+    
+    // 如果当前正选中的是被修改的池子，同步更新选中状态
+    if (selectedPool?.id === editingPoolId) {
+        setSelectedPool(prev => prev ? ({...prev, title: editTitle, is_public: editIsPublic}) : null);
+    }
   };
 
   const handleDeletePool = async (id: string) => {
@@ -184,7 +202,6 @@ export default function PoolsPage() {
               <Link href="/" className="text-blue-600 text-sm hover:underline">回首页</Link>
             </div>
             
-            {/* ★ 恢复：带有公开选项的表单 */}
             <form onSubmit={handleCreatePool} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col gap-3">
               <div className="flex gap-2">
                 <input 
@@ -216,11 +233,30 @@ export default function PoolsPage() {
               {pools.map(pool => (
                 <div key={pool.id} onClick={() => setSelectedPool(pool)} className={`p-4 border-b last:border-0 cursor-pointer transition flex justify-between items-center group ${selectedPool?.id === pool.id ? 'bg-blue-50 border-l-4 border-l-blue-600' : 'hover:bg-gray-50'}`}>
                   {editingPoolId === pool.id ? (
-                    <div className="flex gap-2 flex-1" onClick={e => e.stopPropagation()}><input autoFocus value={editTitle} onChange={e => setEditTitle(e.target.value)} className="border rounded px-1 text-sm w-full" /><button onClick={saveEditing} className="text-green-600 text-xs font-bold">保存</button></div>
+                    // ★ 编辑模式：标题输入框 + 公开复选框
+                    <div className="flex flex-col gap-2 flex-1" onClick={e => e.stopPropagation()}>
+                        <input 
+                            autoFocus
+                            value={editTitle}
+                            onChange={e => setEditTitle(e.target.value)}
+                            className="border rounded px-2 py-1 text-sm w-full focus:border-blue-500 outline-none"
+                        />
+                        <div className="flex justify-between items-center">
+                            <label className="flex items-center gap-1 text-xs text-gray-500 cursor-pointer select-none">
+                                <input 
+                                    type="checkbox"
+                                    checked={editIsPublic}
+                                    onChange={e => setEditIsPublic(e.target.checked)}
+                                />
+                                公开
+                            </label>
+                            <button onClick={saveEditing} className="bg-green-50 text-green-600 px-2 py-0.5 rounded text-xs font-bold border border-green-200 hover:bg-green-100">保存</button>
+                        </div>
+                    </div>
                   ) : (
+                    // 显示模式
                     <div className="flex items-center gap-2">
                         <span className={`font-medium ${selectedPool?.id === pool.id ? 'text-blue-900' : 'text-gray-700'}`}>{pool.title}</span>
-                        {/* ★ 恢复：显示公开标签 */}
                         {pool.is_public && <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded border border-yellow-200">公开</span>}
                     </div>
                   )}
