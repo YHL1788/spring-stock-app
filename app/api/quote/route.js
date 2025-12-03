@@ -1,44 +1,55 @@
 import { NextResponse } from 'next/server';
-import yahooFinance from 'yahoo-finance2'; // 引入专门的 Yahoo 库
-import Parser from 'rss-parser';
 
-const parser = new Parser();
+// 伪装请求头，防止被 Yahoo 拦截
+const HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+};
 
-// 1. 获取 Google 新闻 (保持不变，效果很好)
-async function fetchGoogleNews(symbol) {
+// 1. 获取股价数据 (Price Data - 原始稳定接口)
+async function fetchYahooPrice(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1d`;
   try {
-    let query = symbol;
-    // 优化搜索关键词
-    if (symbol.endsWith('.HK')) {
-      query = `股票 ${symbol}`; // 港股加中文前缀搜中文新闻
-    } else if (!symbol.includes('.')) {
-      query = `${symbol} stock`; // 美股
-    }
-    
-    // 使用 Google News RSS (中文环境)
-    const feedUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=zh-CN&gl=CN&ceid=CN:zh-CN`;
-    const feed = await parser.parseURL(feedUrl);
+    const res = await fetch(url, { headers: HEADERS, next: { revalidate: 0 } });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.chart.result?.[0]?.meta || null;
+  } catch (e) {
+    console.error("Price fetch error:", e);
+    return null;
+  }
+}
 
-    return feed.items.slice(0, 6).map(item => ({
-      uuid: item.guid || item.link,
-      title: item.title,
-      publisher: item.source?.trim() || 'Google News',
-      link: item.link,
-      publishTime: new Date(item.pubDate).getTime() / 1000
+// 2. 获取新闻数据 (News Data - 原始稳定接口)
+async function fetchYahooNews(symbol) {
+  const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${symbol}`;
+  
+  try {
+    const res = await fetch(url, { headers: HEADERS, next: { revalidate: 0 } });
+    if (!res.ok) return [];
+    const json = await res.json();
+    const newsItems = json.news || [];
+    
+    return newsItems.slice(0, 6).map(item => ({
+        uuid: item.uuid,
+        title: item.title,
+        publisher: item.publisher,
+        link: item.link,
+        publishTime: item.providerPublishTime
     }));
   } catch (e) {
-    console.error("Google News error:", e);
+    console.error("News fetch error:", e);
     return [];
   }
 }
 
-// 2. 汇率查询 (使用 yahoo-finance2)
+// 3. 汇率查询
 async function fetchExchangeRate(currency) {
   if (currency === 'HKD') return 1;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${currency}HKD=X?interval=1d&range=1d`;
   try {
-    const symbol = `${currency}HKD=X`;
-    const result = await yahooFinance.quote(symbol);
-    return result.regularMarketPrice || 1;
+    const res = await fetch(url, { headers: HEADERS });
+    const json = await res.json();
+    return json.chart.result?.[0]?.meta?.regularMarketPrice || 1;
   } catch {
     return 1;
   }
@@ -53,105 +64,92 @@ export async function GET(request) {
   const upperSymbol = symbol.toUpperCase();
 
   try {
-    // 1. 获取 Yahoo 深度数据
-    const queryOptions = { modules: ['price', 'summaryDetail', 'defaultKeyStatistics', 'assetProfile', 'financialData', 'earnings'] };
-    
-    // 并行执行：Yahoo 数据 + Google 新闻
-    const [yahooData, newsData] = await Promise.all([
-      yahooFinance.quoteSummary(upperSymbol, queryOptions),
-      fetchGoogleNews(upperSymbol)
+    // 并行执行：查价格 + 查新闻
+    const [stockMeta, newsData] = await Promise.all([
+      fetchYahooPrice(upperSymbol),
+      fetchYahooNews(upperSymbol)
     ]);
-
-    if (!yahooData || !yahooData.price) {
-      return NextResponse.json({ error: 'Symbol not found' }, { status: 404 });
-    }
-
-    // --- 解构数据 ---
-    const p = yahooData.price;
-    const sd = yahooData.summaryDetail || {};
-    const ap = yahooData.assetProfile || {};
-    const fd = yahooData.financialData || {};
-    const ks = yahooData.defaultKeyStatistics || {};
-    const ern = yahooData.earnings?.financialsChart?.quarterly || [];
-
-    // --- 汇率处理 ---
-    const currentPrice = p.regularMarketPrice || 0;
-    const currency = p.currency || 'USD';
-    let priceInHKD = currentPrice;
     
-    if (currency !== 'HKD') {
-      const rate = await fetchExchangeRate(currency);
-      priceInHKD = currentPrice * rate;
+    if (!stockMeta) {
+         return NextResponse.json({ error: 'Symbol not found' }, { status: 404 });
     }
 
-    // --- 组装 Dashboard 数据结构 ---
+    // --- 价格处理逻辑 ---
+    const currentPrice = stockMeta.regularMarketPrice || 0;
+    const previousClose = stockMeta.chartPreviousClose || currentPrice;
+    const currency = stockMeta.currency || 'USD';
+    
+    let change = currentPrice - previousClose;
+    let changePercent = 0;
+    if (previousClose) {
+        changePercent = (change / previousClose) * 100;
+    }
+
+    // --- 汇率处理逻辑 ---
+    let priceInHKD = currentPrice;
+    if (currency !== 'HKD') {
+        const rate = await fetchExchangeRate(currency);
+        priceInHKD = currentPrice * rate;
+    }
+
+    // --- 组装数据 (填充前端需要的 6 大板块，缺失的用默认值) ---
     const data = {
-      symbol: upperSymbol,
-      currency: currency,
-      price: currentPrice,
-      priceInHKD: priceInHKD,
-      change: p.regularMarketChange || 0,
-      changePercent: (p.regularMarketChangePercent || 0) * 100,
+        symbol: upperSymbol,
+        currency: currency,
+        price: currentPrice,
+        priceInHKD: priceInHKD,
+        change: change,
+        changePercent: changePercent,
 
-      // 板块 1: 交易数据
-      trading: {
-        high52: sd.fiftyTwoWeekHigh || currentPrice,
-        low52: sd.fiftyTwoWeekLow || currentPrice,
-        volume: sd.volume || 0,
-        avgVolume: sd.averageVolume || 0,
-      },
+        // 板块 1: 交易数据 (部分有数据)
+        trading: {
+            high52: stockMeta.fiftyTwoWeekHigh || currentPrice,
+            low52: stockMeta.fiftyTwoWeekLow || currentPrice,
+            volume: 0, // 基础接口不常返回准确日成交量，暂置0
+            avgVolume: 0,
+        },
 
-      // 板块 2: 核心指标
-      stats: {
-        // 格式化市值 (Trillion/Billion/Million)
-        marketCap: sd.marketCap ? (sd.marketCap >= 1e12 ? (sd.marketCap/1e12).toFixed(2)+'T' : (sd.marketCap/1e9).toFixed(2)+'B') : '--',
-        peRatio: sd.trailingPE || null,
-        dividendYield: (sd.dividendYield || 0) * 100,
-        beta: sd.beta || null,
-        // EPS 趋势 (移除了这里和 catch 块中的 : any 类型标注)
-        epsTrend: ern.map((q) => ({ 
-            date: q.date, 
-            actual: q.actual?.raw || q.actual || 0, 
-            estimate: q.estimate?.raw || q.estimate || 0 
-        }))
-      },
+        // 板块 2: 核心指标 (暂无数据)
+        stats: {
+            marketCap: '--',
+            peRatio: null,
+            dividendYield: 0,
+            beta: null,
+            epsTrend: [] 
+        },
 
-      // 板块 3: 公司概况
-      profile: {
-        sector: ap.sector || 'N/A',
-        industry: ap.industry || 'N/A',
-        summary: ap.longBusinessSummary || '暂无描述',
-        employees: ap.fullTimeEmployees || 0,
-        website: ap.website || ''
-      },
+        // 板块 3: 公司概况 (暂无数据)
+        profile: {
+            sector: 'N/A',
+            industry: 'N/A',
+            summary: '暂无详细描述 (待接入自定义数据源)',
+            employees: 0,
+            website: ''
+        },
 
-      // 板块 4: 财务健康
-      financials: {
-        profitMargins: (fd.profitMargins || 0) * 100,
-        roa: (fd.returnOnAssets || 0) * 100,
-        roe: (fd.returnOnEquity || 0) * 100,
-        revenueGrowth: (fd.revenueGrowth || 0) * 100
-      },
+        // 板块 4: 财务健康 (暂无数据)
+        financials: {
+            profitMargins: 0,
+            roa: 0,
+            roe: 0,
+            revenueGrowth: 0
+        },
 
-      // 板块 5: 分析师评级
-      analysis: {
-        recommendation: fd.recommendationKey || 'none',
-        targetPrice: fd.targetMeanPrice || null,
-        numberOfAnalyst: fd.numberOfAnalystOpinions || 0
-      },
+        // 板块 5: 分析师评级 (暂无数据)
+        analysis: {
+            recommendation: 'none',
+            targetPrice: null,
+            numberOfAnalyst: 0
+        },
 
-      // 板块 6: 新闻
-      news: newsData
+        // 板块 6: 新闻 (有数据)
+        news: newsData 
     };
 
     return NextResponse.json(data);
 
   } catch (error) {
-    // 移除了这里的 : any
-    console.error("API Main Error:", error);
-    if (error.message?.includes('Not Found')) {
-        return NextResponse.json({ error: 'Symbol not found' }, { status: 404 });
-    }
-    return NextResponse.json({ error: 'Server Error' }, { status: 500 });
+    console.error("Main API Error:", error);
+    return NextResponse.json({ error: '系统内部错误' }, { status: 500 });
   }
 }
