@@ -4,7 +4,7 @@ import { useState, FormEvent, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { SignedIn, SignedOut, SignInButton, useUser } from '@clerk/nextjs';
 
-// --- 1. 修复重点：补全了所有之前缺少的翻译项 ---
+// --- 1. 修复重点：补全了之前遗漏的 roa 字段 ---
 const translations = {
   zh: {
     title: '个股行情查询',
@@ -13,7 +13,6 @@ const translations = {
     searching: '查询中...',
     newsTitle: '相关新闻',
     approxHKD: '约合 HKD',
-    // 之前报错就是因为缺了下面这几行：
     subWelcome: '专业的全球股市分析工具',
     login: '立即登录 / 注册',
     pendingTitle: '账号审核中',
@@ -23,13 +22,15 @@ const translations = {
     errorUnknown: '发生未知错误',
     dateFormat: 'zh-CN',
     
-    // 板块标题翻译补全
+    // 板块标题
     cardTrading: '交易概览',
     cardStats: '核心指标',
     cardProfile: '公司概况',
     cardFinancials: '财务健康',
     cardAnalysis: '机构评级',
     cardNews: '相关资讯',
+    
+    // 字段标签
     vol: '成交量',
     avgVol: '平均量',
     range52: '52周范围',
@@ -40,6 +41,7 @@ const translations = {
     epsTitle: '每股收益 (EPS) 趋势',
     margins: '净利率',
     roe: 'ROE',
+    roa: 'ROA', // ★ 补全了这里
     growth: '营收增长',
     targetPrice: '目标价',
     analystCount: '位分析师',
@@ -53,7 +55,6 @@ const translations = {
     searching: 'Searching...',
     newsTitle: 'Related News',
     approxHKD: 'Approx. HKD',
-    // 补全英文对应项：
     subWelcome: 'Professional Global Market Analysis',
     login: 'Sign In / Register',
     pendingTitle: 'Account Under Review',
@@ -63,7 +64,7 @@ const translations = {
     errorUnknown: 'Unknown error occurred',
     dateFormat: 'en-US',
 
-    // 板块标题翻译补全
+    // 板块标题
     cardTrading: 'Trading Data',
     cardStats: 'Key Statistics',
     cardProfile: 'Company Profile',
@@ -80,6 +81,7 @@ const translations = {
     epsTitle: 'EPS Trend',
     margins: 'Margins',
     roe: 'ROE',
+    roa: 'ROA', // ★ 补全了这里
     growth: 'Rev Growth',
     targetPrice: 'Target Price',
     analystCount: 'Analysts',
@@ -114,7 +116,6 @@ function MainContent() {
   const searchParams = useSearchParams();
 
   const [inputSymbol, setInputSymbol] = useState<string>('');
-  // 这里把 stockData 改名为 data 以匹配新的 DashboardData 结构
   const [data, setData] = useState<DashboardData | null>(null); 
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
