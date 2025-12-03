@@ -1,5 +1,10 @@
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// 获取当前文件的路径 (在 ES Module 中 __dirname 需要这样获取)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // 1. 定义所有需要创建的路由路径
 const routes = [
@@ -19,7 +24,8 @@ const routes = [
   'app/about/intro',
   'app/about/team',
   'app/about/faq',
-  'app/about/contact'
+  'app/about/contact',
+  'app/quote' // 确保 quote 目录也被包含
 ];
 
 // 2. 定义占位页面的通用代码模板
