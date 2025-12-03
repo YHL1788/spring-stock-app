@@ -54,7 +54,6 @@ export async function GET(request) {
 
   try {
     // 1. 获取 Yahoo 深度数据
-    // quoteSummary 是 Yahoo 最强大的接口，包含基本面、评级、财务等
     const queryOptions = { modules: ['price', 'summaryDetail', 'defaultKeyStatistics', 'assetProfile', 'financialData', 'earnings'] };
     
     // 并行执行：Yahoo 数据 + Google 新闻
@@ -109,8 +108,8 @@ export async function GET(request) {
         peRatio: sd.trailingPE || null,
         dividendYield: (sd.dividendYield || 0) * 100,
         beta: sd.beta || null,
-        // EPS 趋势
-        epsTrend: ern.map((q: any) => ({ 
+        // EPS 趋势 (移除了这里和 catch 块中的 : any 类型标注)
+        epsTrend: ern.map((q) => ({ 
             date: q.date, 
             actual: q.actual?.raw || q.actual || 0, 
             estimate: q.estimate?.raw || q.estimate || 0 
@@ -147,8 +146,8 @@ export async function GET(request) {
 
     return NextResponse.json(data);
 
-  } catch (error: any) {
-    // 捕获 Yahoo 库的特定错误
+  } catch (error) {
+    // 移除了这里的 : any
     console.error("API Main Error:", error);
     if (error.message?.includes('Not Found')) {
         return NextResponse.json({ error: 'Symbol not found' }, { status: 404 });
