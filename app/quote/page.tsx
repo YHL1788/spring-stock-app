@@ -3,22 +3,39 @@
 import { useState, FormEvent, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { SignedIn, SignedOut, SignInButton, useUser } from '@clerk/nextjs';
-import Link from 'next/link';
 
-// --- 翻譯配置 (保持不變) ---
+// --- 1. 修复重点：补全了所有之前缺少的翻译项 ---
 const translations = {
   zh: {
-    // ... (保留原來的翻譯內容)
-    title: '個股行情查詢', // 修改標題以適應新頁面
-    // ...
-    errorFetch: '查詢出錯，請檢查代碼',
-    errorUnknown: '發生未知錯誤',
+    title: '个股行情查询',
+    placeholder: '代码 (如 7203.T 或 AAPL)',
+    search: '查询',
+    searching: '查询中...',
+    newsTitle: '相关新闻',
+    approxHKD: '约合 HKD',
+    // 之前报错就是因为缺了下面这几行：
+    subWelcome: '专业的全球股市分析工具',
+    login: '立即登录 / 注册',
+    pendingTitle: '账号审核中',
+    pendingDesc: '为了保证服务质量，新注册用户需要等待管理员审核。',
+    pendingAction: '请联系管理员进行开通，或耐心等待。',
+    errorFetch: '查询出错，请检查代码',
+    errorUnknown: '发生未知错误',
     dateFormat: 'zh-CN'
   },
   en: {
-    // ...
     title: 'Stock Quote Lookup',
-    // ...
+    placeholder: 'Symbol (e.g. 7203.T or AAPL)',
+    search: 'Search',
+    searching: 'Searching...',
+    newsTitle: 'Related News',
+    approxHKD: 'Approx. HKD',
+    // 补全英文对应项：
+    subWelcome: 'Professional Global Market Analysis',
+    login: 'Sign In / Register',
+    pendingTitle: 'Account Under Review',
+    pendingDesc: 'New accounts require admin approval.',
+    pendingAction: 'Please contact admin or wait for approval.',
     errorFetch: 'Search failed, check symbol',
     errorUnknown: 'Unknown error occurred',
     dateFormat: 'en-US'
@@ -27,14 +44,12 @@ const translations = {
 
 type Language = 'zh' | 'en';
 
-// --- 接口定義 (保持不變) ---
+// --- 接口定义 ---
 interface NewsItem { uuid: string; title: string; publisher: string; link: string; publishTime: number; }
 interface StockData { symbol: string; price: number | null; changePercent: number | null; currency: string; priceInHKD: number; news: NewsItem[]; }
 
 function MainContent() {
-  // ... (保留原來的狀態和邏輯，但去掉 lang 和 setLang，因為語言狀態要提升到全局)
-  // 暫時為了讓頁面能跑，我們先硬編碼語言為中文，後面在 Header 裡解決全局語言問題
-  const lang: Language = 'zh';
+  const lang: Language = 'zh'; // 暂时固定中文
   const t = translations[lang];
   const { user, isLoaded } = useUser();
   const searchParams = useSearchParams();
