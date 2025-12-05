@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, FormEvent, useEffect, Suspense } from 'react';
+import { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { SignedIn, SignedOut, SignInButton, useUser } from '@clerk/nextjs';
 
 const translations = {
   zh: {
     title: '个股行情中心',
-    placeholder: '代码 (如 7203.T, 0700.HK, AAPL)',
+    placeholder: '输入代码或名称 (如 腾讯, AAPL, 7203)...',
     search: '查询',
     searching: '加载中...',
     newsTitle: '相关资讯',
@@ -21,30 +21,43 @@ const translations = {
     errorNotFound: '股票不存在，请重新检查输入', 
     errorUnknown: '发生未知错误',
     dateFormat: 'zh-CN',
+    
     cardTrading: '概览',
     cardStats: '核心指标',
     cardProfile: '公司概况',
     cardFinancials: '财务健康',
     cardAnalysis: '机构评级',
     cardNews: '市场消息',
+    
     range52: '52周范围',
     mktCap: '总市值',
     pe: '市盈率',
     divYield: '股息率',
     beta: 'Beta',
-    epsTitle: 'EPS 业绩趋势 (实际 vs 预测)',
+    epsTitle: '每股收益 (EPS) 表现',
+    expand: '展开详细图表',
+    collapse: '收起图表',
     margins: '净利率',
     roe: 'ROE',
     roa: 'ROA',
     revenue: '年营收 (TTM)',
     targetPrice: '目标价',
     rating: '综合评级',
+    
     loginReq: '请先登录以查看深度数据',
-    loginBtn: '登录 / 注册'
+    loginBtn: '登录 / 注册',
+
+    // 新增表格翻译
+    colDate: '日期',
+    colEst: '预测',
+    colAct: '实际',
+    colSurprise: '差异 (Surprise)',
+    legendEst: '预测值',
+    legendAct: '实际值'
   },
   en: {
     title: 'Stock Quote Center',
-    placeholder: 'Symbol (e.g. 7203.T, 0700.HK, AAPL)',
+    placeholder: 'Enter Symbol or Name (e.g. AAPL, Toyota)...',
     search: 'Search',
     searching: 'Loading...',
     newsTitle: 'Latest News',
@@ -69,7 +82,9 @@ const translations = {
     pe: 'PE Ratio',
     divYield: 'Div Yield',
     beta: 'Beta',
-    epsTitle: 'EPS Trend (Actual vs Est)',
+    epsTitle: 'Earnings Per Share (EPS)',
+    expand: 'Expand Chart',
+    collapse: 'Collapse Chart',
     margins: 'Net Margin',
     roe: 'ROE',
     roa: 'ROA',
@@ -77,7 +92,14 @@ const translations = {
     targetPrice: 'Target Price',
     rating: 'Consensus Rating',
     loginReq: 'Login required for deep data',
-    loginBtn: 'Sign In / Register'
+    loginBtn: 'Sign In / Register',
+
+    colDate: 'Date',
+    colEst: 'Estimate',
+    colAct: 'Actual',
+    colSurprise: 'Surprise',
+    legendEst: 'Estimate',
+    legendAct: 'Actual'
   }
 };
 
@@ -99,6 +121,13 @@ interface DashboardData {
   news: { uuid: string; title: string; publisher: string; link: string; publishTime: number }[];
 }
 
+interface SearchResult {
+  symbol: string;
+  name: string;
+  exchange: string;
+  type: string;
+}
+
 function MainContent() {
   const lang: Language = 'zh'; 
   const t = translations[lang];
@@ -110,6 +139,12 @@ function MainContent() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // 搜索建议状态
+  const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const searchContainerRef = useRef<HTMLFormElement>(null);
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
     const symbol = searchParams.get('symbol');
     if (symbol) {
@@ -118,24 +153,31 @@ function MainContent() {
     }
   }, [searchParams]);
 
+  // 点击外部关闭下拉菜单
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   const fetchData = async (symbol: string) => {
     setLoading(true);
     setError('');
     setData(null);
+    setShowSuggestions(false); // 关闭建议框
     try {
       const res = await fetch(`/api/quote?symbol=${symbol}`);
-      
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) {
         throw new Error(t.errorFetch);
       }
-
       const json = await res.json();
-
       if (!res.ok) {
-        if (res.status === 404) {
-            throw new Error(t.errorNotFound);
-        }
+        if (res.status === 404) throw new Error(t.errorNotFound);
         throw new Error(json.error || t.errorFetch);
       }
       setData(json);
@@ -147,7 +189,39 @@ function MainContent() {
     }
   };
 
-  const handleSearch = (e: FormEvent) => {
+  // 处理输入变化 (带防抖)
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setInputSymbol(val);
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (val.trim().length < 2) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(val)}`);
+        if (res.ok) {
+          const results = await res.json();
+          setSuggestions(results);
+          setShowSuggestions(true);
+        }
+      } catch (e) {
+        console.error("Search suggestion error", e);
+      }
+    }, 300); // 300ms 延迟
+  };
+
+  const handleSelectSuggestion = (symbol: string) => {
+    setInputSymbol(symbol);
+    fetchData(symbol);
+  };
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputSymbol.trim()) return;
     fetchData(inputSymbol);
@@ -186,22 +260,185 @@ function MainContent() {
     );
   };
 
-  const EPSChart = ({ trend }: { trend: any[] }) => {
-    if (!trend || trend.length === 0) return <div className="text-xs text-gray-400 mt-2">暂无 EPS 数据</div>;
+  // 全新重构的"核心指标"板块组件
+  const KeyStatsSection = ({ data, t }: { data: DashboardData, t: any }) => {
+    const trend = data.stats?.epsTrend || [];
+    
+    // 计算 Y 轴范围和零点
+    let maxVal = 0;
+    let minVal = 0;
+    
+    trend.forEach(item => {
+        const est = Number(item.estimate || 0);
+        const act = item.actual !== null ? Number(item.actual) : null;
+        maxVal = Math.max(maxVal, est);
+        minVal = Math.min(minVal, est);
+        // 如果 actual 为 0，视为未公布数据，不参与极值计算
+        if (act !== null && act !== 0) {
+            maxVal = Math.max(maxVal, act);
+            minVal = Math.min(minVal, act);
+        }
+    });
+
+    // 增加缓冲
+    const rangeBuffer = (maxVal - minVal) * 0.15 || 0.1;
+    maxVal += rangeBuffer;
+    if (minVal < 0) minVal -= rangeBuffer;
+    // 如果全正，minVal 设为 0 (标准柱状图)
+    if (minVal > 0) minVal = 0;
+
+    const totalRange = maxVal - minVal;
+    const safeRange = totalRange === 0 ? 1 : totalRange;
+
+    // 计算零线位置 (从顶部开始的百分比)
+    let zeroLinePct = 100; 
+    if (totalRange > 0) {
+        zeroLinePct = (maxVal / safeRange) * 100;
+    }
+    zeroLinePct = Math.min(Math.max(zeroLinePct, 0), 100);
+
     return (
-      <div className="mt-3 flex justify-between h-12 items-end gap-1">
-        {trend.map((item, i) => (
-          <div key={i} className="flex flex-col items-center flex-1 group relative">
-            <div 
-               className={`w-4 rounded-t ${item.actual >= item.estimate ? 'bg-green-400' : 'bg-red-400'}`}
-               style={{ height: '70%' }} 
-            ></div>
-            <span className="text-[9px] text-gray-400 mt-1">{item.date}</span>
-            <div className="absolute bottom-full mb-1 hidden group-hover:block bg-black text-white text-[9px] p-1 rounded whitespace-nowrap z-10">
-              Act: {item.actual} / Est: {item.estimate}
+      <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition">
+        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-6">{t.cardStats}</h3>
+
+        {/* 1. 顶部关键数据行 (Top Stats Header) */}
+        <div className="flex flex-wrap gap-8 mb-8 border-b border-gray-50 pb-6">
+            <div>
+                <p className="text-xs text-gray-500 mb-1">{t.mktCap}</p>
+                <p className="text-xl font-bold text-gray-900">{data.stats?.marketCap || '--'}</p>
             </div>
-          </div>
-        ))}
+            <div>
+                <p className="text-xs text-gray-500 mb-1">{t.pe}</p>
+                <p className="text-xl font-bold text-gray-900">{fmtNum(data.stats?.peRatio)}</p>
+            </div>
+            <div>
+                <p className="text-xs text-gray-500 mb-1">{t.divYield}</p>
+                <p className="text-xl font-bold text-gray-900">{fmtNum(data.stats?.dividendYield)}%</p>
+            </div>
+            <div>
+                <p className="text-xs text-gray-500 mb-1">{t.beta}</p>
+                <p className="text-xl font-bold text-gray-900">{fmtNum(data.stats?.beta)}</p>
+            </div>
+        </div>
+
+        {/* 2. EPS 图表部分 */}
+        <div className="mb-6">
+            <div className="flex justify-between items-center mb-4">
+                <h4 className="font-bold text-gray-800 text-sm">{t.epsTitle}</h4>
+                {/* 图例 */}
+                <div className="flex gap-4 text-xs">
+                    <div className="flex items-center gap-1.5">
+                        <span className="w-3 h-3 bg-blue-500 rounded-sm"></span>
+                        <span className="text-gray-500">{t.legendAct}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                        <span className="w-3 h-3 bg-gray-200 rounded-sm"></span>
+                        <span className="text-gray-500">{t.legendEst}</span>
+                    </div>
+                </div>
+            </div>
+
+            {/* 图表容器 */}
+            <div className="relative h-48 w-full border-b border-gray-200">
+                {/* 零轴线 */}
+                <div 
+                    className="absolute left-0 w-full border-t border-gray-300 z-0" 
+                    style={{ top: `${zeroLinePct}%` }} 
+                ></div>
+
+                {/* 柱状图 */}
+                <div className="flex h-full items-end justify-between px-2 md:px-6 relative z-10">
+                    {trend.map((item, i) => {
+                        const actual = item.actual !== null ? Number(item.actual) : null;
+                        const estimate = Number(item.estimate || 0);
+
+                        // 样式计算辅助函数
+                        const getBarStyle = (val: number) => {
+                            const heightPct = (Math.abs(val) / safeRange) * 100;
+                            const isPositive = val >= 0;
+                            if (isPositive) {
+                                return { height: `${heightPct}%`, bottom: `${100 - zeroLinePct}%` };
+                            } else {
+                                return { height: `${heightPct}%`, top: `${zeroLinePct}%` };
+                            }
+                        };
+
+                        return (
+                            <div key={i} className="flex flex-col items-center flex-1 group relative h-full">
+                                {/* 柱子容器: 绝对定位在 h-full 中 */}
+                                <div className="absolute w-full h-full left-0 top-0 pointer-events-none">
+                                    <div className="w-full h-full relative flex justify-center gap-1 md:gap-2">
+                                        {/* 实际值 (蓝色) - 只有不为0时显示 */}
+                                        {actual !== null && actual !== 0 && (
+                                            <div 
+                                                className="w-2 md:w-4 bg-blue-500 rounded-t-sm transition-all absolute pointer-events-auto hover:opacity-80"
+                                                style={{ ...getBarStyle(actual), left: '50%', transform: 'translateX(-110%)' }} // 左偏
+                                            ></div>
+                                        )}
+                                        {/* 预测值 (灰色) */}
+                                        <div 
+                                            className="w-2 md:w-4 bg-gray-200 rounded-t-sm transition-all absolute pointer-events-auto hover:opacity-80"
+                                            style={{ ...getBarStyle(estimate), left: '50%', transform: 'translateX(10%)' }} // 右偏
+                                        ></div>
+                                    </div>
+                                </div>
+                                {/* X轴日期在下方表格显示，这里仅作为占位 */}
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        </div>
+
+        {/* 3. 数据表格 */}
+        <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+                <thead>
+                    <tr className="text-gray-400 text-xs border-b border-gray-100">
+                        <th className="py-2 font-medium">{t.colDate}</th>
+                        <th className="py-2 font-medium text-right">{t.colEst}</th>
+                        <th className="py-2 font-medium text-right">{t.colAct}</th>
+                        <th className="py-2 font-medium text-right">{t.colSurprise}</th>
+                    </tr>
+                </thead>
+                <tbody className="text-gray-700">
+                    {trend.map((item, i) => {
+                        const actual = item.actual !== null ? Number(item.actual) : null;
+                        const estimate = Number(item.estimate || 0);
+                        let surprise = null;
+                        let surprisePct = null;
+                        
+                        // 判定是否显示实际数据：不为null且不为0
+                        const showActual = actual !== null && actual !== 0;
+
+                        if (showActual) {
+                            surprise = actual - estimate;
+                            surprisePct = Math.abs(estimate) > 0 ? (surprise / Math.abs(estimate)) * 100 : 0;
+                        }
+
+                        return (
+                            <tr key={i} className="border-b border-gray-50 last:border-0 hover:bg-gray-50 transition-colors">
+                                <td className="py-3 font-medium text-gray-900">{item.date}</td>
+                                <td className="py-3 text-right font-mono text-gray-500">{estimate.toFixed(2)}</td>
+                                <td className="py-3 text-right font-mono font-bold text-gray-900">
+                                    {showActual ? actual!.toFixed(2) : '-'}
+                                </td>
+                                <td className="py-3 text-right font-mono">
+                                    {showActual ? (
+                                        <span className={surprise && surprise >= 0 ? 'text-green-600' : 'text-red-500'}>
+                                            {surprise && surprise > 0 ? '+' : ''}{surprise?.toFixed(2)} 
+                                            <span className="text-[10px] ml-1 opacity-80">({surprisePct?.toFixed(1)}%)</span>
+                                        </span>
+                                    ) : (
+                                        <span className="text-gray-300">-</span>
+                                    )}
+                                </td>
+                            </tr>
+                        );
+                    })}
+                </tbody>
+            </table>
+        </div>
       </div>
     );
   };
@@ -215,19 +452,45 @@ function MainContent() {
 
   return (
     <div className="w-full max-w-7xl mx-auto p-6 animate-fade-in">
-      <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
-        <h1 className="text-2xl font-bold text-gray-900">{t.title}</h1>
-        <form onSubmit={handleSearch} className="relative w-full md:w-96">
+      <div className="flex flex-col md:flex-row justify-between items-start mb-8 gap-4">
+        <h1 className="text-2xl font-bold text-gray-900 mt-2">{t.title}</h1>
+        
+        {/* 智能搜索框容器 */}
+        <form ref={searchContainerRef} onSubmit={handleSearchSubmit} className="relative w-full md:w-96 z-20">
           <input 
             type="text" 
             value={inputSymbol}
-            onChange={(e) => setInputSymbol(e.target.value.toUpperCase())}
+            onChange={handleInputChange}
+            onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
             placeholder={t.placeholder}
             className="w-full bg-white border border-gray-300 text-gray-900 text-sm rounded-full focus:ring-blue-500 focus:border-blue-500 block pl-5 p-3 shadow-sm outline-none"
+            autoComplete="off"
           />
           <button type="submit" disabled={loading} className="absolute right-2 top-1.5 bg-blue-600 text-white px-4 py-1.5 rounded-full text-xs font-bold hover:bg-blue-700 disabled:bg-gray-400 transition">
             {loading ? '...' : t.search}
           </button>
+
+          {/* 下拉建议列表 */}
+          {showSuggestions && suggestions.length > 0 && (
+            <div className="absolute top-full left-0 w-full bg-white mt-1 rounded-xl shadow-xl border border-gray-100 max-h-80 overflow-y-auto z-30">
+              {suggestions.map((item) => (
+                <div 
+                  key={item.symbol}
+                  onClick={() => handleSelectSuggestion(item.symbol)}
+                  className="px-4 py-3 hover:bg-gray-50 cursor-pointer border-b last:border-0 border-gray-50 flex justify-between items-center group"
+                >
+                  <div>
+                    <div className="font-bold text-gray-800 group-hover:text-blue-600">{item.symbol}</div>
+                    <div className="text-xs text-gray-500 truncate max-w-[200px]">{item.name}</div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{item.exchange}</span>
+                    <div className="text-[10px] text-gray-400 mt-0.5">{item.type}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </form>
       </div>
 
@@ -286,20 +549,8 @@ function MainContent() {
                   </div>
                 </div>
 
-                {/* 2. 核心指标 */}
-                <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition">
-                  <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">{t.cardStats}</h3>
-                  <div className="grid grid-cols-2 gap-y-6 gap-x-4">
-                    <div><p className="text-[10px] text-gray-400 uppercase">{t.mktCap}</p><p className="font-bold text-lg text-gray-800">{data.stats?.marketCap || '--'}</p></div>
-                    <div><p className="text-[10px] text-gray-400 uppercase">{t.pe}</p><p className="font-bold text-lg text-gray-800">{fmtNum(data.stats?.peRatio)}</p></div>
-                    <div><p className="text-[10px] text-gray-400 uppercase">{t.divYield}</p><p className="font-bold text-lg text-gray-800">{fmtNum(data.stats?.dividendYield)}%</p></div>
-                    <div><p className="text-[10px] text-gray-400 uppercase">{t.beta}</p><p className="font-bold text-lg text-gray-800">{fmtNum(data.stats?.beta)}</p></div>
-                  </div>
-                  <div className="mt-4 pt-4 border-t border-gray-50">
-                    <p className="text-[10px] text-gray-400 uppercase">{t.epsTitle}</p>
-                    <EPSChart trend={data.stats?.epsTrend || []} />
-                  </div>
-                </div>
+                {/* 2. 核心指标 (使用新重构的组件) */}
+                <KeyStatsSection data={data} t={t} />
 
                 {/* 3. 公司概况 */}
                 <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition">
