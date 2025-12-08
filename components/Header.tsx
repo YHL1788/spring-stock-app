@@ -1,21 +1,21 @@
 "use client";
 
 import Link from 'next/link';
-import { useState } from 'react';
+// 移除 useState，因为不再需要管理语言状态
 import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/nextjs';
 
 // 定義導航菜單結構
 const navigation = [
   {
-    name: '我們提供什麼',
+    name: '提供的产品',
     href: '#',
     current: false,
     children: [
-      { name: '場內證券', href: '/offerings/securities' },
-      { name: '場內期貨', href: '/offerings/futures' },
-      { name: '外匯', href: '/offerings/forex' },
-      { name: '場內期權', href: '/offerings/options' },
-      { name: '場外衍生品', href: '/offerings/derivatives' },
+      { name: '场内证券', href: '/offerings/securities' },
+      { name: '场内期货', href: '/offerings/futures' },
+      { name: '外汇', href: '/offerings/forex' },
+      { name: '场内期权', href: '/offerings/options' },
+      { name: '场外衍生品', href: '/offerings/derivatives' },
       { name: '私募基金', href: '/offerings/funds' },
     ],
   },
@@ -24,49 +24,54 @@ const navigation = [
     href: '#',
     current: false,
     children: [
-      { name: '全球概覽', href: '/market/overview' },
-      { name: '重大事件日曆', href: '/market/calendar' },
-      { name: '個股查詢', href: '/quote' }, // 鏈接到我們剛才移動的頁面
-      { name: '我的自選股', href: '/pools' }, // 鏈接到之前的股票池頁面
+      { name: '全球概览', href: '/market/overview' },
+      { name: '重大事件日历', href: '/market/calendar' },
+      { name: '个股查询', href: '/market/quote' }, 
+      { name: '我的自选股', href: '/market/pools' }, 
     ],
   },
   {
-    name: 'Strategies',
+    name: '分析',
     href: '#',
     current: false,
     children: [
-      { name: '日頻PCHIP插值策略', href: '/strategies/pchip' },
+      { name: '供应链', href: '/analysis/supply-chain' },
+      { name: '同业估值比对', href: '/analysis/valuation' },
+    ],
+  },
+  {
+    name: '策略',
+    href: '#',
+    current: false,
+    children: [
+      { name: '日频PCHIP插值策略', href: '/strategies/pchip' },
       { name: '我的策略', href: '/strategies/mine' },
     ],
   },
-  { name: '賬簿', href: '/book', current: false },
+  { name: '账簿', href: '#', current: false },
   {
-    name: '投資筆記',
+    name: '投资笔记',
     href: '#',
     current: false,
     children: [
-      { name: 'SIP筆記', href: '/notes/sip' },
-      { name: '我的筆記', href: '/notes/mine' },
+      { name: 'SIP笔记', href: 'book/notes/sip' },
+      { name: '我的笔记', href: 'book/notes/mine' },
     ],
   },
   {
-    name: '關於我們',
+    name: '关于我們',
     href: '#',
     current: false,
     children: [
       { name: 'SIP介紹', href: '/about/intro' },
-      { name: 'SIP團隊', href: '/about/team' },
-      { name: '常見問題', href: '/about/faq' },
-      { name: '聯繫我們', href: '/about/contact' },
+      { name: 'SIP团队', href: '/about/team' },
+      { name: '常见问题', href: '/about/faq' },
+      { name: '联系我们', href: '/about/contact' },
     ],
   },
 ];
 
 export default function Header() {
-  // 這裡簡化處理語言切換，實際項目可以使用 context 或全局狀態
-  const [lang, setLang] = useState<'zh' | 'en'>('zh');
-  const toggleLanguage = () => setLang(prev => prev === 'zh' ? 'en' : 'zh');
-
   return (
     <header className="bg-white border-b border-gray-100 fixed w-full top-0 z-50">
       <nav className="mx-auto max-w-7xl px-6 lg:px-8" aria-label="Top">
@@ -75,7 +80,6 @@ export default function Header() {
             {/* Logo 區域 */}
             <Link href="/" className="flex flex-col items-start">
               <span className="sr-only">SIP</span>
-              {/* 這裡用一個簡單的圖標代替，你可以換成圖片 */}
               <div className="flex items-center gap-2">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-8 h-8 text-blue-600">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941" />
@@ -123,13 +127,11 @@ export default function Header() {
           
           {/* 右側功能區 */}
           <div className="flex items-center gap-4">
-            <button onClick={toggleLanguage} className="text-sm font-medium text-gray-700 hover:text-blue-600 border border-gray-200 px-3 py-1.5 rounded-full transition">
-              {lang === 'zh' ? 'EN' : '中'}
-            </button>
+            {/* 移除了語言切換按鈕 */}
             <SignedOut>
               <SignInButton mode="modal">
                 <button className="text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-full transition shadow-sm">
-                  登錄 / 註冊
+                  登录 / 注册
                 </button>
               </SignInButton>
             </SignedOut>
