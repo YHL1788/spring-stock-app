@@ -10,18 +10,18 @@ const YAHOO_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 };
 
-// --- 1. 核心工具：判断数据源 ---
+// --- 1. 核心工具：判断数据源 (保留原样，未修改) ---
 function getDataSource(symbol) {
   const s = symbol.toUpperCase();
   // 如果是 日股(.T), 上海(.SS), 深圳(.SZ)，强制使用 Yahoo
-  if (s.endsWith('.T') || s.endsWith('.SS') || s.endsWith('.SZ')) {
+  if (s.endsWith('.T') || s.endsWith('.SS') || s.endsWith('.SZ') || s.startsWith('^')) {
     return 'YAHOO';
   }
   // 其他 (美股 .US, 港股 .HK 等) 使用 EODHD
   return 'EODHD';
 }
 
-// --- 2. 代码格式化 ---
+// --- 2. 代码格式化 (保留原样，未修改) ---
 function formatSymbol(rawSymbol, source) {
   let s = rawSymbol.trim().toUpperCase();
   
@@ -47,14 +47,34 @@ function formatSymbol(rawSymbol, source) {
 // A. Yahoo 数据引擎 (针对 .T, .SS, .SZ)
 // ==========================================
 
-async function fetchYahooFullData(symbol) {
+async function fetchYahooFullData(symbol, range = '1d') {
   try {
-    // 1. 获取价格 (Chart API)
-    const priceRes = await fetch(`${BASE_URL_YAHOO_CHART}/${symbol}?interval=1d&range=1d`, { headers: YAHOO_HEADERS, next: { revalidate: 0 } });
+    // 动态调整 interval (新增逻辑)
+    let interval = '1d';
+    if (range === '1d') interval = '2m';       // 1天 -> 2分钟K线
+    else if (range === '5d') interval = '15m'; // 5天 -> 15分钟K线
+    else if (['1mo', '3mo'].includes(range)) interval = '1d'; // 短期 -> 日K
+    else interval = '1wk'; // 长期 -> 周K
+
+    // 1. 获取价格 (Chart API) - 传入 range 和 interval
+    const priceRes = await fetch(`${BASE_URL_YAHOO_CHART}/${symbol}?interval=${interval}&range=${range}`, { headers: YAHOO_HEADERS, next: { revalidate: 0 } });
     const priceJson = priceRes.ok ? await priceRes.json() : null;
-    const meta = priceJson?.chart?.result?.[0]?.meta;
+    const result = priceJson?.chart?.result?.[0];
+    const meta = result?.meta;
 
     if (!meta) return null; // 价格都没有，视为失败
+
+    // 解析历史数据 (用于前端图表)
+    const timestamps = result.timestamp || [];
+    const quotes = result.indicators?.quote?.[0] || {};
+    const history = timestamps.map((t, i) => ({
+      time: t * 1000,
+      open: quotes.open?.[i],
+      high: quotes.high?.[i],
+      low: quotes.low?.[i],
+      close: quotes.close?.[i],
+      volume: quotes.volume?.[i]
+    })).filter(d => d.close !== null && d.close !== undefined); // 过滤无效数据点
 
     // 2. 获取深度基本面 (QuoteSummary API)
     const modules = ['summaryDetail', 'defaultKeyStatistics', 'assetProfile', 'financialData', 'earnings', 'recommendationTrend'];
@@ -76,12 +96,15 @@ async function fetchYahooFullData(symbol) {
 
     return {
       symbol: symbol,
-      name: meta.symbol, // Yahoo 此接口通常不返回全名，暂用代码
+      name: meta.symbol, 
       currency: meta.currency,
       price: meta.regularMarketPrice,
       change: meta.regularMarketPrice - meta.chartPreviousClose,
       changePercent: ((meta.regularMarketPrice - meta.chartPreviousClose) / meta.chartPreviousClose) * 100,
       
+      // 新增：返回历史数据供图表使用
+      history: history,
+
       trading: {
         high52: meta.fiftyTwoWeekHigh || meta.regularMarketPrice,
         low52: meta.fiftyTwoWeekLow || meta.regularMarketPrice,
@@ -166,13 +189,13 @@ async function fetchEODFullData(symbol) {
       currency: gen.CurrencyCode || 'USD',
       price: priceData.close,
       change: priceData.change || 0,
-      changePercent: priceData.change_p || 0, // EOD 直接返回百分比
+      changePercent: priceData.change_p || 0, 
 
       trading: {
         high52: tech['52WeekHigh'] || priceData.close,
         low52: tech['52WeekLow'] || priceData.close,
         volume: priceData.volume || 0,
-        avgVolume: 0 // EOD 实时接口通常不含平均量
+        avgVolume: 0 
       },
       stats: {
         marketCap: hl.MarketCapitalization ? (hl.MarketCapitalization / 1000000).toFixed(2) + 'M' : '--',
@@ -227,6 +250,7 @@ async function fetchEODFullData(symbol) {
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const rawSymbol = searchParams.get('symbol');
+  const range = searchParams.get('range') || '1d'; // 获取前端传入的 range
 
   if (!rawSymbol) return NextResponse.json({ error: 'Missing symbol' }, { status: 400 });
 
@@ -240,18 +264,29 @@ export async function GET(request) {
 
   // 2. 执行对应策略
   if (source === 'YAHOO') {
-    data = await fetchYahooFullData(symbol);
+    data = await fetchYahooFullData(symbol, range);
   } else {
     data = await fetchEODFullData(symbol);
   }
 
-  // 3. 兜底逻辑 (如果 EOD 失败，且不是明确的日股，再尝试一次 Yahoo 作为最后的救命稻草)
-  if (!data && source === 'EODHD') {
-    console.log("EODHD failed, fallback to Yahoo...");
-    // 尝试去除后缀或转换格式给 Yahoo
+  // 3. 兜底逻辑：如果 EOD 没拿到或者需要图表（EODHD 暂时不支持 range 历史图表），尝试 Yahoo 补充历史数据
+  // 也就是说，如果 data 存在（来自 EOD），但是 data.history 不存在，我们也要去 Yahoo 拿一下历史 K 线数据
+  if (!data || (source === 'EODHD' && !data.history)) {
     let fallbackSymbol = symbol.replace('.US', ''); 
     if (symbol.endsWith('.HK')) fallbackSymbol = symbol; // 港股保留 .HK
-    data = await fetchYahooFullData(fallbackSymbol);
+    
+    // 尝试用 Yahoo 获取包含历史数据的完整对象
+    const yahooData = await fetchYahooFullData(fallbackSymbol, range);
+    
+    if (yahooData) {
+      if (!data) {
+        // 场景 A: EOD 彻底失败，完全使用 Yahoo 数据作为替补
+        data = yahooData;
+      } else {
+        // 场景 B: EOD 获取成功（基本面数据好），但缺 K 线历史，只把 Yahoo 的 history 拼上去
+        data.history = yahooData.history;
+      }
+    }
   }
 
   if (!data) {

@@ -30,7 +30,7 @@ export default function Home() {
           </div>
           
           <h1 className="mt-10 text-4xl font-extrabold tracking-tight text-white sm:text-6xl leading-tight">
-            專為家族辦公室打造的<br/>
+            為家族辦公室打造的<br/>
             <span className="text-blue-500">投資記賬本</span>
           </h1>
           
@@ -40,15 +40,6 @@ export default function Home() {
           </p>
           
           <div className="mt-10 flex items-center gap-x-6">
-            <Link
-              href="/quote"
-              className="rounded-full bg-blue-600 px-8 py-3.5 text-base font-bold text-white shadow-lg shadow-blue-500/30 hover:bg-blue-500 hover:shadow-blue-500/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 transition-all transform hover:-translate-y-0.5"
-            >
-              開始體驗 <span aria-hidden="true">→</span>
-            </Link>
-            <Link href="/about/intro" className="text-sm font-semibold leading-6 text-white hover:text-blue-300 transition flex items-center gap-1">
-              了解更多 <span aria-hidden="true">→</span>
-            </Link>
           </div>
         </div>
       </div>
