@@ -31,7 +31,7 @@ export default function Home() {
           
           <h1 className="mt-10 text-4xl font-extrabold tracking-tight text-white sm:text-6xl leading-tight">
             为家族办公室打造的<br/>
-            <span className="text-blue-500">投資記賬本</span>
+            <span className="text-blue-500">投資记账本</span>
           </h1>
           
           <p className="mt-6 text-lg leading-8 text-gray-300">
