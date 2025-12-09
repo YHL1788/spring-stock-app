@@ -30,7 +30,7 @@ export default function Home() {
           </div>
           
           <h1 className="mt-10 text-4xl font-extrabold tracking-tight text-white sm:text-6xl leading-tight">
-            為家族辦公室打造的<br/>
+            为家族办公室打造的<br/>
             <span className="text-blue-500">投資記賬本</span>
           </h1>
           
