@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useUser, SignedIn, SignedOut, RedirectToSignIn } from '@clerk/nextjs';
 import { supabase } from '@/lib/supabaseClient';
 import Link from 'next/link';
@@ -16,6 +16,13 @@ interface Watchlist {
 interface WatchlistItem {
   id: string;
   symbol: string;
+}
+
+interface SearchResult {
+  symbol: string;
+  name: string;
+  exchange: string;
+  type: string;
 }
 
 // --- 子组件：单行股票 ---
@@ -45,7 +52,7 @@ const StockRow = ({ item, onDelete, refreshTrigger }: { item: WatchlistItem, onD
     <tr className="border-b hover:bg-gray-50 transition group">
       <td className="p-3">
         <Link 
-          href={`/?symbol=${item.symbol}`}
+          href={`/market/quote?symbol=${item.symbol}`}
           className="font-bold text-gray-800 hover:text-blue-600 hover:underline flex items-center gap-1"
         >
           {item.symbol}
@@ -97,14 +104,33 @@ export default function PoolsPage() {
   // 编辑状态
   const [editingPoolId, setEditingPoolId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
-  const [editIsPublic, setEditIsPublic] = useState(false); // ★ 新增：编辑时的公开状态
+  const [editIsPublic, setEditIsPublic] = useState(false); 
 
+  // 添加股票相关状态
   const [newSymbol, setNewSymbol] = useState('');
   const [addingStock, setAddingStock] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [warningMsg, setWarningMsg] = useState('');
+
+  // ★ 新增：模糊搜索相关状态
+  const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const searchContainerRef = useRef<HTMLFormElement>(null);
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => { if (user) fetchPools(); }, [user]);
   useEffect(() => { if (selectedPool) fetchPoolItems(selectedPool.id); }, [selectedPool]);
+
+  // ★ 新增：点击外部关闭下拉菜单
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const fetchPools = async () => {
     if (!user) return;
@@ -136,14 +162,12 @@ export default function PoolsPage() {
     }
   };
 
-  // ★ 修改：开始编辑时，同时初始化 is_public 状态
   const startEditing = (pool: Watchlist) => { 
     setEditingPoolId(pool.id); 
     setEditTitle(pool.title);
     setEditIsPublic(pool.is_public);
   };
 
-  // ★ 修改：保存时，同时更新 is_public
   const saveEditing = async () => {
     if (!editTitle.trim()) return;
     await supabase
@@ -154,7 +178,6 @@ export default function PoolsPage() {
     setEditingPoolId(null); 
     fetchPools();
     
-    // 如果当前正选中的是被修改的池子，同步更新选中状态
     if (selectedPool?.id === editingPoolId) {
         setSelectedPool(prev => prev ? ({...prev, title: editTitle, is_public: editIsPublic}) : null);
     }
@@ -167,14 +190,64 @@ export default function PoolsPage() {
     fetchPools();
   };
 
+  // ★ 新增：处理输入变化并触发搜索
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setNewSymbol(val.toUpperCase());
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (val.trim().length < 2) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(val)}`);
+        if (res.ok) {
+          const results = await res.json();
+          setSuggestions(results);
+          setShowSuggestions(true);
+        }
+      } catch (e) {
+        console.error("Search error", e);
+      }
+    }, 300);
+  };
+
+  // ★ 新增：选择建议
+  const handleSelectSuggestion = (symbol: string) => {
+    setNewSymbol(symbol);
+    setSuggestions([]);
+    setShowSuggestions(false);
+  };
+
   const handleAddStock = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newSymbol.trim() || !selectedPool) return;
-    setAddingStock(true);
+    
     const cleanSymbol = newSymbol.toUpperCase().trim();
+
+    if (poolItems.some(item => item.symbol === cleanSymbol)) {
+        setWarningMsg('该股票已经添加'); 
+        setTimeout(() => {
+            setWarningMsg('');
+        }, 5000);
+        return; 
+    }
+
+    setAddingStock(true);
     const { error } = await supabase.from('watchlist_items').insert([{ watchlist_id: selectedPool.id, symbol: cleanSymbol }]);
-    if (error) { alert('添加失败: ' + error.message); } else { setNewSymbol(''); fetchPoolItems(selectedPool.id); }
+    if (error) { 
+        alert('添加失败: ' + error.message); 
+    } else { 
+        setNewSymbol(''); 
+        fetchPoolItems(selectedPool.id); 
+    }
     setAddingStock(false);
+    setShowSuggestions(false); // 确保提交后关闭下拉
   };
 
   const handleRemoveStock = async (itemId: string) => {
@@ -190,9 +263,19 @@ export default function PoolsPage() {
   if (!isLoaded) return <div className="p-10 text-center">加载中...</div>;
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6 md:p-10">
+    <div className="min-h-screen bg-gray-50 p-6 md:p-10 relative">
       <SignedOut><RedirectToSignIn /></SignedOut>
       <SignedIn>
+        {/* ★ 警示弹框 (Toast) */}
+        {warningMsg && (
+            <div className="fixed top-24 left-1/2 transform -translate-x-1/2 bg-gray-900/90 backdrop-blur text-white px-6 py-3 rounded-full shadow-xl z-50 flex items-center gap-2 animate-bounce-in transition-all">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+                <span className="font-medium text-sm">{warningMsg}</span>
+            </div>
+        )}
+
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row gap-8">
           
           {/* 左侧：股票池列表 */}
@@ -233,7 +316,6 @@ export default function PoolsPage() {
               {pools.map(pool => (
                 <div key={pool.id} onClick={() => setSelectedPool(pool)} className={`p-4 border-b last:border-0 cursor-pointer transition flex justify-between items-center group ${selectedPool?.id === pool.id ? 'bg-blue-50 border-l-4 border-l-blue-600' : 'hover:bg-gray-50'}`}>
                   {editingPoolId === pool.id ? (
-                    // ★ 编辑模式：标题输入框 + 公开复选框
                     <div className="flex flex-col gap-2 flex-1" onClick={e => e.stopPropagation()}>
                         <input 
                             autoFocus
@@ -254,7 +336,6 @@ export default function PoolsPage() {
                         </div>
                     </div>
                   ) : (
-                    // 显示模式
                     <div className="flex items-center gap-2">
                         <span className={`font-medium ${selectedPool?.id === pool.id ? 'text-blue-900' : 'text-gray-700'}`}>{pool.title}</span>
                         {pool.is_public && <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded border border-yellow-200">公开</span>}
@@ -266,7 +347,7 @@ export default function PoolsPage() {
             </div>
           </div>
 
-          {/* 右侧：详情区域 (保持不变) */}
+          {/* 右侧：详情区域 */}
           <div className="w-full md:w-2/3">
             {selectedPool ? (
               <div className="bg-white rounded-xl shadow-md border border-gray-100 p-6 animate-fade-in">
@@ -287,9 +368,38 @@ export default function PoolsPage() {
                   </div>
                 </div>
 
-                <form onSubmit={handleAddStock} className="flex gap-3 mb-6 bg-gray-50 p-4 rounded-lg">
-                    <input type="text" value={newSymbol} onChange={e => setNewSymbol(e.target.value.toUpperCase())} placeholder="输入代码 (如 0700.HK)" className="border p-2 rounded flex-1 focus:border-blue-500 outline-none font-mono" />
-                    <button disabled={addingStock || !newSymbol} className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-medium disabled:opacity-50">{addingStock ? '添加中...' : '添加股票'}</button>
+                {/* ★ 修改：添加股票表单 (包含模糊搜索下拉) */}
+                <form ref={searchContainerRef} onSubmit={handleAddStock} className="flex gap-3 mb-6 bg-gray-50 p-4 rounded-lg relative">
+                    <div className="flex-1 relative">
+                        <input 
+                            type="text" 
+                            value={newSymbol} 
+                            onChange={handleSearchChange}
+                            onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+                            placeholder="输入代码 (如 0700.HK, AAPL)..." 
+                            className="w-full border p-2 rounded focus:border-blue-500 outline-none font-mono uppercase" 
+                            autoComplete="off"
+                        />
+                        {/* 搜索建议下拉框 */}
+                        {showSuggestions && suggestions.length > 0 && (
+                            <div className="absolute top-full left-0 w-full bg-white mt-1 rounded-lg shadow-xl border border-gray-100 max-h-60 overflow-y-auto z-20">
+                                {suggestions.map((item) => (
+                                    <div 
+                                        key={item.symbol} 
+                                        onClick={() => handleSelectSuggestion(item.symbol)} 
+                                        className="px-4 py-2 hover:bg-gray-50 cursor-pointer border-b last:border-0 flex justify-between items-center"
+                                    >
+                                        <div>
+                                            <div className="font-bold text-gray-800">{item.symbol}</div>
+                                            <div className="text-xs text-gray-500 truncate max-w-[200px]">{item.name}</div>
+                                        </div>
+                                        <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">{item.exchange}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <button disabled={addingStock || !newSymbol} className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-medium disabled:opacity-50 whitespace-nowrap">{addingStock ? '...' : '添加'}</button>
                 </form>
 
                 <div className="overflow-x-auto">
