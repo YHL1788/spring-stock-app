@@ -54,8 +54,8 @@ const navigation = [
     href: '#',
     current: false,
     children: [
-      { name: 'SIP笔记', href: 'book/notes/sip' },
-      { name: '我的笔记', href: 'book/notes/mine' },
+      { name: 'SIP笔记', href: '/notes/sip' },
+      { name: '我的笔记', href: '/notes/mine' },
     ],
   },
   {

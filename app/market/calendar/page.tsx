@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
+// 使用相对路径引用，确保兼容性
+import { getStockDetail, getLevel1Sectors } from '../../lib/stockService'; 
 
 // --- 图标组件 ---
 const ChevronLeft = ({ className }: { className?: string }) => (
@@ -21,16 +23,29 @@ const ExternalLink = ({ className }: { className?: string }) => (
 const X = ({ className }: { className?: string }) => (
   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M18 6 6 18"/><path d="m6 6 18 18"/></svg>
 );
+const Building = ({ className }: { className?: string }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><rect width="16" height="20" x="4" y="2" rx="2" ry="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01"/><path d="M16 6h.01"/><path d="M8 10h.01"/><path d="M16 10h.01"/><path d="M8 14h.01"/><path d="M16 14h.01"/></svg>
+);
+const Globe = ({ className }: { className?: string }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+);
+
 
 // --- 类型定义 ---
-interface MacroEvent {
-  type: string;    // 事件名称
-  country: string; // 国家代码
-  date: string;    // 日期字符串 "YYYY-MM-DD HH:mm:ss"
+interface CalendarEvent {
+  type: string;        // 事件类型/名称
+  country?: string;    // 国家代码 (宏观用)
+  code?: string;       // 股票代码 (个股用)
+  date: string;        // 日期
+  
+  // 扩展字段 (个股日历用)
+  stockName?: string;
+  sectorL1?: string;
+  sectorL2?: string;
 }
 
-// 支持的国家列表
-const SUPPORTED_COUNTRIES = [
+// 宏观 - 支持的国家列表
+const MACRO_COUNTRIES = [
   { code: 'US', label: 'United States', flag: '🇺🇸' },
   { code: 'CN', label: 'China', flag: '🇨🇳' },
   { code: 'JP', label: 'Japan', flag: '🇯🇵' },
@@ -41,40 +56,62 @@ const SUPPORTED_COUNTRIES = [
   { code: 'CA', label: 'Canada', flag: '🇨🇦' },
 ];
 
-export default function MacroCalendarPage() {
-  // --- 状态管理 ---
-  const [currentDate, setCurrentDate] = useState(new Date()); 
-  const [selectedCountries, setSelectedCountries] = useState<string[]>(['US', 'CN']); 
-  const [events, setEvents] = useState<MacroEvent[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [showJin10, setShowJin10] = useState(false); // 控制金十数据 Iframe 显示
+// 视图模式
+type ViewMode = 'macro' | 'stock';
 
-  // 用于手动输入的临时状态
+export default function CalendarPage() {
+  // --- 全局状态 ---
+  const [currentDate, setCurrentDate] = useState(new Date()); 
+  const [viewMode, setViewMode] = useState<ViewMode>('macro'); // 默认宏观视图
+  const [loading, setLoading] = useState(false);
+  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [showJin10, setShowJin10] = useState(false);
+
+  // --- 筛选器状态 ---
+  const [selectedCountries, setSelectedCountries] = useState<string[]>(['US', 'CN']);
+  const [sectorList, setSectorList] = useState<string[]>([]);
+  const [selectedSector, setSelectedSector] = useState<string>('全部'); 
+
+  // 临时日期输入状态
   const [inputYear, setInputYear] = useState(currentDate.getFullYear());
   const [inputMonth, setInputMonth] = useState(currentDate.getMonth() + 1);
 
-  // 当 currentDate 改变时，同步更新输入框的值
+  // 初始化：获取一级行业列表
+  useEffect(() => {
+    try {
+      const sectors = getLevel1Sectors();
+      setSectorList(['全部', ...sectors]);
+    } catch (e) {
+      console.warn("Failed to load sectors", e);
+      setSectorList(['全部']);
+    }
+  }, []);
+
+  // 同步日期输入框
   useEffect(() => {
     setInputYear(currentDate.getFullYear());
     setInputMonth(currentDate.getMonth() + 1);
   }, [currentDate]);
 
-  // --- API 数据获取 ---
+  // --- 核心：数据获取 ---
   useEffect(() => {
     let isMounted = true;
 
-    const fetchMonthData = async () => {
+    const fetchData = async () => {
       setLoading(true);
+      setEvents([]); // 切换时先清空
       try {
         const year = currentDate.getFullYear();
         const month = currentDate.getMonth() + 1;
-        
         const firstDay = `${year}-${String(month).padStart(2, '0')}-01`;
         const lastDayDate = new Date(year, month, 0);
         const lastDay = `${year}-${String(month).padStart(2, '0')}-${lastDayDate.getDate()}`;
 
+        // 视图模式决定请求类型
+        const apiType = viewMode === 'macro' ? 'economics' : 'earnings';
+
         const params = new URLSearchParams({
-          type: 'economics', 
+          type: apiType, 
           from: firstDay,
           to: lastDay
         });
@@ -83,205 +120,243 @@ export default function MacroCalendarPage() {
         
         if (isMounted && response.ok) {
           const rawData = await response.json();
+          // 确保是数组，防止 API 返回错误格式
           const dataArray = Array.isArray(rawData) ? rawData : [];
           
-          const cleanData = dataArray.filter((item: any) => 
-            item.type && item.date && item.country
-          );
+          let processedData: CalendarEvent[] = [];
+
+          if (viewMode === 'macro') {
+            // --- 宏观数据处理 ---
+            // 修复：增加 item && 检查，防止空指针异常
+            processedData = dataArray
+              .filter((item: any) => item && item.type && item.date && item.country)
+              .map((item: any) => ({
+                type: item.type,
+                country: item.country,
+                date: item.date
+              }));
+
+          } else {
+            // --- 个股数据处理 (漏斗筛选) ---
+            processedData = dataArray.reduce((acc: CalendarEvent[], item: any) => {
+              // 1. 基础检查：增加 item 存在性检查
+              if (!item || !item.code || !item.date) return acc;
+
+              // 确保 code 是字符串，防止数字类型导致 toUpperCase 报错
+              const upperCode = String(item.code).toUpperCase();
+
+              // -----------------------------------------------------------
+              // [关键修改] 个股日历特有的过滤规则：
+              // 剔除后缀为 .SS, .SZ, .T 的股票
+              // -----------------------------------------------------------
+              const forbiddenSuffixes = ['.SS', '.SZ', '.T'];
+              if (forbiddenSuffixes.some(suffix => upperCode.endsWith(suffix))) {
+                return acc;
+              }
+
+              // 2. 查池子 (调用纯净的 stockService)
+              const validStock = getStockDetail(upperCode);
+
+              if (validStock) {
+                // 3. 数据增强
+                acc.push({
+                  type: 'Q3 财报发布', // 示例，具体看API返回
+                  code: item.code,
+                  date: item.date,
+                  stockName: validStock.name,
+                  sectorL1: validStock.sector_level_1,
+                  sectorL2: validStock.sector_level_2,
+                });
+              }
+              return acc;
+            }, []);
+          }
           
-          setEvents(cleanData);
+          setEvents(processedData);
         }
       } catch (error) {
-        console.error("Failed to fetch monthly data", error);
+        console.error("Failed to fetch data", error);
       } finally {
         if (isMounted) setLoading(false);
       }
     };
 
-    fetchMonthData();
+    fetchData();
 
     return () => { isMounted = false; };
-  }, [currentDate]);
+  }, [currentDate, viewMode]); 
 
-  // --- 数据处理逻辑 (列表模式) ---
-  
-  const sortedFilteredEvents = useMemo(() => {
-    // 1. 筛选国家
-    const filtered = events.filter(e => selectedCountries.includes(e.country));
+  // --- 数据展示过滤 (UI层过滤) ---
+  const displayEvents = useMemo(() => {
+    if (!events) return []; // 防御性检查
+
+    let filtered = events;
+
+    if (viewMode === 'macro') {
+      filtered = events.filter(e => e.country && selectedCountries.includes(e.country));
+    } else {
+      if (selectedSector !== '全部') {
+        filtered = events.filter(e => e.sectorL1 === selectedSector);
+      }
+    }
     
-    // 2. 按日期排序 (旧 -> 新)
+    // 按日期排序
     return filtered.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  }, [events, selectedCountries]);
+  }, [events, viewMode, selectedCountries, selectedSector]);
 
-  // 格式化日期：[月-日(周X)]
+  // --- 辅助函数 ---
   const formatListDate = (dateStr: string) => {
     try {
       const date = new Date(dateStr);
       const m = (date.getMonth() + 1).toString().padStart(2, '0');
       const d = date.getDate().toString().padStart(2, '0');
       const w = date.toLocaleDateString('zh-CN', { weekday: 'short' });
-      
       return `${m}-${d} (${w})`;
-    } catch (e) {
-      return dateStr;
-    }
-  };
-
-  // --- 交互处理 ---
-
-  const toggleCountry = (code: string) => {
-    setSelectedCountries(prev => 
-      prev.includes(code) 
-        ? prev.filter(c => c !== code) 
-        : [...prev, code]
-    );
-  };
-
-  const prevMonth = () => {
-    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
-  };
-
-  const nextMonth = () => {
-    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
+    } catch { return dateStr; }
   };
 
   const jumpToDate = (year: number, month: number) => {
-    const newDate = new Date(year, month - 1, 1);
-    setCurrentDate(newDate);
+    setCurrentDate(new Date(year, month - 1, 1));
   };
 
-  const handleYearChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = parseInt(e.target.value);
-    setInputYear(val);
-    if (!isNaN(val) && val > 1900 && val < 2100) {
-      jumpToDate(val, inputMonth);
-    }
+  // --- 交互 Handler ---
+  const toggleCountry = (code: string) => {
+    setSelectedCountries(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
   };
 
-  const handleMonthChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const val = parseInt(e.target.value);
-    setInputMonth(val);
-    jumpToDate(inputYear, val);
-  };
-
-  const getCountryColor = (code: string) => {
-    switch(code) {
-      case 'US': return 'bg-blue-50 text-blue-700 border-blue-200';
-      case 'CN': return 'bg-red-50 text-red-700 border-red-200';
-      case 'EU': return 'bg-indigo-50 text-indigo-700 border-indigo-200';
-      default: return 'bg-slate-50 text-slate-700 border-slate-200';
-    }
+  // 颜色映射
+  const getBadgeColor = (key: string) => {
+    const colors = [
+      'bg-blue-50 text-blue-700 border-blue-200',
+      'bg-red-50 text-red-700 border-red-200',
+      'bg-green-50 text-green-700 border-green-200',
+      'bg-purple-50 text-purple-700 border-purple-200',
+      'bg-orange-50 text-orange-700 border-orange-200',
+      'bg-indigo-50 text-indigo-700 border-indigo-200',
+    ];
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) hash = key.charCodeAt(i) + ((hash << 5) - hash);
+    return colors[Math.abs(hash) % colors.length];
   };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col">
       
-      {/* --- 顶部控制栏 --- */}
-      <header className="border-b border-slate-200 px-6 py-4 bg-white sticky top-0 z-20 shadow-sm">
-        <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4">
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2 self-center md:self-start">
-            <span className="bg-slate-900 text-white p-1 rounded">M</span> 
-            宏观经济日历
-          </h1>
+      {/* --- 顶部控制区 --- */}
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-sm">
+        <div className="px-6 py-4">
           
-          {/* 右侧控制区：垂直排列 */}
-          <div className="flex flex-col items-end gap-2 w-full md:w-auto">
+          {/* 第一行：标题、视图切换、时间控制 */}
+          <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4">
             
-            {/* 1. 年月导航控件 */}
-            <div className="flex items-center bg-slate-100 rounded-lg p-1 gap-1">
-              <button onClick={prevMonth} className="p-2 hover:bg-white rounded-md transition-shadow shadow-sm text-slate-600">
-                <ChevronLeft className="h-5 w-5" />
-              </button>
-              
-              <div className="flex items-center gap-2 px-2 border-x border-slate-200/50">
-                <input 
-                  type="number" 
-                  value={inputYear}
-                  onChange={handleYearChange}
-                  className="w-16 bg-transparent text-center font-bold text-slate-800 focus:outline-none focus:bg-white rounded hover:bg-white/50 transition-colors"
-                  min="2000" max="2100"
-                />
-                <span className="text-slate-400 font-light">/</span>
-                <select 
-                  value={inputMonth}
-                  onChange={handleMonthChange}
-                  className="bg-transparent font-semibold text-slate-700 focus:outline-none focus:bg-white rounded hover:bg-white/50 transition-colors cursor-pointer appearance-none pl-2 pr-1"
-                >
-                  {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
-                    <option key={m} value={m}>{m}月</option>
-                  ))}
-                </select>
-              </div>
+            <div className="flex flex-col gap-3">
+              <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                <span className="bg-slate-900 text-white p-1 rounded">
+                  {viewMode === 'macro' ? 'M' : 'S'}
+                </span> 
+                {viewMode === 'macro' ? '宏观经济日历' : '个股大事日历'}
+              </h1>
 
-              <button onClick={nextMonth} className="p-2 hover:bg-white rounded-md transition-shadow shadow-sm text-slate-600">
-                <ChevronRight className="h-5 w-5" />
-              </button>
+              {/* 视图切换 Segmented Control */}
+              <div className="flex bg-slate-100 p-1 rounded-lg self-start">
+                <button
+                  onClick={() => setViewMode('macro')}
+                  className={`flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-md transition-all ${
+                    viewMode === 'macro' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  <Globe className="h-4 w-4" />
+                  宏观
+                </button>
+                <button
+                  onClick={() => setViewMode('stock')}
+                  className={`flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-md transition-all ${
+                    viewMode === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  <Building className="h-4 w-4" />
+                  个股
+                </button>
+              </div>
             </div>
 
-            {/* 2. 金十数据 Iframe 按钮 (在时间按键下方) */}
-            <button 
-              onClick={() => setShowJin10(!showJin10)}
-              className={`
-                flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded transition-colors
-                ${showJin10 
-                  ? 'bg-blue-600 text-white shadow-md' 
-                  : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300 hover:bg-slate-50'}
-              `}
-            >
-              <ExternalLink className="h-3 w-3" />
-              {showJin10 ? '关闭金十数据' : '金十数据'}
-            </button>
+            {/* 右侧控制 */}
+            <div className="flex flex-col items-end gap-2 w-full md:w-auto">
+              {/* 年月选择 */}
+              <div className="flex items-center bg-slate-100 rounded-lg p-1 gap-1">
+                <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))} className="p-2 hover:bg-white rounded-md text-slate-600">
+                  <ChevronLeft className="h-5 w-5" />
+                </button>
+                <div className="flex items-center gap-2 px-2 border-x border-slate-200/50">
+                  <input type="number" value={inputYear} onChange={(e) => {
+                    const val = parseInt(e.target.value); setInputYear(val); if(val>1900 && val<2100) jumpToDate(val, inputMonth);
+                  }} className="w-16 bg-transparent text-center font-bold text-slate-800 focus:outline-none" />
+                  <span className="text-slate-400">/</span>
+                  <select value={inputMonth} onChange={(e) => {
+                    const val = parseInt(e.target.value); setInputMonth(val); jumpToDate(inputYear, val);
+                  }} className="bg-transparent font-semibold text-slate-700 focus:outline-none cursor-pointer">
+                    {Array.from({length:12},(_,i)=>i+1).map(m=><option key={m} value={m}>{m}月</option>)}
+                  </select>
+                </div>
+                <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1))} className="p-2 hover:bg-white rounded-md text-slate-600">
+                  <ChevronRight className="h-5 w-5" />
+                </button>
+              </div>
 
-          </div>
-        </div>
-
-        {/* 筛选国家 */}
-        <div className="flex flex-wrap gap-2 items-center">
-          <div className="flex items-center text-xs text-slate-500 mr-2">
-            <Filter className="h-3 w-3 mr-1" />
-            筛选国家:
-          </div>
-          {SUPPORTED_COUNTRIES.map((country) => {
-            const isSelected = selectedCountries.includes(country.code);
-            return (
-              <button
-                key={country.code}
-                onClick={() => toggleCountry(country.code)}
-                className={`
-                  px-3 py-1.5 rounded-full text-xs font-medium border transition-all duration-200 flex items-center gap-1.5
-                  ${isSelected 
-                    ? 'bg-slate-800 text-white border-slate-800 shadow-md transform scale-105' 
-                    : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300 hover:bg-slate-50'}
-                `}
-              >
-                <span>{country.flag}</span>
-                {country.code}
+              {/* 金十按钮 */}
+              <button onClick={() => setShowJin10(!showJin10)} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded transition-colors ${showJin10 ? 'bg-blue-600 text-white' : 'bg-white border border-slate-200'}`}>
+                <ExternalLink className="h-3 w-3" />
+                {showJin10 ? '关闭金十' : '金十数据'}
               </button>
-            );
-          })}
+            </div>
+          </div>
+
+          {/* 第二行：动态筛选器 */}
+          <div className="flex flex-wrap gap-2 items-center min-h-[32px]">
+            <div className="flex items-center text-xs text-slate-500 mr-2 shrink-0">
+              <Filter className="h-3 w-3 mr-1" />
+              {viewMode === 'macro' ? '筛选国家:' : '筛选一级行业:'}
+            </div>
+
+            {viewMode === 'macro' ? (
+              // 宏观 - 国家筛选
+              MACRO_COUNTRIES.map((country) => (
+                <button
+                  key={country.code}
+                  onClick={() => toggleCountry(country.code)}
+                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${
+                    selectedCountries.includes(country.code) ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <span>{country.flag}</span> {country.code}
+                </button>
+              ))
+            ) : (
+              // 个股 - 行业筛选 (横向滚动)
+              <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 flex-1 mask-right">
+                {sectorList.map((sector) => (
+                  <button
+                    key={sector}
+                    onClick={() => setSelectedSector(sector)}
+                    className={`px-3 py-1 rounded-full text-xs font-medium border transition-all whitespace-nowrap ${
+                      selectedSector === sector ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300 hover:text-blue-600'
+                    }`}
+                  >
+                    {sector}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
-      {/* --- 金十数据 Iframe 区域 --- */}
+      {/* --- 金十 Iframe --- */}
       {showJin10 && (
         <div className="border-b border-slate-200 bg-slate-100 relative">
-          <button 
-            onClick={() => setShowJin10(false)}
-            className="absolute top-2 right-2 p-1 bg-white rounded-full shadow hover:bg-slate-100 z-10"
-            title="关闭"
-          >
-            <X className="h-4 w-4 text-slate-500" />
-          </button>
+          <button onClick={() => setShowJin10(false)} className="absolute top-2 right-2 p-1 bg-white rounded-full shadow z-10"><X className="h-4 w-4 text-slate-500" /></button>
           <div className="w-full h-[600px] bg-white">
-            <iframe 
-              src="https://rili.jin10.com/" 
-              className="w-full h-full border-none"
-              title="金十数据财经日历"
-              allow="clipboard-write"
-            />
-          </div>
-          <div className="text-[10px] text-center text-slate-400 py-1">
-            注：内容来源于金十数据第三方网页，如无法显示请检查网络或浏览器安全设置。
+            <iframe src="https://rili.jin10.com/" className="w-full h-full border-none" title="金十" />
           </div>
         </div>
       )}
@@ -291,7 +366,7 @@ export default function MacroCalendarPage() {
         {loading ? (
           <div className="flex flex-col items-center justify-center h-64 text-slate-400">
             <Loader2 className="h-8 w-8 animate-spin mb-2" />
-            <p>正在加载数据...</p>
+            <p>正在加载{viewMode === 'macro' ? '宏观' : '个股'}数据...</p>
           </div>
         ) : (
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -299,43 +374,58 @@ export default function MacroCalendarPage() {
               <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
                 <tr>
                   <th className="px-6 py-4 w-48 whitespace-nowrap">时间</th>
-                  <th className="px-6 py-4">事件</th>
+                  <th className="px-6 py-4">{viewMode === 'macro' ? '国家 / 地区' : '股票 / 行业'}</th>
+                  <th className="px-6 py-4">事件详情</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {sortedFilteredEvents.length > 0 ? (
-                  sortedFilteredEvents.map((event, idx) => (
+                {displayEvents.length > 0 ? (
+                  displayEvents.map((event, idx) => (
                     <tr key={idx} className="hover:bg-slate-50 transition-colors group">
-                      {/* 时间列 */}
-                      <td className="px-6 py-4 text-slate-600 font-mono font-medium whitespace-nowrap">
+                      {/* 时间 */}
+                      <td className="px-6 py-4 text-slate-600 font-mono font-medium whitespace-nowrap align-top">
                         {formatListDate(event.date)}
                       </td>
                       
-                      {/* 事件列 */}
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          {/* 国家徽章 */}
-                          <span className={`
-                            px-2 py-0.5 rounded text-[11px] font-bold border uppercase shrink-0
-                            ${getCountryColor(event.country)}
-                          `}>
+                      {/* 标签列 (国家 或 股票信息) */}
+                      <td className="px-6 py-4 align-top">
+                        {viewMode === 'macro' ? (
+                          <span className={`px-2 py-0.5 rounded text-[11px] font-bold border uppercase ${getBadgeColor(event.country || 'UN')}`}>
                             {event.country}
                           </span>
-                          
-                          {/* 事件名称 */}
-                          <span className="text-slate-900 font-medium group-hover:text-blue-700 transition-colors">
-                            {event.type}
-                          </span>
-                        </div>
+                        ) : (
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-slate-800">{event.code}</span>
+                              <span className="text-xs text-slate-500">{event.stockName}</span>
+                            </div>
+                            <div className="flex gap-1">
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] border ${getBadgeColor(event.sectorL1 || '其他')}`}>
+                                {event.sectorL1}
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-100 text-slate-500 border border-slate-200">
+                                {event.sectorL2}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </td>
+
+                      {/* 事件详情列 */}
+                      <td className="px-6 py-4 align-top">
+                        <span className="text-slate-900 font-medium group-hover:text-blue-700 transition-colors block">
+                          {event.type}
+                        </span>
                       </td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={2} className="px-6 py-16 text-center text-slate-400 bg-slate-50/50">
+                    <td colSpan={3} className="px-6 py-16 text-center text-slate-400 bg-slate-50/50">
                       <div className="flex flex-col items-center">
                         <Filter className="h-8 w-8 mb-2 opacity-20" />
-                        <p>该时段内无相关事件</p>
+                        <p>{viewMode === 'macro' ? '暂无相关宏观数据' : '您的股票池中今日无大事'}</p>
+                        {viewMode === 'stock' && <p className="text-xs mt-2 opacity-60">已自动过滤掉 .SS, .SZ, .T 后缀的股票</p>}
                       </div>
                     </td>
                   </tr>
@@ -346,7 +436,7 @@ export default function MacroCalendarPage() {
         )}
         
         <div className="mt-6 text-xs text-slate-400 text-center">
-           显示的均为当地时间或 UTC 时间，具体取决于数据源。
+           {viewMode === 'stock' ? '数据仅包含您股票池中的标的。' : '显示的均为当地时间或 UTC 时间。'}
         </div>
       </div>
     </div>
