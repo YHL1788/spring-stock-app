@@ -1,8 +1,11 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-// 使用相对路径引用，确保兼容性
-import { getStockDetail, getLevel1Sectors } from '../../lib/stockService'; 
+import { getStockDetail, getLevel1Sectors } from '@/app/lib/stockService'; 
+import { stockPoolData } from '@/app/data/stock_pool';
+
+// --- 配置 ---
+const API_TOKEN = '692ff0e71412a4.89947654'; 
 
 // --- 图标组件 ---
 const ChevronLeft = ({ className }: { className?: string }) => (
@@ -33,18 +36,21 @@ const Globe = ({ className }: { className?: string }) => (
 
 // --- 类型定义 ---
 interface CalendarEvent {
-  type: string;        // 事件类型/名称
-  country?: string;    // 国家代码 (宏观用)
-  code?: string;       // 股票代码 (个股用)
-  date: string;        // 日期
+  type: string;        
+  date: string;        
   
-  // 扩展字段 (个股日历用)
+  country?: string;
+  impact?: string;
+
+  code?: string;
   stockName?: string;
   sectorL1?: string;
   sectorL2?: string;
+  epsEstimate?: number | null; 
+  dividendValue?: number | null; 
+  currencySymbol?: string;
 }
 
-// 宏观 - 支持的国家列表
 const MACRO_COUNTRIES = [
   { code: 'US', label: 'United States', flag: '🇺🇸' },
   { code: 'CN', label: 'China', flag: '🇨🇳' },
@@ -56,27 +62,24 @@ const MACRO_COUNTRIES = [
   { code: 'CA', label: 'Canada', flag: '🇨🇦' },
 ];
 
-// 视图模式
 type ViewMode = 'macro' | 'stock';
 
 export default function CalendarPage() {
-  // --- 全局状态 ---
   const [currentDate, setCurrentDate] = useState(new Date()); 
-  const [viewMode, setViewMode] = useState<ViewMode>('macro'); // 默认宏观视图
+  const [viewMode, setViewMode] = useState<ViewMode>('macro');
   const [loading, setLoading] = useState(false);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [showJin10, setShowJin10] = useState(false);
 
-  // --- 筛选器状态 ---
+  // 筛选器
   const [selectedCountries, setSelectedCountries] = useState<string[]>(['US', 'CN']);
   const [sectorList, setSectorList] = useState<string[]>([]);
   const [selectedSector, setSelectedSector] = useState<string>('全部'); 
 
-  // 临时日期输入状态
   const [inputYear, setInputYear] = useState(currentDate.getFullYear());
   const [inputMonth, setInputMonth] = useState(currentDate.getMonth() + 1);
 
-  // 初始化：获取一级行业列表
+  // 初始化行业列表
   useEffect(() => {
     try {
       const sectors = getLevel1Sectors();
@@ -87,92 +90,175 @@ export default function CalendarPage() {
     }
   }, []);
 
-  // 同步日期输入框
+  // 同步日期输入
   useEffect(() => {
     setInputYear(currentDate.getFullYear());
     setInputMonth(currentDate.getMonth() + 1);
   }, [currentDate]);
 
-  // --- 核心：数据获取 ---
+  // --- 核心数据获取 ---
   useEffect(() => {
     let isMounted = true;
 
     const fetchData = async () => {
       setLoading(true);
-      setEvents([]); // 切换时先清空
+      setEvents([]); 
+
       try {
-        const year = currentDate.getFullYear();
-        const month = currentDate.getMonth() + 1;
-        const firstDay = `${year}-${String(month).padStart(2, '0')}-01`;
-        const lastDayDate = new Date(year, month, 0);
-        const lastDay = `${year}-${String(month).padStart(2, '0')}-${lastDayDate.getDate()}`;
+        if (viewMode === 'macro') {
+          // ========================
+          // 宏观逻辑 (API Route)
+          // ========================
+          const year = currentDate.getFullYear();
+          const month = currentDate.getMonth() + 1;
+          const firstDay = `${year}-${String(month).padStart(2, '0')}-01`;
+          const lastDayDate = new Date(year, month, 0);
+          const lastDay = `${year}-${String(month).padStart(2, '0')}-${lastDayDate.getDate()}`;
 
-        // 视图模式决定请求类型
-        const apiType = viewMode === 'macro' ? 'economics' : 'earnings';
+          const params = new URLSearchParams({
+            type: 'economics', 
+            from: firstDay,
+            to: lastDay
+          });
 
-        const params = new URLSearchParams({
-          type: apiType, 
-          from: firstDay,
-          to: lastDay
-        });
-
-        const response = await fetch(`/api/eod?${params.toString()}`);
-        
-        if (isMounted && response.ok) {
-          const rawData = await response.json();
-          // 确保是数组，防止 API 返回错误格式
-          const dataArray = Array.isArray(rawData) ? rawData : [];
-          
-          let processedData: CalendarEvent[] = [];
-
-          if (viewMode === 'macro') {
-            // --- 宏观数据处理 ---
-            // 修复：增加 item && 检查，防止空指针异常
-            processedData = dataArray
+          const response = await fetch(`/api/eod?${params.toString()}`);
+          if (isMounted && response.ok) {
+            const rawData = await response.json();
+            const dataArray = Array.isArray(rawData) ? rawData : [];
+            const processedData: CalendarEvent[] = dataArray
               .filter((item: any) => item && item.type && item.date && item.country)
               .map((item: any) => ({
                 type: item.type,
                 country: item.country,
-                date: item.date
+                date: item.date,
+                impact: item.importance || 'Low'
               }));
+            setEvents(processedData);
+          }
 
-          } else {
-            // --- 个股数据处理 (漏斗筛选) ---
-            processedData = dataArray.reduce((acc: CalendarEvent[], item: any) => {
-              // 1. 基础检查：增加 item 存在性检查
-              if (!item || !item.code || !item.date) return acc;
+        } else {
+          // ========================
+          // 个股逻辑 (改进版：使用 Calendar API 批量获取)
+          // ========================
+          
+          // 1. 获取本地股票池
+          const safeStockPool = Array.isArray(stockPoolData) ? stockPoolData : [];
+          if (safeStockPool.length === 0) {
+             if (isMounted) setLoading(false);
+             return;
+          }
 
-              // 确保 code 是字符串，防止数字类型导致 toUpperCase 报错
-              const upperCode = String(item.code).toUpperCase();
+          // 2. 根据“一级行业”预筛选
+          let targetStocks = safeStockPool;
+          if (selectedSector !== '全部') {
+            targetStocks = safeStockPool.filter((s: any) => s.sector_level_1 === selectedSector);
+          }
 
-              // -----------------------------------------------------------
-              // [关键修改] 个股日历特有的过滤规则：
-              // 剔除后缀为 .SS, .SZ, .T 的股票
-              // -----------------------------------------------------------
-              const forbiddenSuffixes = ['.SS', '.SZ', '.T'];
-              if (forbiddenSuffixes.some(suffix => upperCode.endsWith(suffix))) {
-                return acc;
-              }
+          // 3. 提取代码并修正后缀 (如 0700 -> 0700.HK)
+          const targetSymbols = targetStocks.map((item: any) => {
+            let sym = item.symbol || item.code || '';
+            sym = sym.trim().toUpperCase();
+            
+            // 港股处理：4-5位纯数字 -> 加 .HK
+            if (/^\d{4,5}$/.test(sym)) {
+              return `${sym}.HK`;
+            }
+            // 纯字母代码 (如 AAPL) -> 不加后缀 .US，直接使用
+            return sym;
+          }).filter((sym: string) => {
+            const s = sym.toUpperCase();
+            // 筛选条件：.US, .HK 或 纯无后缀代码 (默认为美股)
+            return s.endsWith('.US') || s.endsWith('.HK') || !s.includes('.');
+          });
 
-              // 2. 查池子 (调用纯净的 stockService)
-              const validStock = getStockDetail(upperCode);
+          if (targetSymbols.length === 0) {
+            if (isMounted) setLoading(false);
+            return;
+          }
 
-              if (validStock) {
-                // 3. 数据增强
-                acc.push({
-                  type: 'Q3 财报发布', // 示例，具体看API返回
-                  code: item.code,
-                  date: item.date,
-                  stockName: validStock.name,
-                  sectorL1: validStock.sector_level_1,
-                  sectorL2: validStock.sector_level_2,
+          // 4. 构建日期范围 (本月)
+          const y = currentDate.getFullYear();
+          const m = currentDate.getMonth() + 1;
+          const fromDate = `${y}-${String(m).padStart(2, '0')}-01`;
+          // 获取当月最后一天
+          const lastDayObj = new Date(y, m, 0);
+          const toDate = `${y}-${String(m).padStart(2, '0')}-${lastDayObj.getDate()}`;
+
+          // 5. 拼接 Symbol 字符串 (EODHD Calendar API 支持逗号分隔的 symbols 参数)
+          // 注意 URL 长度限制，如果股票非常多可能需要分批，这里假设股票池规模适中
+          const symbolsParam = targetSymbols.join(',');
+
+          // 6. 发起请求：同时获取 Earnings 和 Dividends Calendar
+          const earningsUrl = `https://eodhd.com/api/calendar/earnings?from=${fromDate}&to=${toDate}&symbols=${symbolsParam}&api_token=${API_TOKEN}&fmt=json`;
+          const dividendsUrl = `https://eodhd.com/api/calendar/dividends?from=${fromDate}&to=${toDate}&symbols=${symbolsParam}&api_token=${API_TOKEN}&fmt=json`;
+
+          const [earningsRes, dividendsRes] = await Promise.all([
+            fetch(earningsUrl).catch(() => null),
+            fetch(dividendsUrl).catch(() => null)
+          ]);
+
+          const foundEvents: CalendarEvent[] = [];
+
+          // 辅助函数：尝试匹配本地信息 (兼容带后缀和不带后缀)
+          const findLocalInfo = (apiCode: string) => {
+            // 尝试1: 直接匹配
+            let info = getStockDetail(apiCode) || {};
+            // 尝试2: 去掉后缀匹配 (针对 CRM.US -> CRM)
+            if (!info.name && apiCode.includes('.')) {
+                const shortCode = apiCode.split('.')[0];
+                const info2 = getStockDetail(shortCode);
+                if (info2 && info2.name) return info2;
+            }
+            return info;
+          };
+
+          // --- A. 处理财报数据 ---
+          if (earningsRes && earningsRes.ok) {
+            const eData = await earningsRes.json();
+            // Calendar API 返回的是 earnings 数组
+            if (Array.isArray(eData.earnings)) {
+                eData.earnings.forEach((item: any) => {
+                    // item 结构: { code: "AAPL.US", report_date: "2023-10-26", estimate: 1.39, ... }
+                    const localDetail = findLocalInfo(item.code);
+                    foundEvents.push({
+                        type: '财报发布',
+                        date: item.report_date,
+                        code: item.code,
+                        stockName: localDetail.name || item.code,
+                        sectorL1: localDetail.sector_level_1 || '其他',
+                        sectorL2: localDetail.sector_level_2 || '',
+                        epsEstimate: item.estimate,
+                        currencySymbol: item.currency_symbol || '$' // Calendar API 有时包含货币符号
+                    });
                 });
-              }
-              return acc;
-            }, []);
+            }
+          }
+
+          // --- B. 处理分红数据 ---
+          if (dividendsRes && dividendsRes.ok) {
+            const dData = await dividendsRes.json();
+            // Calendar API 返回的是 data 数组
+            if (Array.isArray(dData.data)) {
+                dData.data.forEach((item: any) => {
+                    // item 结构: { code: "AAPL.US", date: "2023-11-10", value: 0.24, ... } (date 通常为除权日)
+                    const localDetail = findLocalInfo(item.code);
+                    foundEvents.push({
+                        type: '除权派息',
+                        date: item.date, // Ex-Date
+                        code: item.code,
+                        stockName: localDetail.name || item.code,
+                        sectorL1: localDetail.sector_level_1 || '其他',
+                        sectorL2: localDetail.sector_level_2 || '',
+                        dividendValue: item.value,
+                        currencySymbol: item.currency_symbol || '$'
+                    });
+                });
+            }
           }
           
-          setEvents(processedData);
+          if (isMounted) {
+            setEvents(foundEvents);
+          }
         }
       } catch (error) {
         console.error("Failed to fetch data", error);
@@ -184,47 +270,29 @@ export default function CalendarPage() {
     fetchData();
 
     return () => { isMounted = false; };
-  }, [currentDate, viewMode]); 
+  }, [currentDate, viewMode, selectedSector]);
 
-  // --- 数据展示过滤 (UI层过滤) ---
+  // --- UI 数据展示过滤 ---
   const displayEvents = useMemo(() => {
-    if (!events) return []; // 防御性检查
-
+    if (!events) return []; 
     let filtered = events;
 
     if (viewMode === 'macro') {
       filtered = events.filter(e => e.country && selectedCountries.includes(e.country));
-    } else {
-      if (selectedSector !== '全部') {
-        filtered = events.filter(e => e.sectorL1 === selectedSector);
-      }
     }
     
-    // 按日期排序
+    // 按日期排序 (正序)
     return filtered.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  }, [events, viewMode, selectedCountries, selectedSector]);
-
-  // --- 辅助函数 ---
-  const formatListDate = (dateStr: string) => {
-    try {
-      const date = new Date(dateStr);
-      const m = (date.getMonth() + 1).toString().padStart(2, '0');
-      const d = date.getDate().toString().padStart(2, '0');
-      const w = date.toLocaleDateString('zh-CN', { weekday: 'short' });
-      return `${m}-${d} (${w})`;
-    } catch { return dateStr; }
-  };
+  }, [events, viewMode, selectedCountries]);
 
   const jumpToDate = (year: number, month: number) => {
     setCurrentDate(new Date(year, month - 1, 1));
   };
 
-  // --- 交互 Handler ---
   const toggleCountry = (code: string) => {
     setSelectedCountries(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
   };
 
-  // 颜色映射
   const getBadgeColor = (key: string) => {
     const colors = [
       'bg-blue-50 text-blue-700 border-blue-200',
@@ -232,23 +300,30 @@ export default function CalendarPage() {
       'bg-green-50 text-green-700 border-green-200',
       'bg-purple-50 text-purple-700 border-purple-200',
       'bg-orange-50 text-orange-700 border-orange-200',
-      'bg-indigo-50 text-indigo-700 border-indigo-200',
     ];
     let hash = 0;
     for (let i = 0; i < key.length; i++) hash = key.charCodeAt(i) + ((hash << 5) - hash);
     return colors[Math.abs(hash) % colors.length];
   };
 
+  const formatListDate = (dateStr: string) => {
+    try {
+      const date = new Date(dateStr);
+      // 手动修正时区偏移显示问题
+      // 简单做法：直接用 dateStr 解析
+      const [y, m, d] = dateStr.split('-');
+      const dateObj = new Date(parseInt(y), parseInt(m)-1, parseInt(d));
+      const w = dateObj.toLocaleDateString('zh-CN', { weekday: 'short' });
+      return `${parseInt(m)}-${parseInt(d)} (${w})`;
+    } catch { return dateStr; }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col">
-      
-      {/* --- 顶部控制区 --- */}
+      {/* 顶部控制区 */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-sm">
         <div className="px-6 py-4">
-          
-          {/* 第一行：标题、视图切换、时间控制 */}
           <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4">
-            
             <div className="flex flex-col gap-3">
               <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
                 <span className="bg-slate-900 text-white p-1 rounded">
@@ -256,33 +331,18 @@ export default function CalendarPage() {
                 </span> 
                 {viewMode === 'macro' ? '宏观经济日历' : '个股大事日历'}
               </h1>
-
-              {/* 视图切换 Segmented Control */}
               <div className="flex bg-slate-100 p-1 rounded-lg self-start">
-                <button
-                  onClick={() => setViewMode('macro')}
-                  className={`flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-md transition-all ${
-                    viewMode === 'macro' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                  }`}
-                >
-                  <Globe className="h-4 w-4" />
-                  宏观
+                <button onClick={() => setViewMode('macro')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-md transition-all ${viewMode === 'macro' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                  <Globe className="h-4 w-4" /> 宏观
                 </button>
-                <button
-                  onClick={() => setViewMode('stock')}
-                  className={`flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-md transition-all ${
-                    viewMode === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                  }`}
-                >
-                  <Building className="h-4 w-4" />
-                  个股
+                <button onClick={() => setViewMode('stock')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-md transition-all ${viewMode === 'stock' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                  <Building className="h-4 w-4" /> 个股
                 </button>
               </div>
             </div>
 
-            {/* 右侧控制 */}
             <div className="flex flex-col items-end gap-2 w-full md:w-auto">
-              {/* 年月选择 */}
+              {/* 年月选择器 */}
               <div className="flex items-center bg-slate-100 rounded-lg p-1 gap-1">
                 <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))} className="p-2 hover:bg-white rounded-md text-slate-600">
                   <ChevronLeft className="h-5 w-5" />
@@ -303,15 +363,12 @@ export default function CalendarPage() {
                 </button>
               </div>
 
-              {/* 金十按钮 */}
               <button onClick={() => setShowJin10(!showJin10)} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded transition-colors ${showJin10 ? 'bg-blue-600 text-white' : 'bg-white border border-slate-200'}`}>
-                <ExternalLink className="h-3 w-3" />
-                {showJin10 ? '关闭金十' : '金十数据'}
+                <ExternalLink className="h-3 w-3" /> {showJin10 ? '关闭金十' : '金十数据'}
               </button>
             </div>
           </div>
 
-          {/* 第二行：动态筛选器 */}
           <div className="flex flex-wrap gap-2 items-center min-h-[32px]">
             <div className="flex items-center text-xs text-slate-500 mr-2 shrink-0">
               <Filter className="h-3 w-3 mr-1" />
@@ -319,29 +376,15 @@ export default function CalendarPage() {
             </div>
 
             {viewMode === 'macro' ? (
-              // 宏观 - 国家筛选
               MACRO_COUNTRIES.map((country) => (
-                <button
-                  key={country.code}
-                  onClick={() => toggleCountry(country.code)}
-                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${
-                    selectedCountries.includes(country.code) ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
+                <button key={country.code} onClick={() => toggleCountry(country.code)} className={`px-3 py-1 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${selectedCountries.includes(country.code) ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}>
                   <span>{country.flag}</span> {country.code}
                 </button>
               ))
             ) : (
-              // 个股 - 行业筛选 (横向滚动)
               <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 flex-1 mask-right">
                 {sectorList.map((sector) => (
-                  <button
-                    key={sector}
-                    onClick={() => setSelectedSector(sector)}
-                    className={`px-3 py-1 rounded-full text-xs font-medium border transition-all whitespace-nowrap ${
-                      selectedSector === sector ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300 hover:text-blue-600'
-                    }`}
-                  >
+                  <button key={sector} onClick={() => setSelectedSector(sector)} className={`px-3 py-1 rounded-full text-xs font-medium border transition-all whitespace-nowrap ${selectedSector === sector ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300 hover:text-blue-600'}`}>
                     {sector}
                   </button>
                 ))}
@@ -351,7 +394,6 @@ export default function CalendarPage() {
         </div>
       </header>
 
-      {/* --- 金十 Iframe --- */}
       {showJin10 && (
         <div className="border-b border-slate-200 bg-slate-100 relative">
           <button onClick={() => setShowJin10(false)} className="absolute top-2 right-2 p-1 bg-white rounded-full shadow z-10"><X className="h-4 w-4 text-slate-500" /></button>
@@ -361,12 +403,11 @@ export default function CalendarPage() {
         </div>
       )}
 
-      {/* --- 表格主体 --- */}
       <div className="flex-1 p-6 max-w-5xl mx-auto w-full">
         {loading ? (
           <div className="flex flex-col items-center justify-center h-64 text-slate-400">
             <Loader2 className="h-8 w-8 animate-spin mb-2" />
-            <p>正在加载{viewMode === 'macro' ? '宏观' : '个股'}数据...</p>
+            <p>正在获取 {inputYear}年{inputMonth}月 数据...</p>
           </div>
         ) : (
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -374,20 +415,17 @@ export default function CalendarPage() {
               <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
                 <tr>
                   <th className="px-6 py-4 w-48 whitespace-nowrap">时间</th>
-                  <th className="px-6 py-4">{viewMode === 'macro' ? '国家 / 地区' : '股票 / 行业'}</th>
-                  <th className="px-6 py-4">事件详情</th>
+                  <th className="px-6 py-4">{viewMode === 'macro' ? '国家 / 地区' : '股票代码 / 名称'}</th>
+                  <th className="px-6 py-4">事件内容</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {displayEvents.length > 0 ? (
                   displayEvents.map((event, idx) => (
                     <tr key={idx} className="hover:bg-slate-50 transition-colors group">
-                      {/* 时间 */}
                       <td className="px-6 py-4 text-slate-600 font-mono font-medium whitespace-nowrap align-top">
                         {formatListDate(event.date)}
                       </td>
-                      
-                      {/* 标签列 (国家 或 股票信息) */}
                       <td className="px-6 py-4 align-top">
                         {viewMode === 'macro' ? (
                           <span className={`px-2 py-0.5 rounded text-[11px] font-bold border uppercase ${getBadgeColor(event.country || 'UN')}`}>
@@ -396,26 +434,50 @@ export default function CalendarPage() {
                         ) : (
                           <div className="flex flex-col gap-1">
                             <div className="flex items-center gap-2">
-                              <span className="font-bold text-slate-800">{event.code}</span>
-                              <span className="text-xs text-slate-500">{event.stockName}</span>
+                              <span className="font-bold text-slate-800 text-lg">{event.code}</span>
                             </div>
-                            <div className="flex gap-1">
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] border ${getBadgeColor(event.sectorL1 || '其他')}`}>
-                                {event.sectorL1}
-                              </span>
-                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-100 text-slate-500 border border-slate-200">
-                                {event.sectorL2}
-                              </span>
+                            <span className="text-xs text-slate-500 font-medium">{event.stockName}</span>
+                            <div className="flex gap-1 mt-1">
+                               <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-100 text-slate-500 border border-slate-200">
+                                  {event.sectorL1}
+                               </span>
+                               {event.sectorL2 && (
+                                 <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-50 text-slate-500 border border-slate-200">
+                                   {event.sectorL2}
+                                 </span>
+                               )}
                             </div>
                           </div>
                         )}
                       </td>
-
-                      {/* 事件详情列 */}
                       <td className="px-6 py-4 align-top">
-                        <span className="text-slate-900 font-medium group-hover:text-blue-700 transition-colors block">
-                          {event.type}
-                        </span>
+                        <div className="flex items-center gap-2 mb-1">
+                           <span className={`inline-block w-2 h-2 rounded-full ${event.type === '财报发布' ? 'bg-blue-500' : event.type === '除权派息' ? 'bg-green-500' : 'bg-gray-400'}`}></span>
+                           <span className="text-slate-900 font-medium text-base">{event.type}</span>
+                        </div>
+                        
+                        {/* 财报详情 */}
+                        {event.type === '财报发布' && (
+                          <div className="mt-1 text-xs text-slate-500 bg-slate-50 px-2 py-1 rounded inline-block">
+                             预计 EPS: <span className="font-bold text-slate-700">{event.epsEstimate !== undefined && event.epsEstimate !== null ? `${event.currencySymbol}${event.epsEstimate}` : '-'}</span>
+                          </div>
+                        )}
+
+                        {/* 分红详情 */}
+                        {event.type === '除权派息' && (
+                          <div className="mt-1 text-xs text-slate-500 bg-slate-50 px-2 py-1 rounded inline-block">
+                             派息: <span className="font-bold text-green-700">{event.dividendValue ? `${event.currencySymbol}${event.dividendValue}` : '-'}</span> / 股
+                          </div>
+                        )}
+                        
+                        {/* 宏观详情 */}
+                        {viewMode === 'macro' && event.impact && (
+                           <div className="mt-1">
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded border ${event.impact === 'High' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-slate-50 text-slate-500 border-slate-100'}`}>
+                                {event.impact} Impact
+                              </span>
+                           </div>
+                        )}
                       </td>
                     </tr>
                   ))
@@ -424,8 +486,12 @@ export default function CalendarPage() {
                     <td colSpan={3} className="px-6 py-16 text-center text-slate-400 bg-slate-50/50">
                       <div className="flex flex-col items-center">
                         <Filter className="h-8 w-8 mb-2 opacity-20" />
-                        <p>{viewMode === 'macro' ? '暂无相关宏观数据' : '您的股票池中今日无大事'}</p>
-                        {viewMode === 'stock' && <p className="text-xs mt-2 opacity-60">已自动过滤掉 .SS, .SZ, .T 后缀的股票</p>}
+                        <p>{viewMode === 'macro' ? '本月暂无宏观数据' : `本月 (${inputMonth}月) 暂无个股重大事件`}</p>
+                        {viewMode === 'stock' && events.length === 0 && (
+                          <p className="text-xs text-slate-400 mt-2 max-w-xs text-center">
+                            请尝试切换到下个月份 (如 2025年3月)。
+                          </p>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -434,10 +500,6 @@ export default function CalendarPage() {
             </table>
           </div>
         )}
-        
-        <div className="mt-6 text-xs text-slate-400 text-center">
-           {viewMode === 'stock' ? '数据仅包含您股票池中的标的。' : '显示的均为当地时间或 UTC 时间。'}
-        </div>
       </div>
     </div>
   );
