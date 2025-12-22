@@ -35,8 +35,10 @@ const navigation = [
     href: '#',
     current: false,
     children: [
+      { name: '衍生品测算', href: '/analysis/derivative-valuation' },
       { name: '供应链', href: '/analysis/supply-chain' },
-      { name: '同业估值比对', href: '/analysis/valuation' },
+      { name: '同业估值比对', href: '/analysis/valuation' }
+    ,
     ],
   },
   {
