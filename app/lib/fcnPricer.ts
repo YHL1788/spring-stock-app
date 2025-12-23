@@ -132,7 +132,15 @@ export interface CouponPeriod {
 }
 
 export interface FCNResult {
-  status: 'Active' | 'KnockedOut' | 'Expired';
+  // 定义 6 种明确状态
+  // A: Active (存续中)
+  // B: Settling_NoDelivery (结算中，无接货)
+  // C: Settling_Delivery (结算中，有接货)
+  // D: Terminated_Early (结束，提前敲出)
+  // E: Terminated_Normal (结束，正常无接货)
+  // F: Terminated_Delivery (结束，已接货)
+  status: 'Active' | 'Settling_NoDelivery' | 'Settling_Delivery' | 'Terminated_Early' | 'Terminated_Normal' | 'Terminated_Delivery';
+  
   dirty_price: number;
   clean_price: number;
   hist_coupons_paid: number;
@@ -151,7 +159,7 @@ export interface FCNResult {
   product_name_display?: string;
   market?: string;
   fx_rate?: number;
-  avg_period_coupon: number; // 新增：用于计算预期期数
+  avg_period_coupon: number; 
 }
 
 // --- 定价器类 ---
@@ -256,7 +264,6 @@ export class FCNPricer {
       if (!prices || prices.length === 0) return null;
 
       const targetStr = formatDate(dateObj);
-      
       const exact = prices.find(p => p.date === targetStr);
       if (exact) return exact.close;
 
@@ -270,12 +277,11 @@ export class FCNPricer {
       return null;
   }
 
+  // 基础生命周期检查（仅判断敲出事件和时间）
   check_lifecycle_status(): { status: 'Active' | 'KnockedOut' | 'Expired', msg: string, item?: CouponPeriod } {
-    const last_payment = this.coupon_schedule[this.coupon_schedule.length - 1].payment_date;
-    if (this.val_date > last_payment) {
-      return { status: 'Expired', msg: '已自然到期 (Maturity Reached)' };
-    }
-
+    const last_obs_date = this.coupon_schedule[this.coupon_schedule.length - 1].obs_date;
+    
+    // 1. 检查历史敲出
     if (this.params.hist_prices) {
         const past_obs = this.coupon_schedule.filter(item => item.obs_date <= this.val_date);
         
@@ -298,17 +304,19 @@ export class FCNPricer {
             }
         }
     }
+    
+    // 2. 如果未敲出，但已过最后观察日，则为到期 (Expired)
+    // 修正：只有当今天严格大于最后观察日时，才算过期。如果今天 == 最后观察日，仍然视为 Active (进行日内观察)
+    if (this.val_date > last_obs_date) {
+        return { status: 'Expired', msg: '已自然到期 (Maturity Reached)' };
+    }
+
     return { status: 'Active', msg: '存续中' };
   }
 
-  // 计算应计利息 (Accrued Interest)
   calculate_accrued_interest(): { amount: number, days: number } {
-      if (this.val_date < this.trade_date) {
-          return { amount: 0.0, days: 0 };
-      }
+      if (this.val_date < this.trade_date) return { amount: 0.0, days: 0 };
       
-      // 找到当前所在的 coupon period
-      // Python 逻辑: period["start_date"] <= self.val_date < period["obs_date"]
       let current_period: CouponPeriod | null = null;
       for (const period of this.coupon_schedule) {
           if (period.start_date <= this.val_date && this.val_date < period.obs_date) {
@@ -323,7 +331,6 @@ export class FCNPricer {
           const accrued_interest = current_period.full_coupon * fraction;
           return { amount: accrued_interest, days: accrued_days };
       }
-      
       return { amount: 0.0, days: 0 };
   }
 
@@ -336,9 +343,13 @@ export class FCNPricer {
     for (const period of this.coupon_schedule) {
       if (period.obs_date > cutoff_date) continue;
 
-      if (period.payment_date <= this.val_date) {
+      // 修正逻辑：必须严格小于今天才算已实现 (Realized)。今天等于支付日时，通常还没到账，算待付 (Pending)
+      // 如果要求支付日当天就算 Realized，则用 <=。
+      // 根据您的最新指示：寻找一共有多少个支付日是小于今日日期的。
+      if (period.payment_date < this.val_date) {
         realized += period.full_coupon;
-      } else if (period.obs_date <= this.val_date && this.val_date < period.payment_date) {
+      } else if (period.obs_date <= this.val_date && this.val_date <= period.payment_date) {
+        // 在结算等待期内 (含支付日当天)，归为待付
         pending += period.full_coupon;
       }
     }
@@ -350,39 +361,167 @@ export class FCNPricer {
     const { realized, pending } = this.calculate_coupons_status(statusObj.item);
     const avg_period_coupon = this.coupon_schedule.length > 0 ? this.coupon_schedule[0].full_coupon : 1.0;
     
-    // 如果非存续，返回快照
-    if (statusObj.status !== 'Active') {
-        let p_pv = 0;
-        let c_pv = 0; 
+    // --- 状态分类处理 (A, B, C, D, E, F) ---
+
+    // 1. 处理非 Active 状态 (KnockedOut / Expired) -> 映射到 B, C, D, E, F
+    if (statusObj.status === 'KnockedOut' || statusObj.status === 'Expired') {
+        const eventItem = statusObj.item || this.coupon_schedule[this.coupon_schedule.length - 1];
+        const settleDate = eventItem.payment_date;
+        const obsDate = eventItem.obs_date;
         
-        if (statusObj.status === 'KnockedOut' && statusObj.item) {
-             if (this.val_date < statusObj.item.payment_date) {
-                 p_pv = this.denom;
-             }
+        // 判断是否接货 (仅 Expired 需判断，KnockedOut 一定不接货)
+        let is_delivery = false;
+        let delivery_val_unit = 0; // 单张面值的接货市值
+        let worst_idx = -1;
+        let worst_pct = 1.0;
+
+        if (statusObj.status === 'KnockedOut') {
+            is_delivery = false;
+        } else {
+            // Expired: Check Knock-In
+            // 使用当前价格 S_curr 作为最终价格进行判断
+            const pct_perf = this.S_curr.map((p, i) => p / this.S0[i]);
+            worst_pct = pct_perf[0];
+            worst_idx = 0;
+            pct_perf.forEach((p, i) => { if (p < worst_pct) { worst_pct = p; worst_idx = i; } });
+
+            if (worst_pct < this.K_pct) {
+                is_delivery = true;
+                const strike_price = this.S0[worst_idx] * this.K_pct;
+                const num_shares_unit = this.denom / strike_price; // 单张接货股数
+                delivery_val_unit = num_shares_unit * this.S_curr[worst_idx]; // 单张接货市值
+            }
         }
-        
-        // 结束状态 dirty = pending (如有) + principal
-        return {
-            status: statusObj.status,
-            dirty_price: p_pv + pending, 
-            clean_price: 0,
-            hist_coupons_paid: realized,
-            pending_coupons_pv: pending,
-            future_coupons_pv: 0,
-            principal_pv: p_pv,
-            implied_loss_pv: 0,
-            early_redemption_prob: 0, autocall_prob: 0, loss_prob: 0,
-            loss_attribution: [], autocall_attribution: [],
-            exposure_value_avg: [], exposure_shares_avg: [],
-            settlement_info: { desc: statusObj.msg, type: statusObj.status },
-            product_name_display: this.params.product_name,
-            market: this.params.market,
-            fx_rate: this.params.fx_rate,
-            avg_period_coupon // 返回单期票息用于计算预期期数
-        };
+
+        // --- 时间逻辑判断 ---
+
+        // 场景: 结算中 (Settling): 观察日 < 今天 <= 结算日
+        if (this.val_date > obsDate && this.val_date <= settleDate) {
+            
+            // 子状态 B: 结算中，无接货 (提前敲出 或 到期不接货)
+            if (!is_delivery) {
+                const p_pv = this.denom; // 面值
+                const dirty = p_pv + pending; // 现价 = 面值 + 待付
+                // 全价 = 现价 + 已付 = 面值 + 待付 + 已付 (符合逻辑)
+                // 未实现损益 = 待付票息
+                const implied_loss = 0;
+
+                return {
+                    status: 'Settling_NoDelivery',
+                    dirty_price: dirty,
+                    clean_price: dirty, // 结算期 Clean = Dirty
+                    hist_coupons_paid: realized,
+                    pending_coupons_pv: pending,
+                    future_coupons_pv: 0,
+                    principal_pv: p_pv,
+                    implied_loss_pv: implied_loss, // 0
+                    early_redemption_prob: statusObj.status === 'KnockedOut' ? 1 : 0,
+                    autocall_prob: statusObj.status === 'KnockedOut' ? 1 : 0,
+                    loss_prob: 0,
+                    loss_attribution: [], autocall_attribution: [],
+                    exposure_value_avg: [], exposure_shares_avg: [],
+                    settlement_info: { desc: statusObj.status === 'KnockedOut' ? "提前敲出 (等待结算)" : "自然到期 (无接货, 等待结算)" },
+                    product_name_display: this.params.product_name,
+                    market: this.params.market,
+                    fx_rate: this.params.fx_rate,
+                    avg_period_coupon
+                };
+            }
+            
+            // 子状态 C: 结算中，有接货
+            else {
+                const tickerName = this.params.ticker_name?.[worst_idx] || this.params.tickers[worst_idx];
+                const strike_price = this.S0[worst_idx] * this.K_pct;
+                const num_shares_total = this.params.total_notional / strike_price; // 总名义本金下的接货股数 (用于展示)
+
+                // 计算
+                const p_pv = delivery_val_unit; // 接货市值 (单张)
+                const dirty = p_pv + pending;   // 现价 = 接货市值 + 待付
+                // 全价 = 现价 + 已付
+                // 未实现损益 = 待付 + (接货市值 - 面值)  <-- 这是一个负数(亏损)
+                const implied_loss = this.denom - delivery_val_unit; // 亏损绝对值
+
+                return {
+                    status: 'Settling_Delivery',
+                    dirty_price: dirty,
+                    clean_price: dirty,
+                    hist_coupons_paid: realized,
+                    pending_coupons_pv: pending,
+                    future_coupons_pv: 0,
+                    principal_pv: p_pv, // 接货市值
+                    implied_loss_pv: implied_loss,
+                    early_redemption_prob: 0,
+                    autocall_prob: 0,
+                    loss_prob: 1,
+                    loss_attribution: [], autocall_attribution: [],
+                    exposure_value_avg: [], exposure_shares_avg: [],
+                    settlement_info: { desc: `到期接货 ${tickerName} ${num_shares_total.toFixed(0)}股 (等待结算)` },
+                    product_name_display: this.params.product_name,
+                    market: this.params.market,
+                    fx_rate: this.params.fx_rate,
+                    avg_period_coupon
+                };
+            }
+        }
+
+        // 场景: 已结束 (Terminated): 今天 > 结算日
+        else if (this.val_date > settleDate) {
+            
+            // 通用 Terminated 属性
+            const baseTerminated = {
+                dirty_price: 0,
+                clean_price: 0,
+                hist_coupons_paid: realized, // 全价 = 已实现票息
+                pending_coupons_pv: 0,
+                future_coupons_pv: 0,
+                principal_pv: 0, // 本金归0
+                implied_loss_pv: 0,
+                loss_attribution: [], autocall_attribution: [],
+                exposure_value_avg: [], exposure_shares_avg: [],
+                product_name_display: this.params.product_name,
+                market: this.params.market,
+                fx_rate: this.params.fx_rate,
+                avg_period_coupon
+            };
+
+            // 子状态 D: 提前敲出 (已结束)
+            if (statusObj.status === 'KnockedOut') {
+                return {
+                    ...baseTerminated,
+                    status: 'Terminated_Early',
+                    early_redemption_prob: 1, autocall_prob: 1, loss_prob: 0,
+                    settlement_info: { desc: "提前敲出 (已结束)" }
+                };
+            }
+            // 子状态 E: 正常结束 (无接货)
+            else if (!is_delivery) {
+                return {
+                    ...baseTerminated,
+                    status: 'Terminated_Normal',
+                    early_redemption_prob: 0, autocall_prob: 0, loss_prob: 0,
+                    settlement_info: { desc: "自然到期 (无接货, 已结束)" }
+                };
+            }
+            // 子状态 F: 结束已接货
+            else {
+                const tickerName = this.params.ticker_name?.[worst_idx] || this.params.tickers[worst_idx];
+                const strike_price = this.S0[worst_idx] * this.K_pct;
+                const num_shares_total = this.params.total_notional / strike_price;
+                
+                return {
+                    ...baseTerminated,
+                    status: 'Terminated_Delivery',
+                    early_redemption_prob: 0, autocall_prob: 0, loss_prob: 1,
+                    settlement_info: { desc: `到期接货 ${tickerName} ${num_shares_total.toFixed(0)}股 (已结束)` }
+                };
+            }
+        }
     }
 
-    // 计算应计利息 (仅 Active 时)
+    // --- 子状态 A: Active 存续中 ---
+    // 条件：未触发 check_lifecycle_status 的 KnockedOut 或 Expired
+    
+    // 计算应计利息
     const { amount: accrued_int } = this.calculate_accrued_interest();
 
     // 确定未来观察日
@@ -394,22 +533,55 @@ export class FCNPricer {
     const T_obs = future_obs_indices.map(idx => differenceInDays(this.obs_dates[idx], this.val_date) / 365.25);
 
     if (T_obs.length === 0) {
-        // Active 但无未来观察点 (Waiting for payment)
-        const dirty = this.denom + pending;
-        return {
-            status: 'Active',
-            dirty_price: dirty, 
-            clean_price: dirty - accrued_int - pending,
-            hist_coupons_paid: realized, pending_coupons_pv: pending,
-            future_coupons_pv: 0, principal_pv: this.denom, implied_loss_pv: 0,
-            early_redemption_prob: 0, autocall_prob: 0, loss_prob: 0,
-            loss_attribution: [], autocall_attribution: [],
-            exposure_value_avg: [], exposure_shares_avg: [],
-            product_name_display: this.params.product_name,
-            market: this.params.market,
-            fx_rate: this.params.fx_rate,
-            avg_period_coupon
-        };
+        // 边界情况：Active 但无未来观察点 (例如在最后一个观察日当天或之后，但 check_lifecycle_status 没判 Expired)
+        // 这种情况应该进入 Settling 逻辑。如果代码跑到这里，说明 val_date <= last_obs_date 但 > 所有 future_obs_dates
+        // 这通常意味着 val_date 就是 last_obs_date。此时应该用 S_curr 判断是否敲入，进入 Settling_... 状态
+        // 为了复用代码，这里做个简单递归或直接计算
+        // 简单处理：视为“结算中，无接货”的默认态（假设尚未确定），或者提示“观察日当日”
+        
+        // 这里做一个严谨的修正：如果 T_obs 为空，说明今天是最后一个观察日（或更晚）。
+        // 我们应该根据 S_curr 判断是否敲入，并返回 Settling 状态
+        
+        // 复用上面的判断逻辑
+        const pct_perf = this.S_curr.map((p, i) => p / this.S0[i]);
+        let worst_pct = pct_perf[0];
+        let worst_idx = 0;
+        pct_perf.forEach((p, i) => { if (p < worst_pct) { worst_pct = p; worst_idx = i; } });
+
+        const is_knock_in = worst_pct < this.K_pct;
+        
+        if (!is_knock_in) {
+            const p_pv = this.denom;
+            const dirty = p_pv + pending;
+            return {
+                status: 'Settling_NoDelivery',
+                dirty_price: dirty, clean_price: dirty - accrued_int, // 此时 clean 可能无意义
+                hist_coupons_paid: realized, pending_coupons_pv: pending, future_coupons_pv: 0,
+                principal_pv: p_pv, implied_loss_pv: 0,
+                early_redemption_prob: 0, autocall_prob: 0, loss_prob: 0,
+                loss_attribution: [], autocall_attribution: [], exposure_value_avg: [], exposure_shares_avg: [],
+                settlement_info: { desc: "观察日当日 (无接货)" },
+                product_name_display: this.params.product_name, market: this.params.market, fx_rate: this.params.fx_rate, avg_period_coupon
+            };
+        } else {
+             const tickerName = this.params.ticker_name?.[worst_idx] || this.params.tickers[worst_idx];
+             const strike_price = this.S0[worst_idx] * this.K_pct;
+             const num_shares_total = this.params.total_notional / strike_price;
+             const num_shares_unit = this.denom / strike_price;
+             const delivery_val = num_shares_unit * this.S_curr[worst_idx];
+             const dirty = delivery_val + pending;
+             
+             return {
+                status: 'Settling_Delivery',
+                dirty_price: dirty, clean_price: dirty,
+                hist_coupons_paid: realized, pending_coupons_pv: pending, future_coupons_pv: 0,
+                principal_pv: delivery_val, implied_loss_pv: this.denom - delivery_val,
+                early_redemption_prob: 0, autocall_prob: 0, loss_prob: 1,
+                loss_attribution: [], autocall_attribution: [], exposure_value_avg: [], exposure_shares_avg: [],
+                settlement_info: { desc: `观察日当日 (拟接货 ${tickerName} ${num_shares_total.toFixed(0)}股)` },
+                product_name_display: this.params.product_name, market: this.params.market, fx_rate: this.params.fx_rate, avg_period_coupon
+             };
+        }
     }
 
     const n_sims = this.params.n_sims || 10000;
@@ -455,10 +627,7 @@ export class FCNPricer {
         let path_c_pv = 0;
         let path_p_pv = 0;
 
-        // 生成随机数 Z_uncorr (n_assets x n_steps)
         const Z_uncorr = new Array(n_assets).fill(0).map(() => new Array(n_steps).fill(0).map(() => randomStandardNormal(this.rng)));
-        
-        // 应用相关性
         const Z_corr_T = new Array(n_steps).fill(0).map((_, t) => {
            const Z_t_uncorr = Z_uncorr.map(row => row[t]); 
            return this.L.map(row => row.reduce((sum, val, k) => sum + val * Z_t_uncorr[k], 0));
@@ -472,7 +641,6 @@ export class FCNPricer {
             const dt = curr_T - prev_T;
             const obs_idx = future_obs_indices[t_idx];
             
-            // 欧拉-丸山步进
             current_prices = current_prices.map((S, asset_i) => {
                 const drift = (this.r - 0.5 * Math.pow(this.sigma[asset_i], 2)) * dt;
                 const diffusion = this.sigma[asset_i] * Math.sqrt(dt) * Z_corr_T[t_idx][asset_i];
@@ -480,7 +648,6 @@ export class FCNPricer {
             });
             prev_T = curr_T;
 
-            // 扣除分红
             if (future_dividends_map[t_idx]) {
                 for (const [asset_idx_str, amount] of Object.entries(future_dividends_map[t_idx])) {
                     const asset_idx = Number(asset_idx_str);
