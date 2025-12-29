@@ -92,6 +92,8 @@ function computeCholesky(matrix: number[][]): number[][] {
 export interface FCNParams {
   product_name?: string;
   broker_name?: string;
+  account_name?: string; // 新增：账户名称
+  executor?: string; // 新增：执行人
   total_notional: number;
   denomination: number;
   tickers: string[];
@@ -133,12 +135,6 @@ export interface CouponPeriod {
 
 export interface FCNResult {
   // 定义 6 种明确状态
-  // A: Active (存续中)
-  // B: Settling_NoDelivery (结算中，无接货)
-  // C: Settling_Delivery (结算中，有接货)
-  // D: Terminated_Early (结束，提前敲出)
-  // E: Terminated_Normal (结束，正常无接货)
-  // F: Terminated_Delivery (结束，已接货)
   status: 'Active' | 'Settling_NoDelivery' | 'Settling_Delivery' | 'Terminated_Early' | 'Terminated_Normal' | 'Terminated_Delivery';
   
   dirty_price: number;
@@ -211,7 +207,7 @@ export class FCNPricer {
     this.L = choleskyDecomposition(corr);
 
     this.trade_date = parseISO(params.trade_date);
-    // 强制 val_date 为午夜，与 Python 的 datetime.strptime 对齐
+    // 强制 val_date 为午夜
     this.val_date = val_date_str ? parseISO(val_date_str) : normalizeDate(new Date()); 
     
     this.obs_dates = params.obs_dates.map(d => parseISO(d));
@@ -277,7 +273,7 @@ export class FCNPricer {
       return null;
   }
 
-  // 基础生命周期检查（仅判断敲出事件和时间）
+  // 基础生命周期检查
   check_lifecycle_status(): { status: 'Active' | 'KnockedOut' | 'Expired', msg: string, item?: CouponPeriod } {
     const last_obs_date = this.coupon_schedule[this.coupon_schedule.length - 1].obs_date;
     
@@ -305,8 +301,7 @@ export class FCNPricer {
         }
     }
     
-    // 2. 如果未敲出，但已过最后观察日，则为到期 (Expired)
-    // 修正：只有当今天严格大于最后观察日时，才算过期。如果今天 == 最后观察日，仍然视为 Active (进行日内观察)
+    // 2. 如果未敲出，但已过最后观察日，则为到期
     if (this.val_date > last_obs_date) {
         return { status: 'Expired', msg: '已自然到期 (Maturity Reached)' };
     }
@@ -343,13 +338,9 @@ export class FCNPricer {
     for (const period of this.coupon_schedule) {
       if (period.obs_date > cutoff_date) continue;
 
-      // 修正逻辑：必须严格小于今天才算已实现 (Realized)。今天等于支付日时，通常还没到账，算待付 (Pending)
-      // 如果要求支付日当天就算 Realized，则用 <=。
-      // 根据您的最新指示：寻找一共有多少个支付日是小于今日日期的。
       if (period.payment_date < this.val_date) {
         realized += period.full_coupon;
       } else if (period.obs_date <= this.val_date && this.val_date <= period.payment_date) {
-        // 在结算等待期内 (含支付日当天)，归为待付
         pending += period.full_coupon;
       }
     }
@@ -363,15 +354,14 @@ export class FCNPricer {
     
     // --- 状态分类处理 (A, B, C, D, E, F) ---
 
-    // 1. 处理非 Active 状态 (KnockedOut / Expired) -> 映射到 B, C, D, E, F
+    // 1. 处理非 Active 状态 (KnockedOut / Expired)
     if (statusObj.status === 'KnockedOut' || statusObj.status === 'Expired') {
         const eventItem = statusObj.item || this.coupon_schedule[this.coupon_schedule.length - 1];
         const settleDate = eventItem.payment_date;
         const obsDate = eventItem.obs_date;
         
-        // 判断是否接货 (仅 Expired 需判断，KnockedOut 一定不接货)
         let is_delivery = false;
-        let delivery_val_unit = 0; // 单张面值的接货市值
+        let delivery_val_unit = 0; 
         let worst_idx = -1;
         let worst_pct = 1.0;
 
@@ -379,7 +369,6 @@ export class FCNPricer {
             is_delivery = false;
         } else {
             // Expired: Check Knock-In
-            // 使用当前价格 S_curr 作为最终价格进行判断
             const pct_perf = this.S_curr.map((p, i) => p / this.S0[i]);
             worst_pct = pct_perf[0];
             worst_idx = 0;
@@ -388,8 +377,8 @@ export class FCNPricer {
             if (worst_pct < this.K_pct) {
                 is_delivery = true;
                 const strike_price = this.S0[worst_idx] * this.K_pct;
-                const num_shares_unit = this.denom / strike_price; // 单张接货股数
-                delivery_val_unit = num_shares_unit * this.S_curr[worst_idx]; // 单张接货市值
+                const num_shares_unit = this.denom / strike_price; 
+                delivery_val_unit = num_shares_unit * this.S_curr[worst_idx]; 
             }
         }
 
@@ -398,23 +387,20 @@ export class FCNPricer {
         // 场景: 结算中 (Settling): 观察日 < 今天 <= 结算日
         if (this.val_date > obsDate && this.val_date <= settleDate) {
             
-            // 子状态 B: 结算中，无接货 (提前敲出 或 到期不接货)
+            // 子状态 B: 结算中，无接货
             if (!is_delivery) {
-                const p_pv = this.denom; // 面值
-                const dirty = p_pv + pending; // 现价 = 面值 + 待付
-                // 全价 = 现价 + 已付 = 面值 + 待付 + 已付 (符合逻辑)
-                // 未实现损益 = 待付票息
-                const implied_loss = 0;
-
+                const p_pv = this.denom;
+                const dirty = p_pv + pending; 
+                
                 return {
                     status: 'Settling_NoDelivery',
                     dirty_price: dirty,
-                    clean_price: dirty, // 结算期 Clean = Dirty
+                    clean_price: dirty,
                     hist_coupons_paid: realized,
                     pending_coupons_pv: pending,
                     future_coupons_pv: 0,
                     principal_pv: p_pv,
-                    implied_loss_pv: implied_loss, // 0
+                    implied_loss_pv: 0,
                     early_redemption_prob: statusObj.status === 'KnockedOut' ? 1 : 0,
                     autocall_prob: statusObj.status === 'KnockedOut' ? 1 : 0,
                     loss_prob: 0,
@@ -432,14 +418,20 @@ export class FCNPricer {
             else {
                 const tickerName = this.params.ticker_name?.[worst_idx] || this.params.tickers[worst_idx];
                 const strike_price = this.S0[worst_idx] * this.K_pct;
-                const num_shares_total = this.params.total_notional / strike_price; // 总名义本金下的接货股数 (用于展示)
+                const num_shares_total = this.params.total_notional / strike_price; 
+                const num_shares_unit = this.denom / strike_price;
 
-                // 计算
-                const p_pv = delivery_val_unit; // 接货市值 (单张)
-                const dirty = p_pv + pending;   // 现价 = 接货市值 + 待付
-                // 全价 = 现价 + 已付
-                // 未实现损益 = 待付 + (接货市值 - 面值)  <-- 这是一个负数(亏损)
-                const implied_loss = this.denom - delivery_val_unit; // 亏损绝对值
+                const p_pv = delivery_val_unit;
+                const dirty = p_pv + pending;   
+                const implied_loss = this.denom - delivery_val_unit;
+
+                // 填充归因数据以便前端展示
+                const loss_attribution = new Array(this.S0.length).fill(0);
+                loss_attribution[worst_idx] = 1.0;
+                const exposure_shares_avg = new Array(this.S0.length).fill(0);
+                exposure_shares_avg[worst_idx] = num_shares_unit;
+                const exposure_value_avg = new Array(this.S0.length).fill(0);
+                exposure_value_avg[worst_idx] = num_shares_unit * this.S_curr[worst_idx];
 
                 return {
                     status: 'Settling_Delivery',
@@ -448,13 +440,15 @@ export class FCNPricer {
                     hist_coupons_paid: realized,
                     pending_coupons_pv: pending,
                     future_coupons_pv: 0,
-                    principal_pv: p_pv, // 接货市值
+                    principal_pv: p_pv,
                     implied_loss_pv: implied_loss,
                     early_redemption_prob: 0,
                     autocall_prob: 0,
                     loss_prob: 1,
-                    loss_attribution: [], autocall_attribution: [],
-                    exposure_value_avg: [], exposure_shares_avg: [],
+                    loss_attribution, 
+                    autocall_attribution: [],
+                    exposure_value_avg, 
+                    exposure_shares_avg,
                     settlement_info: { desc: `到期接货 ${tickerName} ${num_shares_total.toFixed(0)}股 (等待结算)` },
                     product_name_display: this.params.product_name,
                     market: this.params.market,
@@ -467,14 +461,13 @@ export class FCNPricer {
         // 场景: 已结束 (Terminated): 今天 > 结算日
         else if (this.val_date > settleDate) {
             
-            // 通用 Terminated 属性
             const baseTerminated = {
                 dirty_price: 0,
                 clean_price: 0,
-                hist_coupons_paid: realized, // 全价 = 已实现票息
+                hist_coupons_paid: realized,
                 pending_coupons_pv: 0,
                 future_coupons_pv: 0,
-                principal_pv: 0, // 本金归0
+                principal_pv: 0,
                 implied_loss_pv: 0,
                 loss_attribution: [], autocall_attribution: [],
                 exposure_value_avg: [], exposure_shares_avg: [],
@@ -507,24 +500,33 @@ export class FCNPricer {
                 const tickerName = this.params.ticker_name?.[worst_idx] || this.params.tickers[worst_idx];
                 const strike_price = this.S0[worst_idx] * this.K_pct;
                 const num_shares_total = this.params.total_notional / strike_price;
-                
+                const num_shares_unit = this.denom / strike_price;
+                const desc = `到期接货 ${tickerName} ${num_shares_total.toFixed(0)}股 (已结束)`;
+
+                // 同样需要填充归因数据，以便后续生成交易记录
+                const loss_attribution = new Array(this.S0.length).fill(0);
+                loss_attribution[worst_idx] = 1.0;
+                const exposure_shares_avg = new Array(this.S0.length).fill(0);
+                exposure_shares_avg[worst_idx] = num_shares_unit;
+                const exposure_value_avg = new Array(this.S0.length).fill(0);
+                exposure_value_avg[worst_idx] = num_shares_unit * this.S_curr[worst_idx];
+
                 return {
                     ...baseTerminated,
                     status: 'Terminated_Delivery',
                     early_redemption_prob: 0, autocall_prob: 0, loss_prob: 1,
-                    settlement_info: { desc: `到期接货 ${tickerName} ${num_shares_total.toFixed(0)}股 (已结束)` }
+                    loss_attribution, // 填充，供 page.tsx 使用
+                    exposure_shares_avg,
+                    exposure_value_avg,
+                    settlement_info: { desc }
                 };
             }
         }
     }
 
     // --- 子状态 A: Active 存续中 ---
-    // 条件：未触发 check_lifecycle_status 的 KnockedOut 或 Expired
-    
-    // 计算应计利息
     const { amount: accrued_int } = this.calculate_accrued_interest();
 
-    // 确定未来观察日
     const future_obs_indices = this.obs_dates
       .map((d, i) => ({ date: d, idx: i }))
       .filter(item => item.date > this.val_date)
@@ -533,16 +535,6 @@ export class FCNPricer {
     const T_obs = future_obs_indices.map(idx => differenceInDays(this.obs_dates[idx], this.val_date) / 365.25);
 
     if (T_obs.length === 0) {
-        // 边界情况：Active 但无未来观察点 (例如在最后一个观察日当天或之后，但 check_lifecycle_status 没判 Expired)
-        // 这种情况应该进入 Settling 逻辑。如果代码跑到这里，说明 val_date <= last_obs_date 但 > 所有 future_obs_dates
-        // 这通常意味着 val_date 就是 last_obs_date。此时应该用 S_curr 判断是否敲入，进入 Settling_... 状态
-        // 为了复用代码，这里做个简单递归或直接计算
-        // 简单处理：视为“结算中，无接货”的默认态（假设尚未确定），或者提示“观察日当日”
-        
-        // 这里做一个严谨的修正：如果 T_obs 为空，说明今天是最后一个观察日（或更晚）。
-        // 我们应该根据 S_curr 判断是否敲入，并返回 Settling 状态
-        
-        // 复用上面的判断逻辑
         const pct_perf = this.S_curr.map((p, i) => p / this.S0[i]);
         let worst_pct = pct_perf[0];
         let worst_idx = 0;
@@ -555,7 +547,7 @@ export class FCNPricer {
             const dirty = p_pv + pending;
             return {
                 status: 'Settling_NoDelivery',
-                dirty_price: dirty, clean_price: dirty - accrued_int, // 此时 clean 可能无意义
+                dirty_price: dirty, clean_price: dirty - accrued_int, 
                 hist_coupons_paid: realized, pending_coupons_pv: pending, future_coupons_pv: 0,
                 principal_pv: p_pv, implied_loss_pv: 0,
                 early_redemption_prob: 0, autocall_prob: 0, loss_prob: 0,
@@ -571,13 +563,22 @@ export class FCNPricer {
              const delivery_val = num_shares_unit * this.S_curr[worst_idx];
              const dirty = delivery_val + pending;
              
+             // 填充归因
+             const loss_attribution = new Array(this.S0.length).fill(0);
+             loss_attribution[worst_idx] = 1.0;
+             const exposure_shares_avg = new Array(this.S0.length).fill(0);
+             exposure_shares_avg[worst_idx] = num_shares_unit;
+             const exposure_value_avg = new Array(this.S0.length).fill(0);
+             exposure_value_avg[worst_idx] = delivery_val;
+
              return {
                 status: 'Settling_Delivery',
                 dirty_price: dirty, clean_price: dirty,
                 hist_coupons_paid: realized, pending_coupons_pv: pending, future_coupons_pv: 0,
                 principal_pv: delivery_val, implied_loss_pv: this.denom - delivery_val,
                 early_redemption_prob: 0, autocall_prob: 0, loss_prob: 1,
-                loss_attribution: [], autocall_attribution: [], exposure_value_avg: [], exposure_shares_avg: [],
+                loss_attribution, autocall_attribution: [], 
+                exposure_value_avg, exposure_shares_avg,
                 settlement_info: { desc: `观察日当日 (拟接货 ${tickerName} ${num_shares_total.toFixed(0)}股)` },
                 product_name_display: this.params.product_name, market: this.params.market, fx_rate: this.params.fx_rate, avg_period_coupon
              };
@@ -597,7 +598,6 @@ export class FCNPricer {
     const exposure_shares_sum = new Array(n_assets).fill(0);
     const autocall_per_period = new Array(n_steps).fill(0);
 
-    // 预处理分红
     const future_dividends_map: { [step_idx: number]: { [asset_idx: number]: number } } = {};
     if (this.params.discrete_dividends) {
         let prev_sim_date = this.val_date;
@@ -621,7 +621,6 @@ export class FCNPricer {
         });
     }
 
-    // 蒙特卡洛循环
     for (let sim = 0; sim < n_sims; sim++) {
         let terminated = false;
         let path_c_pv = 0;
@@ -704,10 +703,8 @@ export class FCNPricer {
     const avg_future_coupon_pv = total_future_coupon_pv / n_sims;
     const avg_principal_pv = total_principal_pv / n_sims;
     
-    // Dirty Price = Future Coupon PV + Principal PV + Pending Coupon
     const avg_dirty_price = avg_future_coupon_pv + avg_principal_pv + pending;
     
-    // Clean Price = Dirty Price - Accrued Interest - Pending Coupon
     const avg_clean_price = avg_dirty_price - accrued_int - pending;
     
     let early_redemption_count = 0;
@@ -720,8 +717,9 @@ export class FCNPricer {
 
     const period_count = this.obs_dates.length;
     const t_names = this.params.ticker_name ? this.params.ticker_name.join(',') : this.params.tickers.join(',');
+    
     const product_name_display = this.params.product_name || 
-        `${this.params.broker_name || 'MS'} / ${formatDate(this.trade_date)} / ${period_count}期 / ${t_names} / ${(this.K_pct*100).toFixed(1)}% / ${(this.c_rate*100).toFixed(2)}% / ${this.params.total_notional} ${this.params.market || 'HKD'}`;
+        `${this.params.broker_name || 'MS'} ${this.params.account_name ? `(${this.params.account_name})` : ''} / ${formatDate(this.trade_date)} / ${period_count}期 / ${t_names} / ${(this.K_pct*100).toFixed(1)}% / ${(this.c_rate*100).toFixed(2)}% / ${this.params.total_notional} ${this.params.market || 'HKD'}`;
 
     return {
         status: 'Active',
