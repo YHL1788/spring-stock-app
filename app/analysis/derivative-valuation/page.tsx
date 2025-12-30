@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import FCNPanel from './_components/FCNPanel';
+import DQAQPanel from './_components/DQ-AQPanel';
 
 export default function DerivativeValuationPage() {
   const [activeTab, setActiveTab] = useState<'FCN' | 'DQ/AQ'>('FCN');
@@ -15,24 +16,30 @@ export default function DerivativeValuationPage() {
               <h1 className="text-3xl font-bold text-gray-900">衍生品测算</h1>
               <p className="mt-2 text-sm text-gray-500">结构化产品定价与风险分析模型</p>
             </div>
-            <div className="mt-4 md:mt-0 flex bg-gray-200 rounded-lg p-1 self-start">
-                <button onClick={() => setActiveTab('FCN')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${activeTab === 'FCN' ? 'bg-white text-gray-900 shadow' : 'text-gray-500'}`}>FCN</button>
-                <button onClick={() => setActiveTab('DQ/AQ')} className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${activeTab === 'DQ/AQ' ? 'bg-white text-gray-900 shadow' : 'text-gray-500'}`}>DQ/AQ</button>
+            <div className="mt-4 md:mt-0 flex bg-gray-200 rounded-lg p-1 self-start shadow-inner">
+                <button 
+                  onClick={() => setActiveTab('FCN')} 
+                  className={`px-6 py-2.5 text-sm font-medium rounded-md transition-all duration-200 ${activeTab === 'FCN' ? 'bg-white text-blue-600 shadow-sm ring-1 ring-black/5' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  FCN 模型
+                </button>
+                <button 
+                  onClick={() => setActiveTab('DQ/AQ')} 
+                  className={`px-6 py-2.5 text-sm font-medium rounded-md transition-all duration-200 ${activeTab === 'DQ/AQ' ? 'bg-white text-blue-600 shadow-sm ring-1 ring-black/5' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  DQ/AQ 模型
+                </button>
             </div>
         </div>
 
-        {activeTab === 'FCN' ? (
-          <FCNPanel />
-        ) : (
-          // 这里以后可以放 DQ/AQ 组件
-          <div className="bg-white shadow rounded-lg p-12 min-h-[500px] flex flex-col items-center justify-center text-gray-400">
-             <svg className="w-16 h-16 mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-             </svg>
-             <p className="text-lg font-medium">DQ/AQ 定价引擎</p>
-             <p className="text-sm mt-2">即将上线...</p>
-          </div>
-        )}
+        {/* 内容区域 */}
+        <div className="transition-opacity duration-300 ease-in-out">
+          {activeTab === 'FCN' ? (
+            <FCNPanel />
+          ) : (
+            <DQAQPanel />
+          )}
+        </div>
       </div>
     </div>
   );
