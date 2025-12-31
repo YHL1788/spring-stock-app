@@ -64,41 +64,36 @@ const EXAMPLE_PARAMS: FCNParams & { executor?: string } = {
     seed: 42 
 };
 
+// 初始空状态
+const INITIAL_BASIC = {
+    broker_name: '',
+    account_name: '', 
+    executor: '', 
+    market: 'HKD',
+    total_notional: '' as number | string,
+    denomination: '' as number | string,
+    trade_date: '',
+    strike_pct: '' as number | string,
+    trigger_pct: '' as number | string,
+    coupon_rate: '' as number | string,
+    coupon_freq: '' as number | string,
+    risk_free_rate: '' as number | string,
+    fx_rate: '' as number | string, 
+    history_start_date: '',
+    n_sims: '' as number | string,
+    seed: '' as number | string 
+};
+
 export default function FCNPanel() {
   // 状态管理
-  const [basicParams, setBasicParams] = useState({
-      broker_name: '',
-      account_name: '', 
-      executor: '', 
-      market: 'HKD',
-      total_notional: '' as number | string,
-      denomination: '' as number | string,
-      trade_date: '',
-      strike_pct: '' as number | string,
-      trigger_pct: '' as number | string,
-      coupon_rate: '' as number | string,
-      coupon_freq: '' as number | string,
-      risk_free_rate: '' as number | string,
-      fx_rate: '' as number | string, 
-      history_start_date: '',
-      n_sims: '' as number | string,
-      seed: '' as number | string 
-  });
+  const [basicParams, setBasicParams] = useState(INITIAL_BASIC);
   
   const [underlyingRows, setUnderlyingRows] = useState<UnderlyingRow[]>([{
-      id: 'init_1',
-      ticker: '',
-      name: '',
-      initialPrice: '',
-      currentPrice: '',
-      dividendDate: '',
-      dividendAmount: ''
+      id: 'init_1', ticker: '', name: '', initialPrice: '', currentPrice: '', dividendDate: '', dividendAmount: ''
   }]);
 
   const [dateRows, setDateRows] = useState<DateRow[]>([{
-      id: 'init_d1',
-      obsDate: '',
-      payDate: ''
+      id: 'init_d1', obsDate: '', payDate: ''
   }]);
 
   const [fcnResult, setFcnResult] = useState<FCNResult | null>(null);
@@ -153,18 +148,25 @@ export default function FCNPanel() {
       }
   };
 
-  const handleCalculate = async () => {
+  // 核心计算逻辑抽取，支持传入任意数据（State数据或示例数据）
+  const executeCalculation = async (
+      params: typeof basicParams,
+      uRows: typeof underlyingRows,
+      dRows: typeof dateRows
+  ) => {
     setLoading(true);
     setFetchStatus('参数解析中...');
+    setFcnResult(null); // 清除旧结果
 
+    // 这里使用 setTimeout 是为了让 UI 先渲染 Loading 状态
     setTimeout(async () => {
         try {
-            if (!basicParams.total_notional) throw new Error("请输入总名义本金");
-            if (!basicParams.denomination) throw new Error("请输入单张面值");
-            if (!basicParams.trade_date) throw new Error("请选择交易日期");
-            if (basicParams.strike_pct === '') throw new Error("请输入敲入界限");
-            if (basicParams.trigger_pct === '') throw new Error("请输入敲出界限");
-            if (basicParams.coupon_rate === '') throw new Error("请输入年化票息");
+            if (!params.total_notional) throw new Error("请输入总名义本金");
+            if (!params.denomination) throw new Error("请输入单张面值");
+            if (!params.trade_date) throw new Error("请选择交易日期");
+            if (params.strike_pct === '') throw new Error("请输入敲入界限");
+            if (params.trigger_pct === '') throw new Error("请输入敲出界限");
+            if (params.coupon_rate === '') throw new Error("请输入年化票息");
 
             const tickers: string[] = [];
             const ticker_names: string[] = [];
@@ -173,7 +175,7 @@ export default function FCNPanel() {
             const discrete_dividends: { [key: string]: [string, number][] } = {};
             const processedTickers = new Set<string>();
             
-            for (const row of underlyingRows) {
+            for (const row of uRows) {
                 if (!row.ticker) continue;
                 const divAmt = parseFloat(row.dividendAmount);
                 if (row.dividendDate && row.dividendAmount && !isNaN(divAmt)) {
@@ -192,17 +194,17 @@ export default function FCNPanel() {
                 }
             }
 
-            const obs_dates = dateRows.map(r => r.obsDate).filter(d => d);
-            const pay_dates = dateRows.map(r => r.payDate).filter(d => d);
+            const obs_dates = dRows.map(r => r.obsDate).filter(d => d);
+            const pay_dates = dRows.map(r => r.payDate).filter(d => d);
 
             if (tickers.length === 0) { throw new Error("请至少添加一个标的"); }
             if (obs_dates.length === 0) { throw new Error("请至少添加一个观察日"); }
-            if (basicParams.history_start_date && basicParams.trade_date && basicParams.history_start_date >= basicParams.trade_date) {
+            if (params.history_start_date && params.trade_date && params.history_start_date >= params.trade_date) {
                 throw new Error("历史数据起始日必须早于交易日");
             }
 
             const calcParams: FCNParams = {
-                ...basicParams,
+                ...params,
                 tickers,
                 ticker_name: ticker_names,
                 initial_spots,
@@ -210,18 +212,18 @@ export default function FCNPanel() {
                 discrete_dividends,
                 obs_dates,
                 pay_dates,
-                fx_rate: basicParams.fx_rate === '' ? undefined : (basicParams.fx_rate as number),
-                seed: basicParams.seed === '' ? undefined : (basicParams.seed as number),
-                n_sims: basicParams.n_sims === '' ? 5000 : (basicParams.n_sims as number),
-                coupon_freq: basicParams.coupon_freq === '' ? 12 : (basicParams.coupon_freq as number),
-                risk_free_rate: basicParams.risk_free_rate === '' ? 0.03 : (basicParams.risk_free_rate as number),
-                total_notional: Number(basicParams.total_notional),
-                denomination: Number(basicParams.denomination),
-                strike_pct: Number(basicParams.strike_pct),
-                trigger_pct: Number(basicParams.trigger_pct),
-                coupon_rate: Number(basicParams.coupon_rate),
-                account_name: basicParams.account_name, // Pass new fields
-                executor: basicParams.executor
+                fx_rate: params.fx_rate === '' ? undefined : (params.fx_rate as number),
+                seed: params.seed === '' ? undefined : (params.seed as number),
+                n_sims: params.n_sims === '' ? 5000 : (params.n_sims as number),
+                coupon_freq: params.coupon_freq === '' ? 12 : (params.coupon_freq as number),
+                risk_free_rate: params.risk_free_rate === '' ? 0.03 : (params.risk_free_rate as number),
+                total_notional: Number(params.total_notional),
+                denomination: Number(params.denomination),
+                strike_pct: Number(params.strike_pct),
+                trigger_pct: Number(params.trigger_pct),
+                coupon_rate: Number(params.coupon_rate),
+                account_name: params.account_name,
+                executor: params.executor
             } as FCNParams;
 
             setFetchStatus('正在检查股价...');
@@ -235,7 +237,8 @@ export default function FCNPanel() {
             const fetchedSpots = await Promise.all(spotPromises);
             calcParams.current_spots = fetchedSpots;
 
-            setUnderlyingRows(prevRows => prevRows.map(row => {
+            // 更新UI上的当前价格 (利用传入的 uRows 结构)
+            const updatedRows = uRows.map(row => {
                 const tIdx = tickers.indexOf(row.ticker);
                 if (tIdx !== -1 && fetchedSpots[tIdx] !== undefined) {
                     if (!row.currentPrice) {
@@ -243,7 +246,8 @@ export default function FCNPanel() {
                     }
                 }
                 return row;
-            }));
+            });
+            setUnderlyingRows(updatedRows);
 
             if (calcParams.market !== 'HKD' && (!calcParams.fx_rate || isNaN(calcParams.fx_rate))) {
                 setFetchStatus(`正在获取 ${calcParams.market}/HKD 汇率...`);
@@ -256,12 +260,14 @@ export default function FCNPanel() {
             }
 
             setFetchStatus('正在进行蒙特卡洛模拟...');
+            // 给 UI 一点时间渲染状态
             setTimeout(() => {
                 try {
                     const pricer = new FCNPricer(calcParams);
                     const res = pricer.simulate_price();
                     setFcnResult(res);
 
+                    // 自动生成交易记录
                     if (res.status === 'Terminated_Delivery') {
                         const worstIdx = res.loss_attribution.findIndex(val => val === 1.0);
                         if (worstIdx !== -1) {
@@ -286,9 +292,9 @@ export default function FCNPanel() {
 
                             setTxRecord({
                                 date: calcParams.pay_dates[calcParams.pay_dates.length - 1], 
-                                account: basicParams.account_name,
+                                account: params.account_name,
                                 market: marketCode,
-                                executor: basicParams.executor,
+                                executor: params.executor,
                                 type: "FCN接货",
                                 stockCode: ticker,
                                 stockName: name,
@@ -320,6 +326,52 @@ export default function FCNPanel() {
             setFetchStatus('');
         }
     }, 10);
+  };
+
+  // 1. 普通测算：使用当前 State
+  const handleCalculate = () => {
+      executeCalculation(basicParams, underlyingRows, dateRows);
+  };
+
+  // 2. 示例运行：填充并立即测算
+  const handleExampleRun = () => {
+      // 构造示例数据
+      const exampleBasic = { ...INITIAL_BASIC, ...EXAMPLE_PARAMS };
+      
+      const exampleRows: UnderlyingRow[] = EXAMPLE_PARAMS.tickers.map((t, i) => ({
+          id: `ex_${i}`,
+          ticker: t,
+          name: EXAMPLE_PARAMS.ticker_name?.[i] || '',
+          initialPrice: EXAMPLE_PARAMS.initial_spots[i].toString(),
+          currentPrice: '', // 稍后自动获取
+          dividendDate: '',
+          dividendAmount: ''
+      }));
+
+      const exampleDates: DateRow[] = EXAMPLE_PARAMS.obs_dates.map((d, i) => ({
+          id: `ex_d_${i}`,
+          obsDate: d,
+          payDate: EXAMPLE_PARAMS.pay_dates[i]
+      }));
+
+      // 更新 State
+      setBasicParams(exampleBasic);
+      setUnderlyingRows(exampleRows);
+      setDateRows(exampleDates);
+      setFcnResult(null);
+
+      // 立即使用这些数据执行计算
+      executeCalculation(exampleBasic, exampleRows, exampleDates);
+  };
+
+  // 3. 清空输入
+  const handleReset = () => {
+      setBasicParams(INITIAL_BASIC);
+      setUnderlyingRows([{ id: 'init_1', ticker: '', name: '', initialPrice: '', currentPrice: '', dividendDate: '', dividendAmount: '' }]);
+      setDateRows([{ id: 'init_d1', obsDate: '', payDate: '' }]);
+      setFcnResult(null);
+      setTxRecord(null);
+      setLoading(false);
   };
 
   const fmtPct = (val: number) => (val * 100).toFixed(2) + '%';
@@ -381,24 +433,24 @@ export default function FCNPanel() {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* 左侧：参数输入表单 */}
-        <div className="lg:col-span-1 bg-white shadow rounded-lg p-5 max-h-[1200px] overflow-y-auto space-y-6">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* 左侧：参数输入表单 (占 50%) */}
+        <div className="lg:col-span-6 space-y-6">
              {/* 1. 基础信息 & 结构参数 */}
-             <div>
-                 <h3 className="text-sm font-bold text-gray-800 border-l-4 border-blue-500 pl-2 mb-3">1. 基础信息</h3>
-                 <div className="grid grid-cols-2 gap-3 text-xs">
+             <div className="bg-white p-4 shadow rounded border border-gray-200">
+                 <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">1. 基础信息 (Basic Info)</h3>
+                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                      <div>
-                         <label className="block text-gray-600 mb-1">券商 (Broker)</label>
-                         <input type="text" name="broker_name" value={basicParams.broker_name} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.broker_name} className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
+                         <label className="block text-gray-500 text-xs">券商 (Broker)</label>
+                         <input type="text" name="broker_name" value={basicParams.broker_name} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.broker_name} className="border w-full p-1 rounded" />
                      </div>
                      <div>
-                         <label className="block text-gray-600 mb-1">账户 (Account)</label>
-                         <input type="text" name="account_name" value={basicParams.account_name} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.account_name} className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
+                         <label className="block text-gray-500 text-xs">账户 (Account)</label>
+                         <input type="text" name="account_name" value={basicParams.account_name} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.account_name} className="border w-full p-1 rounded" />
                      </div>
                      <div>
-                         <label className="block text-gray-600 mb-1">执行人 (Executor)</label>
-                         <select name="executor" value={basicParams.executor} onChange={handleBasicChange} className="w-full border-gray-300 rounded shadow-sm border p-1.5">
+                         <label className="block text-gray-500 text-xs">执行人 (Executor)</label>
+                         <select name="executor" value={basicParams.executor} onChange={handleBasicChange} className="border w-full p-1 rounded">
                              <option value="">请选择</option>
                              <option value="Jerry">Jerry</option>
                              <option value="Hugh">Hugh</option>
@@ -407,8 +459,8 @@ export default function FCNPanel() {
                          </select>
                      </div>
                      <div>
-                         <label className="block text-gray-600 mb-1">计价货币</label>
-                         <select name="market" value={basicParams.market} onChange={handleBasicChange} className="w-full border-gray-300 rounded shadow-sm border p-1.5">
+                         <label className="block text-gray-500 text-xs">计价货币 (Currency)</label>
+                         <select name="market" value={basicParams.market} onChange={handleBasicChange} className="border w-full p-1 rounded">
                              <option value="HKD">HKD</option>
                              <option value="USD">USD</option>
                              <option value="CNY">CNY</option>
@@ -416,52 +468,52 @@ export default function FCNPanel() {
                          </select>
                      </div>
                      <div>
-                         <label className="block text-gray-600 mb-1">总名义本金</label>
-                         <input type="number" name="total_notional" value={basicParams.total_notional} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.total_notional.toString()} className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
+                         <label className="block text-gray-500 text-xs">总名义本金 (Total Notional)</label>
+                         <input type="number" name="total_notional" value={basicParams.total_notional} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.total_notional.toString()} className="border w-full p-1 rounded" />
                      </div>
                      <div>
-                         <label className="block text-gray-600 mb-1">单张面值</label>
-                         <input type="number" name="denomination" value={basicParams.denomination} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.denomination.toString()} className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
+                         <label className="block text-gray-500 text-xs">单张面值 (Denomination)</label>
+                         <input type="number" name="denomination" value={basicParams.denomination} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.denomination.toString()} className="border w-full p-1 rounded" />
                      </div>
-                     <div className="col-span-2">
-                         <label className="block text-gray-600 mb-1">交易日期 (Trade Date)</label>
-                         <input type="date" name="trade_date" value={basicParams.trade_date} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.trade_date} className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
-                     </div>
-                     <div>
-                         <label className="block text-gray-600 mb-1">敲出界限 (%)</label>
-                         <input type="number" step="0.01" name="trigger_pct" value={pctToInput(basicParams.trigger_pct)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.trigger_pct * 100).toString()} className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
+                     <div className="sm:col-span-2">
+                         <label className="block text-gray-500 text-xs">交易日期 (Trade Date)</label>
+                         <input type="date" name="trade_date" value={basicParams.trade_date} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.trade_date} className="border w-full p-1 rounded text-gray-700" />
                      </div>
                      <div>
-                         <label className="block text-gray-600 mb-1">敲入界限 (%)</label>
-                         <input type="number" step="0.01" name="strike_pct" value={pctToInput(basicParams.strike_pct)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.strike_pct * 100).toString()} className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
+                         <label className="block text-gray-500 text-xs">敲出界限 (KO %)</label>
+                         <input type="number" step="0.01" name="trigger_pct" value={pctToInput(basicParams.trigger_pct)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.trigger_pct * 100).toString()} className="border w-full p-1 rounded" />
                      </div>
                      <div>
-                         <label className="block text-gray-600 mb-1">年化票息 (%)</label>
-                         <input type="number" step="0.01" name="coupon_rate" value={pctToInput(basicParams.coupon_rate)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.coupon_rate * 100).toString()} className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
+                         <label className="block text-gray-500 text-xs">敲入界限 (KI %)</label>
+                         <input type="number" step="0.01" name="strike_pct" value={pctToInput(basicParams.strike_pct)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.strike_pct * 100).toString()} className="border w-full p-1 rounded" />
+                     </div>
+                     <div>
+                         <label className="block text-gray-500 text-xs">年化票息 (Coupon %)</label>
+                         <input type="number" step="0.01" name="coupon_rate" value={pctToInput(basicParams.coupon_rate)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.coupon_rate * 100).toString()} className="border w-full p-1 rounded" />
                      </div>
                  </div>
              </div>
 
              {/* 2. 标的信息 (动态表格) */}
-             <div>
-                 <div className="flex justify-between items-center mb-2">
-                     <h3 className="text-sm font-bold text-gray-800 border-l-4 border-blue-500 pl-2">2. 标的信息</h3>
-                     <button onClick={addUnderlyingRow} className="text-xs text-blue-600 hover:text-blue-800">+ 添加标的</button>
+             <div className="bg-white p-4 shadow rounded border border-gray-200">
+                 <div className="flex justify-between items-center border-b pb-2 mb-3">
+                     <h3 className="font-bold text-gray-700">2. 标的信息 (Underlyings)</h3>
+                     <button onClick={addUnderlyingRow} className="text-[10px] bg-green-50 text-green-600 px-2 py-1 rounded">+添加标的</button>
                  </div>
-                 <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                 <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
                      {underlyingRows.map((row, idx) => (
                          <div key={row.id} className="bg-gray-50 p-2 rounded border border-gray-200 text-xs">
                              <div className="grid grid-cols-2 gap-2 mb-2">
-                                 <input placeholder="代码" value={row.ticker} onChange={(e) => updateUnderlyingRow(row.id, 'ticker', e.target.value)} className="border-gray-300 rounded p-1" />
-                                 <input placeholder="名称" value={row.name} onChange={(e) => updateUnderlyingRow(row.id, 'name', e.target.value)} className="border-gray-300 rounded p-1" />
+                                 <input placeholder="代码 (Ticker)" value={row.ticker} onChange={(e) => updateUnderlyingRow(row.id, 'ticker', e.target.value)} className="border p-1 rounded w-full" />
+                                 <input placeholder="名称 (Name)" value={row.name} onChange={(e) => updateUnderlyingRow(row.id, 'name', e.target.value)} className="border p-1 rounded w-full" />
                              </div>
                              <div className="grid grid-cols-2 gap-2 mb-2">
-                                 <input type="number" placeholder="初始价" value={row.initialPrice} onChange={(e) => updateUnderlyingRow(row.id, 'initialPrice', e.target.value)} className="border-gray-300 rounded p-1" />
-                                 <input type="number" placeholder="当前价" value={row.currentPrice} onChange={(e) => updateUnderlyingRow(row.id, 'currentPrice', e.target.value)} className="border-gray-300 rounded p-1 bg-blue-50" />
+                                 <input type="number" placeholder="初始价 (Initial)" value={row.initialPrice} onChange={(e) => updateUnderlyingRow(row.id, 'initialPrice', e.target.value)} className="border p-1 rounded w-full" />
+                                 <input type="number" placeholder="当前价 (Current)" value={row.currentPrice} onChange={(e) => updateUnderlyingRow(row.id, 'currentPrice', e.target.value)} className="border p-1 rounded w-full bg-blue-50" />
                              </div>
                              <div className="grid grid-cols-5 gap-2 items-center">
-                                 <div className="col-span-2"><input type="date" placeholder="分红日期" value={row.dividendDate} onChange={(e) => updateUnderlyingRow(row.id, 'dividendDate', e.target.value)} className="w-full border-gray-300 rounded p-1" /></div>
-                                 <div className="col-span-2"><input type="number" step="0.01" placeholder="分红金额" value={row.dividendAmount} onChange={(e) => updateUnderlyingRow(row.id, 'dividendAmount', e.target.value)} className="w-full border-gray-300 rounded p-1" /></div>
+                                 <div className="col-span-2"><input type="date" placeholder="分红日期" value={row.dividendDate} onChange={(e) => updateUnderlyingRow(row.id, 'dividendDate', e.target.value)} className="border p-1 rounded w-full" /></div>
+                                 <div className="col-span-2"><input type="number" step="0.01" placeholder="分红金额" value={row.dividendAmount} onChange={(e) => updateUnderlyingRow(row.id, 'dividendAmount', e.target.value)} className="border p-1 rounded w-full" /></div>
                                  <button onClick={() => removeUnderlyingRow(row.id)} className="text-red-500 hover:text-red-700 text-center">删</button>
                              </div>
                          </div>
@@ -470,69 +522,90 @@ export default function FCNPanel() {
              </div>
 
              {/* 3. 日期信息 (动态表格) */}
-             <div>
-                 <div className="flex justify-between items-center mb-2">
-                     <h3 className="text-sm font-bold text-gray-800 border-l-4 border-blue-500 pl-2">3. 日期信息</h3>
-                     <button onClick={addDateRow} className="text-xs text-blue-600 hover:text-blue-800">+ 添加日期</button>
+             <div className="bg-white p-4 shadow rounded border border-gray-200">
+                 <div className="flex justify-between items-center border-b pb-2 mb-3">
+                     <h3 className="font-bold text-gray-700">3. 日期信息 (Dates)</h3>
+                     <button onClick={addDateRow} className="text-[10px] bg-green-50 text-green-600 px-2 py-1 rounded">+添加日期</button>
                  </div>
                  <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+                     <div className="grid grid-cols-7 gap-1 text-xs text-gray-500 mb-1 px-1">
+                         <div className="col-span-3 text-center">观察日 (Obs)</div>
+                         <div className="col-span-3 text-center">支付日 (Pay)</div>
+                         <div className="col-span-1"></div>
+                     </div>
                      {dateRows.map((row, idx) => (
                          <div key={row.id} className="grid grid-cols-7 gap-1 items-center">
-                             <input type="date" value={row.obsDate} onChange={(e) => updateDateRow(row.id, 'obsDate', e.target.value)} className="col-span-3 text-xs border-gray-300 rounded p-1" />
-                             <input type="date" value={row.payDate} onChange={(e) => updateDateRow(row.id, 'payDate', e.target.value)} className="col-span-3 text-xs border-gray-300 rounded p-1" />
-                             <button onClick={() => removeDateRow(row.id)} className="col-span-1 text-red-500 hover:text-red-700 text-xs text-center">删</button>
+                             <input type="date" value={row.obsDate} onChange={(e) => updateDateRow(row.id, 'obsDate', e.target.value)} className="col-span-3 text-xs border p-1 rounded text-center" />
+                             <input type="date" value={row.payDate} onChange={(e) => updateDateRow(row.id, 'payDate', e.target.value)} className="col-span-3 text-xs border p-1 rounded text-center" />
+                             <button onClick={() => removeDateRow(row.id)} className="col-span-1 text-red-500 hover:text-red-700 text-xs text-center">×</button>
                          </div>
                      ))}
                  </div>
              </div>
 
              {/* 4. 模拟信息 */}
-             <div>
-                 <h3 className="text-sm font-bold text-gray-800 border-l-4 border-blue-500 pl-2 mb-3">4. 模拟信息</h3>
-                 <div className="grid grid-cols-2 gap-3 text-xs">
+             <div className="bg-white p-4 shadow rounded border border-gray-200">
+                 <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">4. 模拟信息 (Simulation)</h3>
+                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                      <div>
-                         <label className="block text-gray-600 mb-1">模拟汇率 (To HKD)</label>
-                         <input type="number" step="0.0001" name="fx_rate" value={basicParams.fx_rate} onChange={handleBasicChange} placeholder="自动" className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
+                         <label className="block text-gray-500 text-xs">模拟汇率 (To HKD)</label>
+                         <input type="number" step="0.0001" name="fx_rate" value={basicParams.fx_rate} onChange={handleBasicChange} placeholder="自动" className="border w-full p-1 rounded" />
                      </div>
                      <div>
-                         <label className="block text-gray-600 mb-1">历史数据起始日</label>
-                         <input type="date" name="history_start_date" value={basicParams.history_start_date} max={basicParams.trade_date} onChange={handleBasicChange} className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
+                         <label className="block text-gray-500 text-xs">历史数据起始日</label>
+                         <input type="date" name="history_start_date" value={basicParams.history_start_date} max={basicParams.trade_date} onChange={handleBasicChange} className="border w-full p-1 rounded" />
                      </div>
                      <div>
-                         <label className="block text-gray-600 mb-1">模拟次数</label>
-                         <input type="number" name="n_sims" value={basicParams.n_sims} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.n_sims.toString()} className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
+                         <label className="block text-gray-500 text-xs">模拟次数 (Sim Count)</label>
+                         <input type="number" name="n_sims" value={basicParams.n_sims} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.n_sims.toString()} className="border w-full p-1 rounded" />
                      </div>
                      <div>
-                         <label className="block text-gray-600 mb-1">随机种子 (Seed)</label>
-                         <input type="number" name="seed" value={basicParams.seed} onChange={handleBasicChange} placeholder="随机" className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
+                         <label className="block text-gray-500 text-xs">随机种子 (Seed)</label>
+                         <input type="number" name="seed" value={basicParams.seed} onChange={handleBasicChange} placeholder="随机" className="border w-full p-1 rounded" />
                      </div>
                      <div>
-                         <label className="block text-gray-600 mb-1">无风险利率 (%)</label>
-                         <input type="number" step="0.01" name="risk_free_rate" value={pctToInput(basicParams.risk_free_rate)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.risk_free_rate * 100).toString()} className="w-full border-gray-300 rounded shadow-sm border p-1.5" />
+                         <label className="block text-gray-500 text-xs">无风险利率 (r)</label>
+                         <input type="number" step="0.01" name="risk_free_rate" value={pctToInput(basicParams.risk_free_rate)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.risk_free_rate * 100).toString()} className="border w-full p-1 rounded" />
                      </div>
                  </div>
              </div>
 
-             <button
-                onClick={handleCalculate}
-                disabled={loading}
-                className={`w-full py-3 px-4 rounded-md text-white font-medium transition-colors shadow-sm flex justify-center items-center ${
-                    loading ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
-                }`}
-             >
-                {loading && <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>}
-                {loading ? (fetchStatus || '测算中...') : '开始测算'}
-             </button>
+             <div className="flex space-x-3">
+                 <button
+                    onClick={handleCalculate}
+                    disabled={loading}
+                    className={`flex-1 py-3 px-4 rounded shadow text-white font-bold transition-colors flex justify-center items-center ${
+                        loading ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
+                    }`}
+                 >
+                    {loading && <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>}
+                    {loading ? (fetchStatus || '测算中...') : '开始测算 (Run)'}
+                 </button>
+                 <button 
+                    onClick={handleExampleRun}
+                    disabled={loading}
+                    className="w-1/3 bg-gray-100 text-gray-600 font-medium py-3 rounded shadow hover:bg-gray-200 disabled:opacity-50 border border-gray-300 transition-colors text-xs sm:text-sm"
+                 >
+                    示例运行 (Example)
+                 </button>
+                 <button 
+                    onClick={handleReset}
+                    disabled={loading}
+                    className="w-1/4 bg-red-50 text-red-600 font-medium py-3 rounded shadow hover:bg-red-100 disabled:opacity-50 border border-red-200 transition-colors text-xs sm:text-sm"
+                 >
+                    清空输入
+                 </button>
+             </div>
           </div>
 
-          {/* === 右侧：结果展示 === */}
-          <div className="lg:col-span-2 bg-white shadow rounded-lg p-6 min-h-[600px]">
+          {/* === 右侧：结果展示 (占 50%) === */}
+          <div className="lg:col-span-6 space-y-6">
              {fcnResult ? (
-                 <div className="space-y-6 animate-fadeIn">
+                 <div className="bg-white p-6 rounded shadow border border-blue-200 space-y-6 text-sm sticky top-6 animate-fadeIn">
                      <div className="border-b border-gray-200 pb-4">
                          <div className="flex justify-between items-start">
                              <div>
-                                 <h2 className="text-xl font-bold text-gray-900">FCN 估值报告</h2>
+                                 <h2 className="text-xl font-bold text-gray-800">FCN 估值报告</h2>
                                  <p className="text-sm text-gray-500 mt-1">{fcnResult.product_name_display}</p>
                              </div>
                              <button onClick={() => setIsHKDView(!isHKDView)} className={`px-3 py-1 text-xs font-medium rounded border transition-colors ${isHKDView ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>
@@ -557,16 +630,16 @@ export default function FCNPanel() {
                      )}
 
                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                         <div className="bg-gray-50 p-4 rounded-lg">
+                         <div className="bg-gray-50 p-4 rounded border border-gray-100">
                              <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">单价估值 (Par={basicParams.denomination})</h3>
                              <div className="space-y-2 text-sm text-gray-700">
                                  <div className="flex justify-between"><span>全价</span><span className="font-semibold">{(fcnResult.dirty_price + fcnResult.hist_coupons_paid).toFixed(2)}</span></div>
-                                 <div className="flex justify-between"><span>现值 (Dirty)</span><span className="font-bold text-blue-600">{fcnResult.dirty_price.toFixed(2)}</span></div>
+                                 <div className="flex justify-between"><span>现值 (Dirty)</span><span className="font-bold text-blue-600 text-lg">{fcnResult.dirty_price.toFixed(2)}</span></div>
                                  <div className="text-xs text-right text-gray-400">本金 {(fcnResult.principal_pv).toFixed(2)} + 待付/未来票息 {(fcnResult.pending_coupons_pv + fcnResult.future_coupons_pv).toFixed(2)}</div>
                              </div>
                          </div>
 
-                         <div className="bg-gray-50 p-4 rounded-lg">
+                         <div className="bg-gray-50 p-4 rounded border border-gray-100">
                              <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">持仓损益 ({getDisplayCurrency()})</h3>
                              <div className="space-y-2 text-sm text-gray-700">
                                  <div className="flex justify-between"><span>总名义本金</span><span>{fmtMoney(Number(basicParams.total_notional))}</span></div>
@@ -583,11 +656,11 @@ export default function FCNPanel() {
                      <div>
                          <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">风险概率</h3>
                          <div className="grid grid-cols-2 gap-4 text-center">
-                             <div className="p-3 border rounded-md">
+                             <div className="p-3 border rounded-md bg-white">
                                  <div className="text-xs text-gray-500">提前赎回概率</div>
                                  <div className="text-lg font-bold text-gray-800">{fmtPct(fcnResult.early_redemption_prob)}</div>
                              </div>
-                             <div className="p-3 border rounded-md">
+                             <div className="p-3 border rounded-md bg-white">
                                  <div className="text-xs text-gray-500">敲入接货概率</div>
                                  <div className="text-lg font-bold text-red-600">{fmtPct(fcnResult.loss_prob)}</div>
                              </div>
@@ -804,11 +877,15 @@ export default function FCNPanel() {
                      )}
                  </div>
              ) : (
-                 <div className="h-full flex flex-col items-center justify-center text-gray-400">
-                    <svg className="w-16 h-16 mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                    <p className="text-lg">请点击左侧 "开始测算" 运行模型</p>
-                    <p className="text-sm mt-2">基于 {Number(basicParams.n_sims) || 5000} 次蒙特卡洛模拟</p>
-                 </div>
+                 <div className="h-full min-h-[400px] flex items-center justify-center bg-gray-50 border-2 border-dashed border-gray-200 rounded text-gray-400 sticky top-6">
+                    <div className="text-center">
+                        <svg className="w-16 h-16 mx-auto mb-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <p className="text-lg">请配置左侧参数并开始测算</p>
+                        <p className="text-xs mt-2 text-gray-300">或点击“示例运行”查看效果</p>
+                    </div>
+                </div>
              )}
           </div>
         </div>

@@ -391,39 +391,9 @@ export default function DQAQPanel() {
         {/* 左侧：输入参数 */}
         <div className="lg:col-span-6 space-y-6">
             
-            {/* 1. 标的资产 */}
+            {/* 1. 基础信息 (Basic Info) */}
             <div className="bg-white p-4 shadow rounded border border-gray-200">
-                <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">1. 标的资产 (Underlying Info)</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                    <div className="col-span-1 sm:col-span-2">
-                        <label className="block text-gray-500 text-xs">标的代码 (Ticker) <span className="text-red-500">*</span></label>
-                        <input 
-                            className={`border w-full p-1 rounded ${errors.ticker ? 'border-red-500 bg-red-50' : ''}`}
-                            value={ticker} 
-                            placeholder={DEFAULTS.ticker}
-                            onChange={e => setTicker(e.target.value)} 
-                        />
-                        {errors.ticker && <p className="text-red-500 text-[10px] mt-0.5">{errors.ticker}</p>}
-                    </div>
-                    <div>
-                        <label className="block text-gray-500 text-xs">标的名称 (Stock Name)</label>
-                        <input className="border w-full p-1 rounded" value={stockName} placeholder={DEFAULTS.stockName} onChange={e=>setStockName(e.target.value)} />
-                    </div>
-                    <div>
-                        <label className="block text-gray-500 text-xs">初始价格 (S0) <span className="text-red-500">*</span></label>
-                        <input type="number" className={`border w-full p-1 rounded ${errors.spotPrice ? 'border-red-500 bg-red-50' : ''}`} value={spotPrice} placeholder={String(DEFAULTS.spotPrice)} onChange={e=>setSpotPrice(e.target.value)} />
-                        {errors.spotPrice && <p className="text-red-500 text-[10px] mt-0.5">{errors.spotPrice}</p>}
-                    </div>
-                    <div className="col-span-1 sm:col-span-2">
-                        <label className="block text-gray-500 text-xs">当前市价 (MTM Price)</label>
-                        <input type="number" placeholder="留白自动获取" className="border w-full p-1 rounded" value={currentMktPrice} onChange={e=>setCurrentMktPrice(e.target.value)} />
-                    </div>
-                </div>
-            </div>
-
-            {/* 2. 合约条款 */}
-            <div className="bg-white p-4 shadow rounded border border-gray-200">
-                <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">2. 合约基本条款 (Basic Info)</h3>
+                <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">1. 基础信息 (Basic Info)</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                     <div>
                         <label className="block text-gray-500 text-xs">券商 (Broker)</label>
@@ -485,40 +455,40 @@ export default function DQAQPanel() {
                 </div>
             </div>
 
-            {/* 3. 模拟参数 */}
+            {/* 2. 标的信息 (Underlying) */}
             <div className="bg-white p-4 shadow rounded border border-gray-200">
-                <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">3. 模拟参数 (Simulation Params)</h3>
+                <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">2. 标的信息 (Underlying)</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                    <div>
-                        <label className="block text-gray-500 text-xs">无风险利率 (r)</label>
-                        <input className="border w-full p-1 rounded" placeholder="留白读取Yahoo" value={riskFreeInput} onChange={e=>setRiskFreeInput(e.target.value)} />
+                    <div className="col-span-1 sm:col-span-2">
+                        <label className="block text-gray-500 text-xs">标的代码 (Ticker) <span className="text-red-500">*</span></label>
+                        <input 
+                            className={`border w-full p-1 rounded ${errors.ticker ? 'border-red-500 bg-red-50' : ''}`}
+                            value={ticker} 
+                            placeholder={DEFAULTS.ticker}
+                            onChange={e => setTicker(e.target.value)} 
+                        />
+                        {errors.ticker && <p className="text-red-500 text-[10px] mt-0.5">{errors.ticker}</p>}
                     </div>
                     <div>
-                        <label className="block text-gray-500 text-xs">历史起始日 (Start)</label>
-                        <input type="date" className="border w-full p-1 rounded" value={historyStartInput} onChange={e=>setHistoryStartInput(e.target.value)} />
-                        <span className="text-[9px] text-gray-400">留白T-28</span>
+                        <label className="block text-gray-500 text-xs">标的名称 (Stock Name)</label>
+                        <input className="border w-full p-1 rounded" value={stockName} placeholder={DEFAULTS.stockName} onChange={e=>setStockName(e.target.value)} />
                     </div>
                     <div>
-                        <label className="block text-gray-500 text-xs">模拟路径 (Paths) <span className="text-red-500">*</span></label>
-                        <input type="number" className={`border w-full p-1 rounded ${errors.simCount ? 'border-red-500 bg-red-50' : ''}`} value={simCount} placeholder={String(DEFAULTS.simCount)} onChange={e=>setSimCount(e.target.value)} />
-                        {errors.simCount && <p className="text-red-500 text-[10px] mt-0.5">{errors.simCount}</p>}
-                    </div>
-                    <div>
-                        <label className="block text-gray-500 text-xs">种子 (Seed) <span className="text-red-500">*</span></label>
-                        <input type="number" className={`border w-full p-1 rounded ${errors.randomSeed ? 'border-red-500 bg-red-50' : ''}`} value={randomSeed} placeholder={String(DEFAULTS.randomSeed)} onChange={e=>setRandomSeed(e.target.value)} />
-                        {errors.randomSeed && <p className="text-red-500 text-[10px] mt-0.5">{errors.randomSeed}</p>}
+                        <label className="block text-gray-500 text-xs">初始价格 (S0) <span className="text-red-500">*</span></label>
+                        <input type="number" className={`border w-full p-1 rounded ${errors.spotPrice ? 'border-red-500 bg-red-50' : ''}`} value={spotPrice} placeholder={String(DEFAULTS.spotPrice)} onChange={e=>setSpotPrice(e.target.value)} />
+                        {errors.spotPrice && <p className="text-red-500 text-[10px] mt-0.5">{errors.spotPrice}</p>}
                     </div>
                     <div className="col-span-1 sm:col-span-2">
-                        <label className="block text-gray-500 text-xs">汇率 (To HKD)</label>
-                        <input className="border w-full p-1 rounded" placeholder="留白读取Yahoo" value={fxRateInput} onChange={e=>setFxRateInput(e.target.value)} />
+                        <label className="block text-gray-500 text-xs">当前市价 (MTM Price)</label>
+                        <input type="number" placeholder="留白自动获取" className="border w-full p-1 rounded" value={currentMktPrice} onChange={e=>setCurrentMktPrice(e.target.value)} />
                     </div>
                 </div>
             </div>
 
-            {/* 4. 观察期 */}
+            {/* 3. 日期信息 (Dates) */}
             <div className="bg-white p-4 shadow rounded border border-gray-200">
                 <div className="flex justify-between border-b pb-2 mb-3">
-                    <h3 className="font-bold text-gray-700">4. 观察期 (Periods)</h3>
+                    <h3 className="font-bold text-gray-700">3. 日期信息 (Dates)</h3>
                     <div className="space-x-1">
                         <button onClick={addPeriod} className="text-[10px] bg-green-50 text-green-600 px-2 py-1 rounded">+行</button>
                     </div>
@@ -555,6 +525,36 @@ export default function DQAQPanel() {
                              无数据，请点击右上角 "+行" 或使用 "示例运行"
                          </div>
                     )}
+                </div>
+            </div>
+
+            {/* 4. 模拟信息 (Simulation) */}
+            <div className="bg-white p-4 shadow rounded border border-gray-200">
+                <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">4. 模拟信息 (Simulation)</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    <div>
+                        <label className="block text-gray-500 text-xs">无风险利率 (r)</label>
+                        <input className="border w-full p-1 rounded" placeholder="留白读取Yahoo" value={riskFreeInput} onChange={e=>setRiskFreeInput(e.target.value)} />
+                    </div>
+                    <div>
+                        <label className="block text-gray-500 text-xs">历史起始日 (Start)</label>
+                        <input type="date" className="border w-full p-1 rounded" value={historyStartInput} onChange={e=>setHistoryStartInput(e.target.value)} />
+                        <span className="text-[9px] text-gray-400">留白T-28</span>
+                    </div>
+                    <div>
+                        <label className="block text-gray-500 text-xs">模拟路径 (Paths) <span className="text-red-500">*</span></label>
+                        <input type="number" className={`border w-full p-1 rounded ${errors.simCount ? 'border-red-500 bg-red-50' : ''}`} value={simCount} placeholder={String(DEFAULTS.simCount)} onChange={e=>setSimCount(e.target.value)} />
+                        {errors.simCount && <p className="text-red-500 text-[10px] mt-0.5">{errors.simCount}</p>}
+                    </div>
+                    <div>
+                        <label className="block text-gray-500 text-xs">种子 (Seed) <span className="text-red-500">*</span></label>
+                        <input type="number" className={`border w-full p-1 rounded ${errors.randomSeed ? 'border-red-500 bg-red-50' : ''}`} value={randomSeed} placeholder={String(DEFAULTS.randomSeed)} onChange={e=>setRandomSeed(e.target.value)} />
+                        {errors.randomSeed && <p className="text-red-500 text-[10px] mt-0.5">{errors.randomSeed}</p>}
+                    </div>
+                    <div className="col-span-1 sm:col-span-2">
+                        <label className="block text-gray-500 text-xs">汇率 (To HKD)</label>
+                        <input className="border w-full p-1 rounded" placeholder="留白读取Yahoo" value={fxRateInput} onChange={e=>setFxRateInput(e.target.value)} />
+                    </div>
                 </div>
             </div>
 
