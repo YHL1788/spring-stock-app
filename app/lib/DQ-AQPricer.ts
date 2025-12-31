@@ -1,7 +1,7 @@
 // app/lib/DQ-AQPricer.ts
 
 // ==========================================
-// 1. 数据结构 (对应 Python Data Classes)
+// 1. 数据接口定义
 // ==========================================
 
 export interface Period {
@@ -19,8 +19,8 @@ export interface BasicInfo {
   executor: string;
   currency: string;
   trade_date: string;
-  daily_shares: number;       // Keep sign (e.g. -6.0 for DQ)
-  max_global_shares: number;  // Keep sign (e.g. -1488.0 for DQ)
+  daily_shares: number;       // 每日股数 (DQ为负)
+  max_global_shares: number;  // 最大股数 (DQ为负)
   ki_barrier_pct: number;
   ko_barrier_pct: number;
   leverage: number;
@@ -55,11 +55,11 @@ export interface ValuationResult {
   final_fx_rate: number;
   final_r: number;
   calc_sigma: number;
-  history_records?: any[]; // To store historical transaction details
+  history_records?: any[]; // 历史交易明细
 }
 
 // ==========================================
-// 2. Math Helpers
+// 2. 数学与辅助函数
 // ==========================================
 
 class SeededRNG {
@@ -92,7 +92,7 @@ function std(arr: number[]): number {
     return Math.sqrt(variance);
 }
 
-// Python: log_ret.std() * np.sqrt(252)
+// 计算年化波动率 (252天)
 export function calculateVolatility(prices: number[]): number {
     if (!prices || prices.length < 2) return 0.20; 
     
@@ -108,13 +108,13 @@ export function calculateVolatility(prices: number[]): number {
     return std(logRets) * Math.sqrt(252);
 }
 
-// Date Helpers (String comparison YYYY-MM-DD)
+// 日期比较工具 (YYYY-MM-DD)
 function isDateBefore(d1: string, d2: string): boolean { return d1 < d2; }
 function isDateBeforeOrEqual(d1: string, d2: string): boolean { return d1 <= d2; }
 function isDateAfterOrEqual(d1: string, d2: string): boolean { return d1 >= d2; }
 
 // ==========================================
-// 3. DQAQValuator Class
+// 3. 核心估值类 (DQAQValuator)
 // ==========================================
 
 export class DQAQValuator {
@@ -161,25 +161,24 @@ export class DQAQValuator {
     private calculate_daily_shares(current_price: number): number {
         const { contract_type, daily_shares, leverage } = this.basic_info;
         if (contract_type === 'DQ') {
-            // DQ logic from Python: if price <= strike (OTM Put) return daily; else return daily * leverage
+            // DQ: 价格低于Strike时按1倍累计，否则按杠杆累计
             if (current_price <= this.strike) return daily_shares;
             else return daily_shares * leverage;
         } else {
-            // AQ logic
+            // AQ: 价格高于Strike时按1倍累计，否则按杠杆累计
             if (current_price >= this.strike) return daily_shares;
             else return daily_shares * leverage;
         }
     }
 
-    // Evaluate a single price path
+    // 单条路径估值逻辑
     private evaluate_path(full_price_path: number[], return_details: boolean = false): any {
         let accumulated_shares = 0.0;
         let is_knocked_out = false;
         let ko_day_idx = -1;
         const transaction_records: any[] = [];
         
-        // path[0] is S0/Start, index 1 is Day 1
-        let current_day_idx = 1;
+        let current_day_idx = 1; // 索引0是S0
 
         for (const period of this.periods) {
             let period_shares = 0.0;
@@ -202,7 +201,7 @@ export class DQAQValuator {
                 
                 const price = full_price_path[current_day_idx];
 
-                // A. KO Check
+                // A. 检查敲出
                 if (this.check_ko(price)) {
                     is_knocked_out = true;
                     period_ko = true;
@@ -210,10 +209,10 @@ export class DQAQValuator {
                     break;
                 }
 
-                // B. Daily Shares
+                // B. 计算当日股数
                 let daily = this.calculate_daily_shares(price);
 
-                // C. Max Cap Check (Logic compatible with negative numbers)
+                // C. 检查最大股数限制
                 let hit_cap = false;
                 const max_g = this.basic_info.max_global_shares;
                 
@@ -263,11 +262,11 @@ export class DQAQValuator {
         return { final_shares: accumulated_shares, is_knocked_out, ko_day_idx };
     }
 
-    // Main logic matching Python's "if __name__ == '__main__'" block
+    // 生成估值报告
     public generate_report(
         current_mkt_p: number, 
         history_prices: number[], 
-        history_dates: string[], // Required for filtering logic
+        history_dates: string[], 
         valuation_date_str: string,
         final_fx_rate: number
     ): ValuationResult {
@@ -283,7 +282,7 @@ export class DQAQValuator {
         let accumulated_hist_shares = 0.0;
         let history_records: any[] = [];
 
-        // 1. State Determination & History Filtering
+        // 1. 确定状态并过滤历史数据
         if (isDateBefore(valuation_date_str, trade_dt)) {
             status_msg = "尚未订约 (Pre-start)";
         } else if (isDateBefore(valuation_date_str, contract_start)) {
@@ -291,8 +290,7 @@ export class DQAQValuator {
         } else if (isDateBefore(valuation_date_str, contract_end)) {
             status_msg = "存续中 (Mid-life)";
             
-            // Python: mask = full_history.index >= first_start_dt
-            // IMPORTANT: Strictly filter history to only include dates >= contract_start
+            // 过滤出合约期内的历史数据
             const filtered_history: number[] = [];
             for(let i=0; i<history_prices.length; i++) {
                 if (isDateAfterOrEqual(history_dates[i], contract_start)) {
@@ -311,7 +309,7 @@ export class DQAQValuator {
         } else {
             status_msg = "已到期/结束 (Closed/Expired)";
             is_expired_mode = true;
-            // Filter history for expired mode as well
+            
             const filtered_history: number[] = [];
             for(let i=0; i<history_prices.length; i++) {
                 if (isDateAfterOrEqual(history_dates[i], contract_start) && isDateBeforeOrEqual(history_dates[i], contract_end)) {
@@ -331,13 +329,13 @@ export class DQAQValuator {
 
         if (is_historically_ko) status_msg = "已结束，提前敲出";
 
-        // 2. Settled vs Unpaid
+        // 2. 计算已结算与未付股份
         let shares_settled_paid = 0.0;
         let shares_locked_unpaid = 0.0;
 
         for (const rec of history_records) {
             let is_paid = false;
-            // Python: settle_date <= valuation_dt
+            // 结算日小于等于估值日视为已付
             if (rec.status !== 'Skipped (KO)' && isDateBeforeOrEqual(rec.settle_date, valuation_date_str)) {
                 is_paid = true;
             }
@@ -345,7 +343,7 @@ export class DQAQValuator {
             else shares_locked_unpaid += rec.shares;
         }
 
-        // 3. Monte Carlo
+        // 3. 蒙特卡洛模拟
         let total_exp_shares = accumulated_hist_shares;
         let ko_count = is_historically_ko ? this.sim_params.sim_count : 0;
 
@@ -358,7 +356,7 @@ export class DQAQValuator {
                 const shares_results: number[] = [];
                 let sim_ko_c = 0;
                 
-                // Start from last history price OR current mkt
+                // 起点：最新历史价或当前市价
                 const start_p = history_segment.length > 0 ? history_segment[history_segment.length - 1] : current_mkt_p;
                 const r = this.sim_params.risk_free_rate;
                 const sigma = this.sigma;
@@ -377,7 +375,7 @@ export class DQAQValuator {
                         future_path.push(p);
                     }
 
-                    // 拼接完整路径: S0 + History + Future
+                    // 拼接完整路径
                     const full_sim_path = [...check_path_prefix, ...future_path];
                     const res = this.evaluate_path(full_sim_path, false);
                     shares_results.push(res.final_shares);
@@ -388,9 +386,8 @@ export class DQAQValuator {
             }
         }
 
-        // 4. Final Values
+        // 4. 计算最终价值
         const net_price_shares = total_exp_shares - shares_settled_paid;
-        // Modified: Spread based on current market price instead of initial spot
         const spread = current_mkt_p - this.strike;
         
         const val_full_usd = total_exp_shares * spread;
@@ -419,7 +416,7 @@ export class DQAQValuator {
             final_fx_rate: fx,
             final_r: this.sim_params.risk_free_rate,
             calc_sigma: this.sigma,
-            history_records // Return history records for display
+            history_records
         };
     }
 }
