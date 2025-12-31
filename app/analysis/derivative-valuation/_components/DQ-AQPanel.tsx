@@ -1,8 +1,8 @@
 //"use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 // Change the import path to be relative to fix the resolution error
-import { DQAQValuator, Period, BasicInfo, UnderlyingInfo, SimulationParams, ValuationResult, calculateVolatility } from "../../../lib/DQ-AQPricer";
+import { DQAQValuator, Period, BasicInfo, UnderlyingInfo, SimulationParams, ValuationResult, calculateVolatility, PlotData } from "../../../lib/DQ-AQPricer";
 
 // 默认观察期配置
 const DEFAULT_PERIODS: Period[] = [
@@ -40,6 +40,113 @@ const DEFAULTS = {
     randomSeed: 42,
     riskFree: 0.045,
     fxRate: 7.8
+};
+
+// --- SVG 图表组件 ---
+const SimulationChart = ({ data }: { data: PlotData }) => {
+    const { history_prices, future_paths, spot_price, barrier_ki, barrier_ko, total_days } = data;
+    
+    // 合并完整历史路径：S0 + History
+    const fullHistory = [spot_price, ...history_prices];
+    const historyLen = fullHistory.length; // 这是实际已经发生的天数 + 1 (S0)
+    
+    // 计算 Y 轴范围
+    let allPrices = [...fullHistory, barrier_ki, barrier_ko];
+    future_paths.forEach(path => allPrices.push(...path));
+    const minP = Math.min(...allPrices) * 0.95;
+    const maxP = Math.max(...allPrices) * 1.05;
+    const rangeP = maxP - minP;
+
+    // 简单布局常量
+    const width = 500;
+    const height = 250;
+    const padding = 30;
+    const plotW = width - padding * 2;
+    const plotH = height - padding * 2;
+
+    // 坐标转换函数
+    // X轴: 0 到 total_days (S0是第0天)
+    const getX = (dayIndex: number) => padding + (dayIndex / total_days) * plotW;
+    // Y轴: 价格
+    const getY = (price: number) => padding + plotH - ((price - minP) / rangeP) * plotH;
+
+    // 生成路径字符串
+    const makePath = (prices: number[], startDayIdx: number) => {
+        return prices.map((p, i) => 
+            `${i === 0 ? 'M' : 'L'} ${getX(startDayIdx + i)} ${getY(p)}`
+        ).join(' ');
+    };
+
+    const historyPathStr = makePath(fullHistory, 0);
+
+    // 颜色生成函数 (生成丰富多彩的颜色)
+    const getPathColor = (index: number, total: number) => {
+        // 使用 HSL 颜色空间生成全色相环的颜色
+        // Hue: 0 到 360 (覆盖红、橙、黄、绿、青、蓝、紫)
+        // Saturation: 60% 到 90% (保持鲜艳)
+        // Lightness: 45% 到 65% (保持清晰度，不太亮也不太暗)
+        
+        // 为了让相邻的线条颜色差异更明显，我们可以打乱色相的顺序
+        // 比如每次增加一个较大的步长，利用素数步长可以遍历整个圆环
+        const hue = (index * 137.508) % 360; // 黄金角近似值，能很好地分散颜色
+        const sat = 65 + (index % 3) * 10;
+        const light = 50 + (index % 2) * 10;
+        return `hsl(${hue}, ${sat}%, ${light}%)`;
+    };
+
+    return (
+        <div className="bg-white p-4 rounded border border-gray-200 shadow-sm mt-6">
+            <h4 className="font-bold text-gray-700 text-sm mb-4">模拟路径预览 (Monte Carlo Paths)</h4>
+            <div className="flex justify-center">
+                <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} className="overflow-visible max-w-lg">
+                    {/* 背景网格 */}
+                    <rect x={padding} y={padding} width={plotW} height={plotH} fill="#fafafa" stroke="#eee" />
+                    
+                    {/* KI 线 (红色虚线) */}
+                    <line x1={padding} y1={getY(barrier_ki)} x2={width - padding} y2={getY(barrier_ki)} stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4 4" />
+                    <text x={width - padding + 5} y={getY(barrier_ki) + 3} fontSize="10" fill="#ef4444">KI</text>
+
+                    {/* KO 线 (绿色虚线) */}
+                    <line x1={padding} y1={getY(barrier_ko)} x2={width - padding} y2={getY(barrier_ko)} stroke="#10b981" strokeWidth="1.5" strokeDasharray="4 4" />
+                    <text x={width - padding + 5} y={getY(barrier_ko) + 3} fontSize="10" fill="#10b981">KO</text>
+
+                    {/* S0 线 (灰色基准线) */}
+                    <line x1={padding} y1={getY(spot_price)} x2={width - padding} y2={getY(spot_price)} stroke="#ddd" strokeWidth="1" />
+
+                    {/* 未来模拟路径 (彩色细线) */}
+                    {future_paths.map((path, idx) => {
+                        const color = getPathColor(idx, future_paths.length);
+                        return (
+                            <path 
+                                key={`sim-${idx}`} 
+                                d={`M ${getX(historyLen - 1)} ${getY(fullHistory[fullHistory.length - 1])} ` + makePath(path, historyLen).substring(1)} // 拼接到历史末端
+                                fill="none" 
+                                stroke={color} 
+                                strokeWidth="0.8" 
+                                opacity="0.5"
+                            />
+                        );
+                    })}
+
+                    {/* 历史路径 (深色实线) */}
+                    <path d={historyPathStr} fill="none" stroke="#1f2937" strokeWidth="2.5" />
+                    
+                    {/* 当前点 (历史末端) */}
+                    <circle cx={getX(historyLen - 1)} cy={getY(fullHistory[fullHistory.length - 1])} r="3" fill="#1f2937" />
+
+                    {/* X轴标签 */}
+                    <text x={padding} y={height - 10} fontSize="10" fill="#888">T=0</text>
+                    <text x={width - padding} y={height - 10} fontSize="10" fill="#888" textAnchor="end">End</text>
+                </svg>
+            </div>
+            <div className="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
+                <div className="flex items-center"><span className="w-3 h-0.5 bg-gray-800 mr-1"></span>历史路径</div>
+                <div className="flex items-center"><span className="w-3 h-0.5 bg-gradient-to-r from-red-400 via-green-400 to-blue-400 mr-1"></span>未来模拟</div>
+                <div className="flex items-center"><span className="w-3 h-0.5 border-t border-dashed border-red-500 mr-1"></span>KI界限</div>
+                <div className="flex items-center"><span className="w-3 h-0.5 border-t border-dashed border-green-500 mr-1"></span>KO界限</div>
+            </div>
+        </div>
+    );
 };
 
 export default function DQAQPanel() {
@@ -385,6 +492,9 @@ export default function DQAQPanel() {
   const uiKiPct = kiPct ? Number(kiPct) : 0;
   const uiKoPct = koPct ? Number(koPct) : 0;
 
+  // 过滤并准备历史记录数据 (只展示已结算的记录)
+  const settledRecords = historyRecords.filter(rec => rec.status === 'Settled' || rec.status === 'Knocked Out');
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
@@ -455,9 +565,9 @@ export default function DQAQPanel() {
                 </div>
             </div>
 
-            {/* 2. 标的信息 (Underlying) */}
+            {/* 2. 标的信息 (Underlying Info) */}
             <div className="bg-white p-4 shadow rounded border border-gray-200">
-                <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">2. 标的信息 (Underlying)</h3>
+                <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">2. 标的信息 (Underlying Info)</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                     <div className="col-span-1 sm:col-span-2">
                         <label className="block text-gray-500 text-xs">标的代码 (Ticker) <span className="text-red-500">*</span></label>
@@ -485,10 +595,10 @@ export default function DQAQPanel() {
                 </div>
             </div>
 
-            {/* 3. 日期信息 (Dates) */}
+            {/* 3. 日期信息 (Periods) */}
             <div className="bg-white p-4 shadow rounded border border-gray-200">
                 <div className="flex justify-between border-b pb-2 mb-3">
-                    <h3 className="font-bold text-gray-700">3. 日期信息 (Dates)</h3>
+                    <h3 className="font-bold text-gray-700">3. 日期信息 (Periods)</h3>
                     <div className="space-x-1">
                         <button onClick={addPeriod} className="text-[10px] bg-green-50 text-green-600 px-2 py-1 rounded">+行</button>
                     </div>
@@ -528,16 +638,16 @@ export default function DQAQPanel() {
                 </div>
             </div>
 
-            {/* 4. 模拟信息 (Simulation) */}
+            {/* 4. 模拟信息 (Simulation Params) */}
             <div className="bg-white p-4 shadow rounded border border-gray-200">
-                <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">4. 模拟信息 (Simulation)</h3>
+                <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">4. 模拟信息 (Simulation Params)</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                     <div>
                         <label className="block text-gray-500 text-xs">无风险利率 (r)</label>
                         <input className="border w-full p-1 rounded" placeholder="留白读取Yahoo" value={riskFreeInput} onChange={e=>setRiskFreeInput(e.target.value)} />
                     </div>
                     <div>
-                        <label className="block text-gray-500 text-xs">历史起始日 (Start)</label>
+                        <label className="block text-gray-500 text-xs">历史数据起始日 (Start)</label>
                         <input type="date" className="border w-full p-1 rounded" value={historyStartInput} onChange={e=>setHistoryStartInput(e.target.value)} />
                         <span className="text-[9px] text-gray-400">留白T-28</span>
                     </div>
@@ -652,8 +762,13 @@ export default function DQAQPanel() {
                         </div>
                     </div>
 
+                    {/* 股价点位图 (仅当存续中或有绘图数据时显示) */}
+                    {(result.status_msg.includes("存续中") || result.plot_data) && result.plot_data && (
+                        <SimulationChart data={result.plot_data} />
+                    )}
+
                     {/* 历史结算记录 */}
-                    {(historyRecords && historyRecords.length > 0) && (
+                    {(settledRecords && settledRecords.length > 0) && (
                         <div className="bg-gray-50 rounded p-4 text-xs text-gray-600 space-y-2 mt-4">
                             <h5 className="font-bold text-gray-700 mb-2">历史结算记录 (Historical Transactions)</h5>
                             <div className="overflow-x-auto">
@@ -663,18 +778,14 @@ export default function DQAQPanel() {
                                             <th className="p-1 border">Period</th>
                                             <th className="p-1 border">Settle Date</th>
                                             <th className="p-1 border">Shares</th>
-                                            <th className="p-1 border">Status</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {historyRecords.map((rec: any, idx: number) => (
+                                        {settledRecords.map((rec: any, idx: number) => (
                                             <tr key={idx} className="bg-white">
                                                 <td className="p-1 border">{rec.period_id}</td>
                                                 <td className="p-1 border">{rec.settle_date}</td>
                                                 <td className="p-1 border">{rec.shares.toFixed(2)}</td>
-                                                <td className={`p-1 border ${rec.status === 'Knocked Out' ? 'text-red-500 font-bold' : ''}`}>
-                                                    {rec.status}
-                                                </td>
                                             </tr>
                                         ))}
                                     </tbody>

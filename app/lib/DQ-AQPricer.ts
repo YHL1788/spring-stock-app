@@ -40,6 +40,16 @@ export interface SimulationParams {
   risk_free_rate: number;     
 }
 
+// 新增：用于绘图的数据接口
+export interface PlotData {
+    barrier_ki: number;
+    barrier_ko: number;
+    spot_price: number;
+    history_prices: number[]; // 仅包含从 Trade Date 开始的有效历史
+    future_paths: number[][]; // 抽样返回的未来模拟路径（例如前50条）
+    total_days: number;       // 总交易天数
+}
+
 export interface ValuationResult {
   expected_shares: number;
   ko_probability: number;
@@ -56,6 +66,7 @@ export interface ValuationResult {
   final_r: number;
   calc_sigma: number;
   history_records?: any[]; // 历史交易明细
+  plot_data?: PlotData;    // 新增：绘图数据
 }
 
 // ==========================================
@@ -292,14 +303,22 @@ export class DQAQValuator {
             
             // 过滤出合约期内的历史数据
             const filtered_history: number[] = [];
+            // 注意：history_prices可能包含 trade_date 之前的数据，我们需要确保从 trade_date 之后开始取
+            // 实际上对于模拟路径，index 0 是 S0 (Trade Date Price)
+            // 所以我们不需要 Trade Date 的历史收盘价作为路径的第一个点，S0已经是已知的参数
+            // 我们需要 Trade Date 之后的每一个交易日的收盘价
+            
             for(let i=0; i<history_prices.length; i++) {
-                if (isDateAfterOrEqual(history_dates[i], contract_start)) {
+                if (isDateAfterOrEqual(history_dates[i], trade_dt)) { 
                     filtered_history.push(history_prices[i]);
                 }
             }
             history_segment = filtered_history;
 
             if (history_segment.length > 0) {
+                // 模拟路径[0] 是 S0, 路径[1] 是 T+1
+                // 如果filtered_history包含了T+0 (Trade Date)，我们需要根据情况处理
+                // 这里简化处理：check_path 以 S0 开头
                 const check_path = [this.s0_trade, ...history_segment];
                 const res = this.evaluate_path(check_path, true);
                 accumulated_hist_shares = res.final_shares;
@@ -312,7 +331,7 @@ export class DQAQValuator {
             
             const filtered_history: number[] = [];
             for(let i=0; i<history_prices.length; i++) {
-                if (isDateAfterOrEqual(history_dates[i], contract_start) && isDateBeforeOrEqual(history_dates[i], contract_end)) {
+                if (isDateAfterOrEqual(history_dates[i], trade_dt) && isDateBeforeOrEqual(history_dates[i], contract_end)) {
                     filtered_history.push(history_prices[i]);
                 }
             }
@@ -346,9 +365,12 @@ export class DQAQValuator {
         // 3. 蒙特卡洛模拟
         let total_exp_shares = accumulated_hist_shares;
         let ko_count = is_historically_ko ? this.sim_params.sim_count : 0;
+        
+        // 存储用于绘图的未来路径样本 (例如取前50条)
+        const future_paths_sample: number[][] = [];
 
         if (!is_historically_ko && !is_expired_mode) {
-            const past_len = history_segment.length;
+            const past_len = history_segment.length; // 已经过去的交易天数 (不含S0)
             const remaining_days = this.total_days - past_len;
 
             if (remaining_days > 0) {
@@ -373,6 +395,11 @@ export class DQAQValuator {
                         const diffusion = sigma * Math.sqrt(this.dt) * z;
                         p = p * Math.exp(drift + diffusion);
                         future_path.push(p);
+                    }
+
+                    // 仅保存前50条路径用于绘图
+                    if (i < 50) {
+                        future_paths_sample.push(future_path);
                     }
 
                     // 拼接完整路径
@@ -401,6 +428,17 @@ export class DQAQValuator {
         
         const fx = final_fx_rate || 1.0;
 
+        // 准备绘图数据
+        // 注意：history_segment 仅包含收盘价，不含 S0。我们在绘图时手动把 S0 加在最前面。
+        const plot_data: PlotData = {
+            barrier_ki: this.strike,
+            barrier_ko: this.ko_barrier,
+            spot_price: this.s0_trade,
+            history_prices: history_segment,
+            future_paths: future_paths_sample,
+            total_days: this.total_days
+        };
+
         return {
             expected_shares: total_exp_shares,
             ko_probability: ko_count / this.sim_params.sim_count,
@@ -416,7 +454,8 @@ export class DQAQValuator {
             final_fx_rate: fx,
             final_r: this.sim_params.risk_free_rate,
             calc_sigma: this.sigma,
-            history_records
+            history_records,
+            plot_data // 返回绘图数据
         };
     }
 }
