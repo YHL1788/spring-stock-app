@@ -390,7 +390,8 @@ export class DQAQValuator {
 
         // 4. Final Values
         const net_price_shares = total_exp_shares - shares_settled_paid;
-        const spread = this.s0_trade - this.strike;
+        // Modified: Spread based on current market price instead of initial spot
+        const spread = current_mkt_p - this.strike;
         
         const val_full_usd = total_exp_shares * spread;
         const val_net_usd = net_price_shares * spread;
