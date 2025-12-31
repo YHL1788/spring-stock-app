@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { DQAQValuator, Period, BasicInfo, UnderlyingInfo, SimulationParams, ValuationResult, calculateVolatility } from "@/app/lib/DQ-AQPricer";
+// Change the import path to be relative to fix the resolution error
+import { DQAQValuator, Period, BasicInfo, UnderlyingInfo, SimulationParams, ValuationResult, calculateVolatility } from "../../../lib/DQ-AQPricer";
 
 // Default Periods from Python
 const DEFAULT_PERIODS: Period[] = [
@@ -20,31 +21,52 @@ const DEFAULT_PERIODS: Period[] = [
     { period_id: 13, obs_start: "2026-03-26", obs_end: "2026-04-08", settle_date: "2026-04-09", trading_days: 9 },
 ];
 
+// 定义默认值常量，用于 Placeholder 和 Fallback
+const DEFAULTS = {
+    ticker: "AMD",
+    stockName: "AMD",
+    spotPrice: 212.92,
+    broker: "EFGL",
+    account: "EFG",
+    executor: "Team",
+    currency: "USD",
+    tradeDate: "2025-10-08",
+    dailyShares: -6.0,
+    maxGlobalShares: -1488.0,
+    kiPct: 1.2835,
+    koPct: 0.93,
+    leverage: 2.0,
+    simCount: 5000,
+    randomSeed: 42,
+    riskFree: 0.045,
+    fxRate: 7.8
+};
+
 export default function DQAQPanel() {
   // State: 1. Underlying
-  const [ticker, setTicker] = useState("AMD");
-  const [stockName, setStockName] = useState("AMD");
-  const [spotPrice, setSpotPrice] = useState<number>(212.92); // S0
-  const [currentMktPrice, setCurrentMktPrice] = useState<string>(""); // MTM (Optional, if empty use quote)
+  const [ticker, setTicker] = useState("");
+  const [stockName, setStockName] = useState("");
+  const [spotPrice, setSpotPrice] = useState<string>(""); // String to allow empty
+  const [currentMktPrice, setCurrentMktPrice] = useState<string>(""); 
   const [loadingMarket, setLoadingMarket] = useState(false);
 
   // State: 2. Basic
   const [contractType, setContractType] = useState<'DQ' | 'AQ'>('DQ');
-  const [broker, setBroker] = useState("EFGL");
-  const [account, setAccount] = useState("EFG");
-  const [executor, setExecutor] = useState("Team");
-  const [currency, setCurrency] = useState("USD");
-  const [tradeDate, setTradeDate] = useState("2025-10-08");
-  const [dailyShares, setDailyShares] = useState(-6.0); // 默认负数
-  const [maxGlobalShares, setMaxGlobalShares] = useState(-1488.0); // 默认负数
-  const [kiPct, setKiPct] = useState(1.2835);
-  const [koPct, setKoPct] = useState(0.93);
-  const [leverage, setLeverage] = useState(2.0);
+  const [broker, setBroker] = useState("");
+  const [account, setAccount] = useState("");
+  const [executor, setExecutor] = useState("");
+  const [currency, setCurrency] = useState("");
+  const [tradeDate, setTradeDate] = useState("");
+  const [dailyShares, setDailyShares] = useState<string>(""); 
+  const [maxGlobalShares, setMaxGlobalShares] = useState<string>(""); 
+  const [kiPct, setKiPct] = useState<string>("");
+  const [koPct, setKoPct] = useState<string>("");
+  const [leverage, setLeverage] = useState<string>("");
 
   // State: 3. Sim
-  const [simCount, setSimCount] = useState(5000);
-  const [randomSeed, setRandomSeed] = useState(42);
-  const [riskFreeInput, setRiskFreeInput] = useState<string>("0.045"); 
+  const [simCount, setSimCount] = useState<string>("");
+  const [randomSeed, setRandomSeed] = useState<string>("");
+  const [riskFreeInput, setRiskFreeInput] = useState<string>(""); 
   const [fxRateInput, setFxRateInput] = useState<string>(""); 
   const [historyStartInput, setHistoryStartInput] = useState<string>(""); 
 
@@ -54,9 +76,22 @@ export default function DQAQPanel() {
   // UI State
   const [calculating, setCalculating] = useState(false);
   const [result, setResult] = useState<ValuationResult | null>(null);
-  const [historyRecords, setHistoryRecords] = useState<any[]>([]); // 新增: 历史结算记录
+  const [historyRecords, setHistoryRecords] = useState<any[]>([]); 
 
   // ================= 逻辑函数 =================
+
+  // 获取有效数值 (输入为空则使用默认值)
+  const getVal = (val: string, defaultVal: number): number => {
+      return val === "" ? defaultVal : Number(val);
+  };
+  const getStr = (val: string, defaultVal: string): string => {
+      return val === "" ? defaultVal : val;
+  };
+  
+  // 仅用于 UI 展示计算 (如 KI Price)
+  const uiSpot = getVal(spotPrice, DEFAULTS.spotPrice);
+  const uiKiPct = getVal(kiPct, DEFAULTS.kiPct);
+  const uiKoPct = getVal(koPct, DEFAULTS.koPct);
 
   // Period 操作
   const addPeriod = () => {
@@ -83,8 +118,9 @@ export default function DQAQPanel() {
   };
   const resetPeriods = () => setPeriods(DEFAULT_PERIODS);
   const generatePeriods = () => {
+    const tDate = getStr(tradeDate, DEFAULTS.tradeDate);
     const list: Period[] = [];
-    let currentDate = new Date(tradeDate);
+    let currentDate = new Date(tDate);
     currentDate.setDate(currentDate.getDate() + 1);
     for (let i = 1; i <= 12; i++) {
         const start = new Date(currentDate);
@@ -98,14 +134,12 @@ export default function DQAQPanel() {
     setPeriods(list);
   };
 
-  // 辅助函数: 获取报价 (参考用户提供)
   const fetchQuotePrice = async (symbol: string): Promise<number | null> => {
       try {
-          const apiUrl = `/api/quote?symbol=${symbol}`; // 注意路径
+          const apiUrl = `/api/quote?symbol=${symbol}`; 
           const response = await fetch(apiUrl);
           if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
           const data = await response.json();
-          // 适配不同的 API 返回格式
           const price = data.regularMarketPrice || data.price || data.close;
           return typeof price === 'number' ? price : null;
       } catch (e) {
@@ -124,51 +158,59 @@ export default function DQAQPanel() {
     await new Promise(r => setTimeout(r, 100)); // UI flush
 
     try {
-        // 1. 准备参数 (自动填充逻辑)
+        // 1. 准备参数 (使用输入值或默认值)
+        const calcTicker = getStr(ticker, DEFAULTS.ticker);
+        const calcTradeDate = getStr(tradeDate, DEFAULTS.tradeDate);
+        const calcSpotPrice = getVal(spotPrice, DEFAULTS.spotPrice);
+
         // Risk Free
-        let r = 0.045; 
+        let r = DEFAULTS.riskFree; 
         if (riskFreeInput === "") {
-            const tnx = await fetchQuotePrice("^TNX");
-            if (tnx !== null) r = tnx / 100;
-        } else r = parseFloat(riskFreeInput);
+            // 如果为空，尝试获取 TNX，失败则用默认
+            try {
+                const tnx = await fetchQuotePrice("^TNX");
+                if (tnx !== null) r = tnx / 100;
+            } catch(e) {}
+        } else {
+            r = parseFloat(riskFreeInput);
+        }
 
         // FX Rate
-        let fx = 7.8;
+        let fx = DEFAULTS.fxRate;
         if (fxRateInput === "") {
-            const fxP = await fetchQuotePrice("HKD=X");
-            if (fxP !== null) fx = fxP;
-        } else fx = parseFloat(fxRateInput);
+            try {
+                const fxP = await fetchQuotePrice("HKD=X");
+                if (fxP !== null) fx = fxP;
+            } catch(e) {}
+        } else {
+            fx = parseFloat(fxRateInput);
+        }
 
         // History Start
         let hStart = historyStartInput;
         if (hStart === "") {
-            const d = new Date(tradeDate);
-            d.setDate(d.getDate() - 28); // Python example defaults to T-20 (approx)
+            const d = new Date(calcTradeDate);
+            d.setDate(d.getDate() - 28); 
             hStart = d.toISOString().split('T')[0];
         }
 
-        // 2. 获取历史数据 (History API) & 计算 Sigma
+        // 2. 获取历史数据
         let historyPrices: number[] = [];
         let historyDates: string[] = [];
         
         try {
-            // 使用 /api/history 获取数据
-            const histRes = await fetch(`/api/history?symbol=${ticker}&from=${hStart}`);
+            const histRes = await fetch(`/api/history?symbol=${calcTicker}&from=${hStart}`);
             if (histRes.ok) {
                 const histData = await histRes.json();
-                
-                // 适配 API 返回结构 { symbol, currency, data: [{date, close...}] }
                 let rawList: any[] = [];
                 if (histData.data && Array.isArray(histData.data)) {
                     rawList = histData.data;
                 } else if (Array.isArray(histData)) {
                     rawList = histData;
                 }
-
-                // 提取收盘价
                 rawList.forEach((item: any) => {
                     const price = item.close || item.adjClose || item.price;
-                    const date = item.date; // Expecting YYYY-MM-DD from API
+                    const date = item.date; 
                     if (typeof price === 'number' && !isNaN(price) && date) {
                         historyPrices.push(price);
                         historyDates.push(date);
@@ -179,39 +221,44 @@ export default function DQAQPanel() {
             console.warn("History fetch error:", e);
         }
 
-        // 计算波动率
         const sigma = calculateVolatility(historyPrices);
 
         // 3. 确定当前市价 (MTM)
-        // 如果输入框为空，则实时获取，如果还是空，则尝试使用历史数据最后一位
-        let finalMktPrice = spotPrice; 
+        let finalMktPrice = calcSpotPrice; 
         if (currentMktPrice !== "") {
             finalMktPrice = parseFloat(currentMktPrice);
         } else {
-            const p = await fetchQuotePrice(ticker);
+            const p = await fetchQuotePrice(calcTicker);
             if (p !== null) {
                 finalMktPrice = p;
-                setCurrentMktPrice(p.toString()); // 更新 UI
+                setCurrentMktPrice(p.toString());
             } else if (historyPrices.length > 0) {
                 finalMktPrice = historyPrices[historyPrices.length - 1];
             }
         }
 
-        // 4. 构造对象 (Data Classes)
+        // 4. 构造对象
         const basic: BasicInfo = {
             contract_type: contractType,
-            broker, account, executor, currency,
-            trade_date: tradeDate,
-            daily_shares: Number(dailyShares),
-            max_global_shares: Number(maxGlobalShares),
-            ki_barrier_pct: Number(kiPct),
-            ko_barrier_pct: Number(koPct),
-            leverage: Number(leverage)
+            broker: getStr(broker, DEFAULTS.broker),
+            account: getStr(account, DEFAULTS.account),
+            executor: getStr(executor, DEFAULTS.executor),
+            currency: getStr(currency, DEFAULTS.currency),
+            trade_date: calcTradeDate,
+            daily_shares: getVal(dailyShares, DEFAULTS.dailyShares),
+            max_global_shares: getVal(maxGlobalShares, DEFAULTS.maxGlobalShares),
+            ki_barrier_pct: getVal(kiPct, DEFAULTS.kiPct),
+            ko_barrier_pct: getVal(koPct, DEFAULTS.koPct),
+            leverage: getVal(leverage, DEFAULTS.leverage)
         };
-        const underlying: UnderlyingInfo = { ticker, stock_name: stockName, spot_price: Number(spotPrice) };
+        const underlying: UnderlyingInfo = { 
+            ticker: calcTicker, 
+            stock_name: getStr(stockName, DEFAULTS.stockName), 
+            spot_price: calcSpotPrice 
+        };
         const sim: SimulationParams = {
-            sim_count: Number(simCount),
-            random_seed: Number(randomSeed),
+            sim_count: getVal(simCount, DEFAULTS.simCount),
+            random_seed: getVal(randomSeed, DEFAULTS.randomSeed),
             risk_free_rate: r,
             sim_fx_rate: fx,
             history_start_date: hStart
@@ -219,9 +266,8 @@ export default function DQAQPanel() {
 
         // 5. 实例化 Valuator 并运行
         const valuator = new DQAQValuator(basic, underlying, sim, periods, sigma);
-        const valDt = new Date().toISOString().split('T')[0]; // 今天作为估值日
+        const valDt = new Date().toISOString().split('T')[0]; 
         
-        // 这里我们在 DQ-AQPricer.ts 中添加了 history_dates 参数支持
         const res = valuator.generate_report(finalMktPrice, historyPrices, historyDates, valDt, fx);
         
         setResult(res);
@@ -247,22 +293,23 @@ export default function DQAQPanel() {
                     <div className="col-span-1 sm:col-span-2">
                         <label className="block text-gray-500 text-xs">标的代码 (Ticker)</label>
                         <input 
-                            className="border w-full p-1 rounded" 
+                            className="border w-full p-1 rounded placeholder:text-gray-300" 
                             value={ticker} 
+                            placeholder={DEFAULTS.ticker}
                             onChange={e => setTicker(e.target.value)} 
                         />
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">标的名称 (Stock Name)</label>
-                        <input className="border w-full p-1 rounded" value={stockName} onChange={e=>setStockName(e.target.value)} />
+                        <input className="border w-full p-1 rounded placeholder:text-gray-300" value={stockName} placeholder={DEFAULTS.stockName} onChange={e=>setStockName(e.target.value)} />
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">初始价格 (S0)</label>
-                        <input type="number" className="border w-full p-1 rounded" value={spotPrice} onChange={e=>setSpotPrice(Number(e.target.value))} />
+                        <input type="number" className="border w-full p-1 rounded placeholder:text-gray-300" value={spotPrice} placeholder={String(DEFAULTS.spotPrice)} onChange={e=>setSpotPrice(e.target.value)} />
                     </div>
                     <div className="col-span-1 sm:col-span-2">
                         <label className="block text-gray-500 text-xs">当前市价 (MTM Price)</label>
-                        <input type="number" placeholder="留白自动获取" className="border w-full p-1 rounded" value={currentMktPrice} onChange={e=>setCurrentMktPrice(e.target.value)} />
+                        <input type="number" placeholder="留白自动获取" className="border w-full p-1 rounded placeholder:text-gray-300" value={currentMktPrice} onChange={e=>setCurrentMktPrice(e.target.value)} />
                     </div>
                 </div>
             </div>
@@ -273,23 +320,24 @@ export default function DQAQPanel() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                     <div>
                         <label className="block text-gray-500 text-xs">券商 (Broker)</label>
-                        <input className="border w-full p-1 rounded" value={broker} onChange={e=>setBroker(e.target.value)} />
+                        <input className="border w-full p-1 rounded placeholder:text-gray-300" value={broker} placeholder={DEFAULTS.broker} onChange={e=>setBroker(e.target.value)} />
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">账户 (Account)</label>
-                        <input className="border w-full p-1 rounded" value={account} onChange={e=>setAccount(e.target.value)} />
+                        <input className="border w-full p-1 rounded placeholder:text-gray-300" value={account} placeholder={DEFAULTS.account} onChange={e=>setAccount(e.target.value)} />
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">执行人 (Executor)</label>
-                        <input className="border w-full p-1 rounded" value={executor} onChange={e=>setExecutor(e.target.value)} />
+                        <input className="border w-full p-1 rounded placeholder:text-gray-300" value={executor} placeholder={DEFAULTS.executor} onChange={e=>setExecutor(e.target.value)} />
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">币种 (Currency)</label>
-                        <input className="border w-full p-1 rounded" value={currency} onChange={e=>setCurrency(e.target.value)} />
+                        <input className="border w-full p-1 rounded placeholder:text-gray-300" value={currency} placeholder={DEFAULTS.currency} onChange={e=>setCurrency(e.target.value)} />
                     </div>
                     <div className="col-span-1 sm:col-span-2">
                         <label className="block text-gray-500 text-xs">交易日期 (Trade Date)</label>
-                        <input type="date" className="border w-full p-1 rounded" value={tradeDate} onChange={e=>setTradeDate(e.target.value)} />
+                        <input type="date" className="border w-full p-1 rounded text-gray-700 placeholder:text-gray-300" value={tradeDate} onChange={e=>setTradeDate(e.target.value)} />
+                        {tradeDate === "" && <div className="text-[9px] text-gray-400 mt-0.5">默认: {DEFAULTS.tradeDate}</div>}
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">合约类型 (Type)</label>
@@ -300,27 +348,27 @@ export default function DQAQPanel() {
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">杠杆 (Leverage)</label>
-                        <input type="number" className="border w-full p-1 rounded" value={leverage} onChange={e=>setLeverage(Number(e.target.value))} />
+                        <input type="number" className="border w-full p-1 rounded placeholder:text-gray-300" value={leverage} placeholder={String(DEFAULTS.leverage)} onChange={e=>setLeverage(e.target.value)} />
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">每日股数 (Daily)</label>
-                        <input type="number" className="border w-full p-1 rounded" value={dailyShares} onChange={e=>setDailyShares(Number(e.target.value))} />
+                        <input type="number" className="border w-full p-1 rounded placeholder:text-gray-300" value={dailyShares} placeholder={String(DEFAULTS.dailyShares)} onChange={e=>setDailyShares(e.target.value)} />
                         <span className="text-[9px] text-gray-400">DQ负</span>
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">最大股数 (Max)</label>
-                        <input type="number" className="border w-full p-1 rounded" value={maxGlobalShares} onChange={e=>setMaxGlobalShares(Number(e.target.value))} />
+                        <input type="number" className="border w-full p-1 rounded placeholder:text-gray-300" value={maxGlobalShares} placeholder={String(DEFAULTS.maxGlobalShares)} onChange={e=>setMaxGlobalShares(e.target.value)} />
                         <span className="text-[9px] text-gray-400">DQ负</span>
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">敲入 (KI %)</label>
-                        <input type="number" className="border w-full p-1 rounded" value={kiPct} onChange={e=>setKiPct(Number(e.target.value))} step={0.0001}/>
-                        <span className="text-[9px] text-gray-400">{(spotPrice * kiPct).toFixed(2)}</span>
+                        <input type="number" className="border w-full p-1 rounded placeholder:text-gray-300" value={kiPct} placeholder={String(DEFAULTS.kiPct)} onChange={e=>setKiPct(e.target.value)} step={0.0001}/>
+                        <span className="text-[9px] text-gray-400">{(uiSpot * uiKiPct).toFixed(2)}</span>
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">敲出 (KO %)</label>
-                        <input type="number" className="border w-full p-1 rounded" value={koPct} onChange={e=>setKoPct(Number(e.target.value))} step={0.01}/>
-                        <span className="text-[9px] text-gray-400">{(spotPrice * koPct).toFixed(2)}</span>
+                        <input type="number" className="border w-full p-1 rounded placeholder:text-gray-300" value={koPct} placeholder={String(DEFAULTS.koPct)} onChange={e=>setKoPct(e.target.value)} step={0.01}/>
+                        <span className="text-[9px] text-gray-400">{(uiSpot * uiKoPct).toFixed(2)}</span>
                     </div>
                 </div>
             </div>
@@ -331,24 +379,24 @@ export default function DQAQPanel() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                     <div>
                         <label className="block text-gray-500 text-xs">无风险利率 (r)</label>
-                        <input className="border w-full p-1 rounded" placeholder="留白读取Yahoo" value={riskFreeInput} onChange={e=>setRiskFreeInput(e.target.value)} />
+                        <input className="border w-full p-1 rounded placeholder:text-gray-300" placeholder="留白读取Yahoo" value={riskFreeInput} onChange={e=>setRiskFreeInput(e.target.value)} />
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">历史起始日 (Start)</label>
-                        <input type="date" className="border w-full p-1 rounded" value={historyStartInput} onChange={e=>setHistoryStartInput(e.target.value)} />
-                        <span className="text-[9px] text-gray-400">留白T-20</span>
+                        <input type="date" className="border w-full p-1 rounded placeholder:text-gray-300" value={historyStartInput} onChange={e=>setHistoryStartInput(e.target.value)} />
+                        <span className="text-[9px] text-gray-400">留白T-28</span>
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">模拟路径 (Paths)</label>
-                        <input type="number" className="border w-full p-1 rounded" value={simCount} onChange={e=>setSimCount(Number(e.target.value))} />
+                        <input type="number" className="border w-full p-1 rounded placeholder:text-gray-300" value={simCount} placeholder={String(DEFAULTS.simCount)} onChange={e=>setSimCount(e.target.value)} />
                     </div>
                     <div>
                         <label className="block text-gray-500 text-xs">种子 (Seed)</label>
-                        <input type="number" className="border w-full p-1 rounded" value={randomSeed} onChange={e=>setRandomSeed(Number(e.target.value))} />
+                        <input type="number" className="border w-full p-1 rounded placeholder:text-gray-300" value={randomSeed} placeholder={String(DEFAULTS.randomSeed)} onChange={e=>setRandomSeed(e.target.value)} />
                     </div>
                     <div className="col-span-1 sm:col-span-2">
                         <label className="block text-gray-500 text-xs">汇率 (To HKD)</label>
-                        <input className="border w-full p-1 rounded" placeholder="留白读取Yahoo" value={fxRateInput} onChange={e=>setFxRateInput(e.target.value)} />
+                        <input className="border w-full p-1 rounded placeholder:text-gray-300" placeholder="留白读取Yahoo" value={fxRateInput} onChange={e=>setFxRateInput(e.target.value)} />
                     </div>
                 </div>
             </div>
