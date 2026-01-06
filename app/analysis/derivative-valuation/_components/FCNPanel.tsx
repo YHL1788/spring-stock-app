@@ -433,7 +433,11 @@ export default function FCNPanel() {
     };
 
     return (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        /* 修改说明：
+           将网格布局设置为 grid-cols-1 lg:grid-cols-2
+           这样在大屏幕下，左右两栏各占 50% (1:1 比例)
+        */
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
             {/* 左侧：参数输入表单 */}
             <div className="lg:col-span-1 bg-white shadow rounded-lg p-5 max-h-[1200px] overflow-y-auto space-y-6">
                 {/* 1. 基础信息 & 结构参数 */}
@@ -587,7 +591,8 @@ export default function FCNPanel() {
             </div>
 
             {/* === 右侧：结果展示 === */}
-            <div className="lg:col-span-2 bg-white shadow rounded-lg p-6 min-h-[600px]">
+            {/* 修改说明：修改 col-span-2 为 col-span-1，确保左右各一半 */}
+            <div className="lg:col-span-1 bg-white shadow rounded-lg p-6 min-h-[600px]">
                 {fcnResult ? (
                     <div className="space-y-6 animate-fadeIn">
                         <div className="border-b border-gray-200 pb-4">
