@@ -26,8 +26,8 @@ const navigation = [
     children: [
       { name: '全球概览', href: '/market/overview' },
       { name: '重大事件日历', href: '/market/calendar' },
-      { name: '个股查询', href: '/market/quote' }, 
-      { name: '我的自选股', href: '/market/pools' }, 
+      { name: '个股查询', href: '/market/quote' },
+      { name: '我的自选股', href: '/market/pools' },
     ],
   },
   {
@@ -38,7 +38,7 @@ const navigation = [
       { name: '衍生品测算', href: '/analysis/derivative-valuation' },
       { name: '供应链', href: '/analysis/supply-chain' },
       { name: '同业估值比对', href: '/analysis/valuation' }
-    ,
+      ,
     ],
   },
   {
@@ -50,7 +50,16 @@ const navigation = [
       { name: '我的策略', href: '/strategies/mine' },
     ],
   },
-  { name: '账簿', href: '#', current: false },
+  {
+    name: '账簿',
+    href: '#',
+    current: false,
+    children: [
+      { name: 'SIP账簿', href: '/book/SIP_book' },
+      { name: '我的账簿', href: '/book/my_book' },
+    ],
+  },
+
   {
     name: '投资笔记',
     href: '#',
@@ -90,7 +99,7 @@ export default function Header() {
               </div>
               <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium mt-0.5">Spring Investment Platform</span>
             </Link>
-            
+
             {/* 導航菜單區域 (桌面端) */}
             <div className="hidden ml-16 lg:flex lg:items-center lg:space-x-8">
               {navigation.map((item) => (
@@ -126,7 +135,7 @@ export default function Header() {
               ))}
             </div>
           </div>
-          
+
           {/* 右側功能區 */}
           <div className="flex items-center gap-4">
             {/* 移除了語言切換按鈕 */}
