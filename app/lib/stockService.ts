@@ -1,70 +1,82 @@
-import { stockPoolData } from '@/app/data/stock_pool';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { getFirestore, collection, getDocs, query } from 'firebase/firestore';
+import { getAuth, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+
+// 1. 初始化 Firebase (单例模式)
+// 尝试从环境变量读取配置
+const firebaseConfigStr = process.env.NEXT_PUBLIC_FIREBASE_CONFIG;
+const firebaseConfig = firebaseConfigStr ? JSON.parse(firebaseConfigStr) : {};
+
+// 确保 Firebase 只初始化一次
+const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+// 应用 ID，用于隔离数据
+const APP_ID = process.env.NEXT_PUBLIC_APP_ID || 'default-app';
+
+// 导出 db 和 auth 供 Admin 页面写操作使用
+export { db, auth, APP_ID };
 
 /**
- * 获取股票的基础数据 (包含财报、分红等信息)
- * 调用 /api/fundamentals
- * 如果请求失败或数据不完整，返回 null，不抛出异常
+ * [核心] 从数据库获取股票列表
  */
-export async function getStockFundamentals(symbol: string) {
-  // 1. 修复作用域问题：将变量定义移到 try 块外部，确保 catch 块可以访问
-  const cleanSymbol = symbol ? symbol.trim() : '';
-  
+export async function fetchStockPoolFromDB(): Promise<any[]> {
   try {
-    if (!cleanSymbol) return null;
-
-    const response = await fetch(`/api/fundamentals?symbol=${cleanSymbol}`);
-    
-    if (!response.ok) {
-      // 这里的错误可能是 404 或 API 限制，我们选择静默跳过
-      return null;
+    // 确保登录 (匿名或 Token)
+    if (!auth.currentUser) {
+       // @ts-ignore
+      if (typeof window !== 'undefined' && window.__initial_auth_token) {
+         // @ts-ignore
+        await signInWithCustomToken(auth, window.__initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
     }
 
-    const data = await response.json();
+    const q = query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'stock_pool'));
+    const snapshot = await getDocs(q);
     
-    // 简单校验数据有效性，必须包含 General 信息才算有效
-    if (!data || !data.General) {
-      return null;
-    }
+    if (snapshot.empty) return [];
 
-    return data;
+    return snapshot.docs.map(doc => doc.data());
   } catch (error) {
-    // 网络错误等也静默处理，现在这里可以安全访问 cleanSymbol 了
-    console.error(`Error in getStockFundamentals for ${cleanSymbol}:`, error);
-    return null;
+    console.error("Error fetching stock pool:", error);
+    return [];
   }
 }
 
+// --- 纯函数工具 (不依赖数据库，仅处理数据逻辑) ---
+
 /**
- * 从本地股票池获取单只股票的详细信息
- * 用于获取中文名称、行业分类等本地维护的静态数据
- * * 修改说明：显式声明返回类型为 any，以避免 TS 提示空对象缺少属性
+ * 根据代码获取详情
+ * @param symbol 股票代码
+ * @param stockPool 必须传入完整的股票池数组 (来自 Hook 或 DB)
  */
-export function getStockDetail(symbol: string): any {
-  if (!stockPoolData || !Array.isArray(stockPoolData)) return {};
-  
+export function getStockDetail(symbol: string, stockPool: any[] = []): any {
+  if (!stockPool?.length) return {};
   const target = symbol.trim().toUpperCase();
   
-  // 在股票池中查找匹配的代码
-  // 兼容 stock.symbol 或 stock.code 字段
-  return stockPoolData.find((stock: any) => {
-    const s = (stock.symbol || stock.code || '').toUpperCase();
-    return s === target;
-  }) || {};
+  // 1. 精确匹配
+  let found = stockPool.find((s: any) => s.symbol?.toUpperCase() === target);
+
+  // 2. 模糊匹配 (处理 CRM.US -> CRM)
+  if (!found && target.includes('.')) {
+    const shortTarget = target.split('.')[0];
+    found = stockPool.find((s: any) => s.symbol?.toUpperCase() === shortTarget);
+  }
+  return found || {};
 }
 
 /**
- * 获取所有可用的一级行业列表 (用于筛选)
+ * 获取所有一级行业
+ * @param stockPool 必须传入完整的股票池数组
  */
-export function getLevel1Sectors(): string[] {
-  if (!stockPoolData || !Array.isArray(stockPoolData)) return [];
-  
+export function getLevel1Sectors(stockPool: any[] = []): string[] {
+  if (!stockPool?.length) return [];
   const sectors = new Set<string>();
-  
-  stockPoolData.forEach((stock: any) => {
-    if (stock.sector_level_1) {
-      sectors.add(stock.sector_level_1);
-    }
+  stockPool.forEach((s: any) => {
+    if (s.sector_level_1) sectors.add(s.sector_level_1);
   });
-  
   return Array.from(sectors);
 }

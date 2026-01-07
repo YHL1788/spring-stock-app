@@ -69,6 +69,14 @@ const navigation = [
       { name: '我的笔记', href: '/notes/mine' },
     ],
   },
+    {
+    name: '开发者选项',
+    href: '#',
+    current: false,
+    children: [
+      { name: '系统股票池', href: '/admin/stock_pool' },
+    ],
+  },
   {
     name: '关于我們',
     href: '#',

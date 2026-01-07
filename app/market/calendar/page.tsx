@@ -2,12 +2,12 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { getStockDetail, getLevel1Sectors } from '@/app/lib/stockService'; 
-import { stockPoolData } from '@/app/data/stock_pool';
+import { useStockPool } from '@/app/hooks/useStockPool'; // <--- 修改 1: 引入 Hook，替代原来的 static import
 
 // --- 配置 ---
 const API_TOKEN = '692ff0e71412a4.89947654'; 
 
-// --- 图标组件 ---
+// --- 图标组件 (保持不变) ---
 const ChevronLeft = ({ className }: { className?: string }) => (
   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m15 18-6-6 6-6"/></svg>
 );
@@ -71,6 +71,9 @@ export default function CalendarPage() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [showJin10, setShowJin10] = useState(false);
 
+  // --- 修改 2: 使用 Hook 获取动态数据 ---
+  const { stocks: stockPool, loading: poolLoading } = useStockPool();
+
   // 筛选器
   const [selectedCountries, setSelectedCountries] = useState<string[]>(['US', 'CN']);
   const [sectorList, setSectorList] = useState<string[]>([]);
@@ -79,16 +82,21 @@ export default function CalendarPage() {
   const [inputYear, setInputYear] = useState(currentDate.getFullYear());
   const [inputMonth, setInputMonth] = useState(currentDate.getMonth() + 1);
 
-  // 初始化行业列表
+  // 初始化行业列表 (修改 3: 依赖 stockPool 变化)
   useEffect(() => {
     try {
-      const sectors = getLevel1Sectors();
-      setSectorList(['全部', ...sectors]);
+      // getLevel1Sectors 现在需要传入 stockPool
+      if (stockPool.length > 0) {
+        const sectors = getLevel1Sectors(stockPool);
+        setSectorList(['全部', ...sectors]);
+      } else {
+        setSectorList(['全部']);
+      }
     } catch (e) {
       console.warn("Failed to load sectors", e);
       setSectorList(['全部']);
     }
-  }, []);
+  }, [stockPool]);
 
   // 同步日期输入
   useEffect(() => {
@@ -101,6 +109,9 @@ export default function CalendarPage() {
     let isMounted = true;
 
     const fetchData = async () => {
+      // 增加逻辑: 如果在个股模式下且数据还没加载完，先不执行
+      if (viewMode === 'stock' && poolLoading) return;
+
       setLoading(true);
       setEvents([]); 
 
@@ -141,8 +152,8 @@ export default function CalendarPage() {
           // 个股逻辑 (改进版：使用 Calendar API 批量获取)
           // ========================
           
-          // 1. 获取本地股票池
-          const safeStockPool = Array.isArray(stockPoolData) ? stockPoolData : [];
+          // 1. 获取本地股票池 (修改 4: 使用 Hook 返回的 stockPool)
+          const safeStockPool = Array.isArray(stockPool) ? stockPool : [];
           if (safeStockPool.length === 0) {
              if (isMounted) setLoading(false);
              return;
@@ -186,7 +197,9 @@ export default function CalendarPage() {
 
           // 5. 拼接 Symbol 字符串 (EODHD Calendar API 支持逗号分隔的 symbols 参数)
           // 注意 URL 长度限制，如果股票非常多可能需要分批，这里假设股票池规模适中
-          const symbolsParam = targetSymbols.join(',');
+          // 修改: 为了安全起见，这里仍然建议切片，防止数据库数据过多导致 URL 超长
+          const limitedSymbols = targetSymbols.slice(0, 40); 
+          const symbolsParam = limitedSymbols.join(',');
 
           // 6. 发起请求：同时获取 Earnings 和 Dividends Calendar
           const earningsUrl = `https://eodhd.com/api/calendar/earnings?from=${fromDate}&to=${toDate}&symbols=${symbolsParam}&api_token=${API_TOKEN}&fmt=json`;
@@ -199,14 +212,14 @@ export default function CalendarPage() {
 
           const foundEvents: CalendarEvent[] = [];
 
-          // 辅助函数：尝试匹配本地信息 (兼容带后缀和不带后缀)
+          // 辅助函数：尝试匹配本地信息 (修改 5: 必须传入 stockPool)
           const findLocalInfo = (apiCode: string) => {
             // 尝试1: 直接匹配
-            let info = getStockDetail(apiCode) || {};
+            let info = getStockDetail(apiCode, stockPool) || {};
             // 尝试2: 去掉后缀匹配 (针对 CRM.US -> CRM)
             if (!info.name && apiCode.includes('.')) {
                 const shortCode = apiCode.split('.')[0];
-                const info2 = getStockDetail(shortCode);
+                const info2 = getStockDetail(shortCode, stockPool);
                 if (info2 && info2.name) return info2;
             }
             return info;
@@ -270,7 +283,7 @@ export default function CalendarPage() {
     fetchData();
 
     return () => { isMounted = false; };
-  }, [currentDate, viewMode, selectedSector]);
+  }, [currentDate, viewMode, selectedSector, poolLoading, stockPool]); // 修改 6: 增加依赖
 
   // --- UI 数据展示过滤 ---
   const displayEvents = useMemo(() => {
@@ -308,8 +321,6 @@ export default function CalendarPage() {
 
   const formatListDate = (dateStr: string) => {
     try {
-      const date = new Date(dateStr);
-      // 手动修正时区偏移显示问题
       // 简单做法：直接用 dateStr 解析
       const [y, m, d] = dateStr.split('-');
       const dateObj = new Date(parseInt(y), parseInt(m)-1, parseInt(d));
@@ -383,7 +394,7 @@ export default function CalendarPage() {
               ))
             ) : (
               <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 flex-1 mask-right">
-                {sectorList.map((sector) => (
+                {poolLoading ? <span className="text-xs text-gray-400">加载行业中...</span> : sectorList.map((sector) => (
                   <button key={sector} onClick={() => setSelectedSector(sector)} className={`px-3 py-1 rounded-full text-xs font-medium border transition-all whitespace-nowrap ${selectedSector === sector ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300 hover:text-blue-600'}`}>
                     {sector}
                   </button>
@@ -489,7 +500,7 @@ export default function CalendarPage() {
                         <p>{viewMode === 'macro' ? '本月暂无宏观数据' : `本月 (${inputMonth}月) 暂无个股重大事件`}</p>
                         {viewMode === 'stock' && events.length === 0 && (
                           <p className="text-xs text-slate-400 mt-2 max-w-xs text-center">
-                            请尝试切换到下个月份 (如 2025年3月)。
+                            请尝试切换到下个月份 。
                           </p>
                         )}
                       </div>
