@@ -5,18 +5,26 @@ import { useStockPool } from '@/app/hooks/useStockPool';
 import { db, auth, APP_ID } from '@/app/lib/stockService'; 
 import { doc, setDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 
-// 关键点：这里直接导入了您本地的 stock_pool.ts 文件
-// 您在本地修改这个文件，代码就会读到最新的数据
+// 导入本地数据作为“原始数据源”
 import { stockPoolData as initialLocalData } from '@/app/data/stock_pool'; 
 
 export default function StockPoolAdmin() {
+  // ---------------------------------------------------------
+  // 🔐 密码保护逻辑
+  // ---------------------------------------------------------
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+
+  // ---------------------------------------------------------
+  // ⚙️ 原有的 Admin 业务逻辑
+  // ---------------------------------------------------------
   const { stocks, loading, refresh } = useStockPool();
   
   const [formData, setFormData] = useState({ symbol: '', name: '', sector_level_1: '', sector_level_2: '' });
   const [isMigrating, setIsMigrating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
-  // ... (单个保存逻辑保持不变)
+  // 单条保存
   const handleSave = async () => {
     if (!formData.symbol || !formData.name) return alert("代码和名称必填");
     if (!auth.currentUser) return alert("未连接到数据库");
@@ -39,6 +47,7 @@ export default function StockPoolAdmin() {
     }
   };
 
+  // 单条删除
   const handleDelete = async (symbol: string) => {
     if (!confirm(`确认删除 ${symbol}?`)) return;
     try {
@@ -49,6 +58,7 @@ export default function StockPoolAdmin() {
     }
   };
 
+  // 填充编辑表单
   const fillForm = (s: any) => {
     setFormData({
       symbol: s.symbol || '',
@@ -58,33 +68,27 @@ export default function StockPoolAdmin() {
     });
   };
 
-  // --- 核心功能：从本地文件批量同步 ---
+  // 从本地文件批量同步
   const handleMigrate = async () => {
     const count = initialLocalData.length;
     if (!confirm(`准备将本地 stock_pool.ts 中的 ${count} 条数据同步到云端。\n\n注意：这会覆盖云端已存在的同名股票数据。继续吗？`)) return;
     
     setIsMigrating(true);
     try {
-      // Firestore batch 最多支持 500 条操作，您的数据量 (约160条) 在安全范围内
-      // 如果未来数据量特别大，需要分批处理 (chunking)
       const batch = writeBatch(db);
-      
       initialLocalData.forEach(item => {
         if (!item.symbol) return;
         const docId = item.symbol.trim().toUpperCase();
         const ref = doc(db, 'artifacts', APP_ID, 'public', 'data', 'stock_pool', docId);
-        
-        // 使用 set 而不是 update，确保是完全覆盖/新建
         batch.set(ref, {
           ...item,
           updatedAt: new Date().toISOString(),
           isMigrated: true
         });
       });
-
       await batch.commit();
       alert(`成功同步 ${count} 条数据！`);
-      refresh(); // 刷新列表查看结果
+      refresh(); 
     } catch (e) {
       console.error("Migration failed:", e);
       alert("同步失败，请检查控制台错误信息。");
@@ -93,17 +97,64 @@ export default function StockPoolAdmin() {
     }
   };
 
+  // ---------------------------------------------------------
+  // 🚪 拦截渲染：如果没有通过验证，显示密码输入框
+  // ---------------------------------------------------------
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-xl shadow-lg border border-slate-200 max-w-sm w-full">
+          <div className="text-center mb-6">
+            <h1 className="text-xl font-bold text-slate-800">🔒 开发者选项</h1>
+            <p className="text-slate-500 text-sm mt-1">请输入管理员密码以继续</p>
+          </div>
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            if (passwordInput === '25210228') {
+              setIsAuthenticated(true);
+            } else {
+              alert('访问被拒绝：密码错误');
+              setPasswordInput('');
+            }
+          }}>
+            <div className="mb-6">
+              <input 
+                type="password" 
+                className="w-full border border-slate-300 bg-slate-50 p-3 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all text-center tracking-widest"
+                placeholder="• • • • • • • •"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <button 
+              type="submit"
+              className="w-full bg-slate-900 text-white py-3 rounded-lg font-medium hover:bg-slate-800 transition-colors shadow-sm"
+            >
+              解锁进入
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------
+  // 🛠️ 正常的管理界面渲染 (验证通过后显示)
+  // ---------------------------------------------------------
   return (
     <div className="p-8 max-w-6xl mx-auto min-h-screen bg-slate-50 text-slate-900">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
         <div>
-          <h1 className="text-2xl font-bold">股票池管理 (Admin)</h1>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            股票池管理 (Admin)
+            <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full border border-green-200">已授权</span>
+          </h1>
           <p className="text-sm text-slate-500 mt-1">
             云端数据: {stocks.length} 条 | 本地文件 (待同步): {initialLocalData.length} 条
           </p>
         </div>
         <div className="flex gap-3">
-          {/* 这里是那个核心按钮 */}
           <button 
             onClick={handleMigrate} 
             disabled={isMigrating} 
@@ -121,7 +172,7 @@ export default function StockPoolAdmin() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* 左侧：手动添加/编辑表单 (保留此功能以备不时之需) */}
+        {/* 左侧：手动添加/编辑表单 */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-fit sticky top-6">
           <h2 className="font-bold text-lg mb-4 border-b pb-2">单条修改</h2>
           <div className="space-y-4">

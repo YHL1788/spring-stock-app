@@ -149,7 +149,7 @@ export default function CalendarPage() {
 
         } else {
           // ========================
-          // 个股逻辑 (改进版：使用 Calendar API 批量获取)
+          // 个股逻辑 (改进版：分批获取，确保“全部”模式下覆盖所有股票)
           // ========================
           
           // 1. 获取本地股票池 (修改 4: 使用 Hook 返回的 stockPool)
@@ -195,28 +195,19 @@ export default function CalendarPage() {
           const lastDayObj = new Date(y, m, 0);
           const toDate = `${y}-${String(m).padStart(2, '0')}-${lastDayObj.getDate()}`;
 
-          // 5. 拼接 Symbol 字符串 (EODHD Calendar API 支持逗号分隔的 symbols 参数)
-          // 注意 URL 长度限制，如果股票非常多可能需要分批，这里假设股票池规模适中
-          // 修改: 为了安全起见，这里仍然建议切片，防止数据库数据过多导致 URL 超长
-          const limitedSymbols = targetSymbols.slice(0, 40); 
-          const symbolsParam = limitedSymbols.join(',');
-
-          // 6. 发起请求：同时获取 Earnings 和 Dividends Calendar
-          const earningsUrl = `https://eodhd.com/api/calendar/earnings?from=${fromDate}&to=${toDate}&symbols=${symbolsParam}&api_token=${API_TOKEN}&fmt=json`;
-          const dividendsUrl = `https://eodhd.com/api/calendar/dividends?from=${fromDate}&to=${toDate}&symbols=${symbolsParam}&api_token=${API_TOKEN}&fmt=json`;
-
-          const [earningsRes, dividendsRes] = await Promise.all([
-            fetch(earningsUrl).catch(() => null),
-            fetch(dividendsUrl).catch(() => null)
-          ]);
+          // 5. 分批处理请求 (Batch Requests) - 修复逻辑BUG的核心
+          // 原来的 slice(0, 40) 会导致排在后面的股票被截断。现在改为每 50 个一组并行请求。
+          const BATCH_SIZE = 50; 
+          const batches = [];
+          for (let i = 0; i < targetSymbols.length; i += BATCH_SIZE) {
+            batches.push(targetSymbols.slice(i, i + BATCH_SIZE));
+          }
 
           const foundEvents: CalendarEvent[] = [];
 
-          // 辅助函数：尝试匹配本地信息 (修改 5: 必须传入 stockPool)
+          // 辅助函数：尝试匹配本地信息
           const findLocalInfo = (apiCode: string) => {
-            // 尝试1: 直接匹配
             let info = getStockDetail(apiCode, stockPool) || {};
-            // 尝试2: 去掉后缀匹配 (针对 CRM.US -> CRM)
             if (!info.name && apiCode.includes('.')) {
                 const shortCode = apiCode.split('.')[0];
                 const info2 = getStockDetail(shortCode, stockPool);
@@ -225,49 +216,61 @@ export default function CalendarPage() {
             return info;
           };
 
-          // --- A. 处理财报数据 ---
-          if (earningsRes && earningsRes.ok) {
-            const eData = await earningsRes.json();
-            // Calendar API 返回的是 earnings 数组
-            if (Array.isArray(eData.earnings)) {
-                eData.earnings.forEach((item: any) => {
-                    // item 结构: { code: "AAPL.US", report_date: "2023-10-26", estimate: 1.39, ... }
-                    const localDetail = findLocalInfo(item.code);
-                    foundEvents.push({
-                        type: '财报发布',
-                        date: item.report_date,
-                        code: item.code,
-                        stockName: localDetail.name || item.code,
-                        sectorL1: localDetail.sector_level_1 || '其他',
-                        sectorL2: localDetail.sector_level_2 || '',
-                        epsEstimate: item.estimate,
-                        currencySymbol: item.currency_symbol || '$' // Calendar API 有时包含货币符号
-                    });
-                });
-            }
-          }
+          // 并行执行所有批次的请求
+          await Promise.all(batches.map(async (batchSymbols) => {
+             const symbolsParam = batchSymbols.join(',');
+             const earningsUrl = `https://eodhd.com/api/calendar/earnings?from=${fromDate}&to=${toDate}&symbols=${symbolsParam}&api_token=${API_TOKEN}&fmt=json`;
+             const dividendsUrl = `https://eodhd.com/api/calendar/dividends?from=${fromDate}&to=${toDate}&symbols=${symbolsParam}&api_token=${API_TOKEN}&fmt=json`;
 
-          // --- B. 处理分红数据 ---
-          if (dividendsRes && dividendsRes.ok) {
-            const dData = await dividendsRes.json();
-            // Calendar API 返回的是 data 数组
-            if (Array.isArray(dData.data)) {
-                dData.data.forEach((item: any) => {
-                    // item 结构: { code: "AAPL.US", date: "2023-11-10", value: 0.24, ... } (date 通常为除权日)
-                    const localDetail = findLocalInfo(item.code);
-                    foundEvents.push({
-                        type: '除权派息',
-                        date: item.date, // Ex-Date
-                        code: item.code,
-                        stockName: localDetail.name || item.code,
-                        sectorL1: localDetail.sector_level_1 || '其他',
-                        sectorL2: localDetail.sector_level_2 || '',
-                        dividendValue: item.value,
-                        currencySymbol: item.currency_symbol || '$'
-                    });
-                });
-            }
-          }
+             try {
+               const [earningsRes, dividendsRes] = await Promise.all([
+                 fetch(earningsUrl).catch(() => null),
+                 fetch(dividendsUrl).catch(() => null)
+               ]);
+
+               // --- A. 处理财报数据 ---
+               if (earningsRes && earningsRes.ok) {
+                 const eData = await earningsRes.json();
+                 if (Array.isArray(eData.earnings)) {
+                     eData.earnings.forEach((item: any) => {
+                         const localDetail = findLocalInfo(item.code);
+                         foundEvents.push({
+                             type: '财报发布',
+                             date: item.report_date,
+                             code: item.code,
+                             stockName: localDetail.name || item.code,
+                             sectorL1: localDetail.sector_level_1 || '其他',
+                             sectorL2: localDetail.sector_level_2 || '',
+                             epsEstimate: item.estimate,
+                             currencySymbol: item.currency_symbol || '$' 
+                         });
+                     });
+                 }
+               }
+
+               // --- B. 处理分红数据 ---
+               if (dividendsRes && dividendsRes.ok) {
+                 const dData = await dividendsRes.json();
+                 if (Array.isArray(dData.data)) {
+                     dData.data.forEach((item: any) => {
+                         const localDetail = findLocalInfo(item.code);
+                         foundEvents.push({
+                             type: '除权派息',
+                             date: item.date, // Ex-Date
+                             code: item.code,
+                             stockName: localDetail.name || item.code,
+                             sectorL1: localDetail.sector_level_1 || '其他',
+                             sectorL2: localDetail.sector_level_2 || '',
+                             dividendValue: item.value,
+                             currencySymbol: item.currency_symbol || '$'
+                         });
+                     });
+                 }
+               }
+             } catch (e) {
+               console.error("Batch fetch error", e);
+             }
+          }));
           
           if (isMounted) {
             setEvents(foundEvents);
@@ -500,7 +503,7 @@ export default function CalendarPage() {
                         <p>{viewMode === 'macro' ? '本月暂无宏观数据' : `本月 (${inputMonth}月) 暂无个股重大事件`}</p>
                         {viewMode === 'stock' && events.length === 0 && (
                           <p className="text-xs text-slate-400 mt-2 max-w-xs text-center">
-                            请尝试切换到下个月份 。
+                            请尝试切换到下个月份 (如 2025年3月)。
                           </p>
                         )}
                       </div>
