@@ -55,7 +55,7 @@ const navigation = [
     href: '#',
     current: false,
     children: [
-      { name: 'SIP账簿', href: '/book/SIP_book' },
+      { name: '春天稳健混合1号基金', href: '/book/SP_wjhh1' },
       { name: '我的账簿', href: '/book/my_book' },
     ],
   },
