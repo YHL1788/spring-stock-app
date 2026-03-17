@@ -51,7 +51,7 @@ const EXAMPLE_PARAMS: FCNParams & { executor?: string } = {
     initial_spots: [134.7, 40.06, 35.38],
     current_spots: [],
     trade_date: "2025-10-10",
-    history_start_date: "2025-10-09",
+    history_start_date: "2025-10-09", // 非常重要，决定拉取多久的历史数据
     obs_dates: ["2025-11-24", "2025-12-24", "2026-01-26"],
     pay_dates: ["2025-11-26", "2025-12-30", "2026-01-28"],
     strike_pct: 0.825,
@@ -134,6 +134,7 @@ export default function FCNPanel() {
     const removeDateRow = (id: string) => { setDateRows(dateRows.filter(r => r.id !== id)); };
     const updateDateRow = (id: string, field: keyof DateRow, value: string) => { setDateRows(dateRows.map(r => r.id === id ? { ...r, [field]: value } : r)); };
 
+    // 获取当前最新价
     const fetchQuotePrice = async (symbol: string): Promise<number | null> => {
         try {
             const apiUrl = `/api/quote?symbol=${symbol}`;
@@ -148,7 +149,39 @@ export default function FCNPanel() {
         }
     };
 
-    // 核心计算逻辑抽取，支持传入任意数据（State数据或示例数据）
+    // 新增：获取历史价格序列以供定价引擎判定过去是否敲出
+    const fetchHistoricalPrices = async (symbol: string, startDate: string, endDate?: string): Promise<{ date: string, close: number }[]> => {
+        try {
+            // 构建 API URL，根据您的 route.js 可能需要调整参数名 (这里假设支持 symbol, start/from, end/to)
+            const apiUrl = `/api/history?symbol=${symbol}&start=${startDate}${endDate ? `&end=${endDate}` : ''}`;
+            const response = await fetch(apiUrl);
+            if (!response.ok) return [];
+            
+            const data = await response.json();
+            
+            // 假设返回的数据结构是数组，或者内部包裹了数据
+            let list = Array.isArray(data) ? data : (data.historical || data.data || []);
+            
+            // 整理为 FCNPricer 所需的统一格式 { date: 'YYYY-MM-DD', close: number }
+            return list.map((item: any) => {
+                // 处理可能的时间戳或日期字符串
+                const rawDate = item.date || item.timestamp;
+                const d = new Date(rawDate);
+                const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                
+                return {
+                    date: dateStr,
+                    close: Number(item.close || item.adjClose || item.price)
+                };
+            }).filter((item: any) => !isNaN(item.close));
+
+        } catch (e) {
+            console.error(`Failed to fetch history for ${symbol}:`, e);
+            return [];
+        }
+    };
+
+    // 核心计算逻辑抽取
     const executeCalculation = async (
         params: typeof basicParams,
         uRows: typeof underlyingRows,
@@ -156,9 +189,8 @@ export default function FCNPanel() {
     ) => {
         setLoading(true);
         setFetchStatus('参数解析中...');
-        setFcnResult(null); // 清除旧结果
+        setFcnResult(null); 
 
-        // 这里使用 setTimeout 是为了让 UI 先渲染 Loading 状态
         setTimeout(async () => {
             try {
                 if (!params.total_notional) throw new Error("请输入总名义本金");
@@ -209,6 +241,7 @@ export default function FCNPanel() {
                     ticker_name: ticker_names,
                     initial_spots,
                     current_spots: [],
+                    hist_prices: {}, // 初始化为空对象
                     discrete_dividends,
                     obs_dates,
                     pay_dates,
@@ -226,7 +259,7 @@ export default function FCNPanel() {
                     executor: params.executor
                 } as FCNParams;
 
-                setFetchStatus('正在检查股价...');
+                setFetchStatus('正在检查最新股价...');
                 const spotPromises = tickers.map(async (t, i) => {
                     const manual = current_spots_manual[i];
                     if (manual !== null) return manual;
@@ -237,7 +270,7 @@ export default function FCNPanel() {
                 const fetchedSpots = await Promise.all(spotPromises);
                 calcParams.current_spots = fetchedSpots;
 
-                // 更新UI上的当前价格 (利用传入的 uRows 结构)
+                // 更新UI上的当前价格
                 const updatedRows = uRows.map(row => {
                     const tIdx = tickers.indexOf(row.ticker);
                     if (tIdx !== -1 && fetchedSpots[tIdx] !== undefined) {
@@ -248,6 +281,25 @@ export default function FCNPanel() {
                     return row;
                 });
                 setUnderlyingRows(updatedRows);
+
+                // 判断是否需要拉取历史数据：如果有过去的观察日，且设置了历史起始日
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                const hasPastObservation = obs_dates.some(d => new Date(d) <= today);
+                const histStart = params.history_start_date as string;
+
+                if (hasPastObservation && histStart) {
+                    setFetchStatus('正在拉取历史K线数据...');
+                    const histDataMap: { [ticker: string]: { date: string, close: number }[] } = {};
+                    
+                    const histPromises = tickers.map(async (t) => {
+                        const histArr = await fetchHistoricalPrices(t, histStart);
+                        histDataMap[t] = histArr;
+                    });
+                    
+                    await Promise.all(histPromises);
+                    calcParams.hist_prices = histDataMap;
+                }
 
                 if (calcParams.market !== 'HKD' && (!calcParams.fx_rate || isNaN(calcParams.fx_rate))) {
                     setFetchStatus(`正在获取 ${calcParams.market}/HKD 汇率...`);
@@ -433,10 +485,6 @@ export default function FCNPanel() {
     };
 
     return (
-        /* 修改说明：
-           将网格布局设置为 grid-cols-1 lg:grid-cols-2
-           这样在大屏幕下，左右两栏各占 50% (1:1 比例)
-        */
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
             {/* 左侧：参数输入表单 */}
             <div className="lg:col-span-1 bg-white shadow rounded-lg p-5 max-h-[1200px] overflow-y-auto space-y-6">
@@ -591,7 +639,6 @@ export default function FCNPanel() {
             </div>
 
             {/* === 右侧：结果展示 === */}
-            {/* 修改说明：修改 col-span-2 为 col-span-1，确保左右各一半 */}
             <div className="lg:col-span-1 bg-white shadow rounded-lg p-6 min-h-[600px]">
                 {fcnResult ? (
                     <div className="space-y-6 animate-fadeIn">

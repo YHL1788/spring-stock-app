@@ -31,16 +31,19 @@ function formatDate(date: Date): string {
 
 // --- 数学工具函数 ---
 
-// 简单的线性同余发生器 (LCG) 用于模拟随机种子 (匹配 Python 的确定性)
+// 使用 Mulberry32 算法替代原有的 LCG (修复蒙特卡洛模拟随机数周期过短问题)
 class SeededRNG {
     private seed: number;
     constructor(seed: number) {
         this.seed = seed;
     }
-    // 生成 [0, 1) 之间的随机数
+    // Mulberry32 算法，提供 2^32 周期，适合大规模蒙特卡洛模拟
     next(): number {
-        this.seed = (this.seed * 9301 + 49297) % 233280;
-        return this.seed / 233280;
+        this.seed |= 0; 
+        this.seed = this.seed + 0x6D2B79F5 | 0;
+        let t = Math.imul(this.seed ^ this.seed >>> 15, 1 | this.seed);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
     }
 }
 
@@ -277,7 +280,7 @@ export class FCNPricer {
   check_lifecycle_status(): { status: 'Active' | 'KnockedOut' | 'Expired', msg: string, item?: CouponPeriod } {
     const last_obs_date = this.coupon_schedule[this.coupon_schedule.length - 1].obs_date;
     
-    // 1. 检查历史敲出
+    // 1. 检查历史敲出 (严格依赖外部传入的 hist_prices 数据)
     if (this.params.hist_prices) {
         const past_obs = this.coupon_schedule.filter(item => item.obs_date <= this.val_date);
         
@@ -286,6 +289,7 @@ export class FCNPricer {
             for (let i = 0; i < this.S0.length; i++) {
                 const hist_p = this.get_historical_price(item.obs_date, i);
                 const trigger_price = this.S0[i] * this.Trigger_pct;
+                
                 if (hist_p === null || hist_p < trigger_price) {
                     is_triggered = false;
                     break;
