@@ -231,6 +231,7 @@ export default function FCNPanel() {
 
                 if (tickers.length === 0) { throw new Error("请至少添加一个标的"); }
                 if (obs_dates.length === 0) { throw new Error("请至少添加一个观察日"); }
+                if (params.history_start_date.length ===0) { throw new Error("请至少添加一个历史数据起始日"); }
                 if (params.history_start_date && params.trade_date && params.history_start_date >= params.trade_date) {
                     throw new Error("历史数据起始日必须早于交易日");
                 }
