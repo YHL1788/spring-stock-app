@@ -373,7 +373,13 @@ export class FCNPricer {
             is_delivery = false;
         } else {
             // Expired: Check Knock-In
-            const pct_perf = this.S_curr.map((p, i) => p / this.S0[i]);
+            // 【核心修复】：必须使用最后观察日当天的定盘价来判断接货，绝不能直接使用当前的最新现价！
+            const final_prices = this.S0.map((_, i) => {
+                const hist_p = this.get_historical_price(obsDate, i);
+                return hist_p !== null ? hist_p : this.S_curr[i]; // 容错降级：找不到历史价才用现价
+            });
+            const pct_perf = final_prices.map((p, i) => p / this.S0[i]);
+            
             worst_pct = pct_perf[0];
             worst_idx = 0;
             pct_perf.forEach((p, i) => { if (p < worst_pct) { worst_pct = p; worst_idx = i; } });
@@ -382,6 +388,7 @@ export class FCNPricer {
                 is_delivery = true;
                 const strike_price = this.S0[worst_idx] * this.K_pct;
                 const num_shares_unit = this.denom / strike_price; 
+                // 注意：由于是接货后持仓，其现值(PV)盯市依然使用 S_curr 算，这是对的。
                 delivery_val_unit = num_shares_unit * this.S_curr[worst_idx]; 
             }
         }
@@ -435,7 +442,7 @@ export class FCNPricer {
                 const exposure_shares_avg = new Array(this.S0.length).fill(0);
                 exposure_shares_avg[worst_idx] = num_shares_unit;
                 const exposure_value_avg = new Array(this.S0.length).fill(0);
-                exposure_value_avg[worst_idx] = num_shares_unit * this.S_curr[worst_idx];
+                exposure_value_avg[worst_idx] = num_shares_unit * this.S_curr[worst_idx]; // 盯市市值依赖现价
 
                 return {
                     status: 'Settling_Delivery',
