@@ -34,6 +34,8 @@ interface DateRow {
 interface TransactionRecord {
     id?: string; date: string; account: string; market: string; executor: string; type: string; stockCode: string; stockName: string;
     direction: string; quantity: number; priceNoFee: number; amountNoFee: number; fee: number; amountWithFee: number; priceWithFee: number; hkdAmount: number;
+    firebaseId?: string; // 新增：用于跟踪缓冲库中的底层文档 ID
+    tradeId?: string;    // 新增：全局唯一关联 ID
 }
 
 // 示例参数
@@ -121,6 +123,19 @@ export default function FCNTradePage() {
         initAuth();
     }, []);
 
+    // --- 获取并刷新接货缓冲库数据 (新逻辑) ---
+    const fetchPendingDeliveries = async () => {
+        if (!user) return;
+        try {
+            const snap = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'));
+            const records = snap.docs.map(doc => ({ firebaseId: doc.id, ...doc.data() })) as any[];
+            records.sort((a,b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+            setDeliveryRecords(records);
+        } catch(e) {
+            console.error("读取接货缓冲库失败:", e);
+        }
+    };
+
     // --- 获取并刷新后台库数据 ---
     const fetchDbRecords = async (collectionName: string) => {
         if (!user) return;
@@ -147,6 +162,7 @@ export default function FCNTradePage() {
     useEffect(() => {
         if (user) {
             fetchDbRecords(activeDbTab);
+            fetchPendingDeliveries(); // 加载时自动读取缓冲库
         }
     }, [activeDbTab, user]);
 
@@ -342,21 +358,24 @@ export default function FCNTradePage() {
         const isLiving = status === 'Active' || status === 'Settling_NoDelivery' || status === 'Settling_Delivery';
         const lifeCycle = isLiving ? 'living' : 'died';
 
+        // 核心修复：生成唯一的 tradeId 来关联 input 和 output
+        const tradeId = crypto.randomUUID();
+
         try {
             setLoading(true); setFetchStatus('写入资料库中...');
 
-            // 在保存到数据库之前，清理数据中的 undefined
-            const cleanCalcParams = replaceUndefinedWithNull(currentCalcParams);
+            // 在保存到数据库之前，清理数据中的 undefined，并注入 tradeId
+            const cleanCalcParams = replaceUndefinedWithNull({ ...currentCalcParams, tradeId });
             const cleanResult = replaceUndefinedWithNull(currentResult);
             
-            // 1. 保存输入参数
+            // 1. 保存输入参数 (带 tradeId)
             await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_fcn_input_${lifeCycle}`), {
                 ...cleanCalcParams, createdAt: serverTimestamp()
             });
             
-            // 2. 保存输出结果
+            // 2. 保存输出结果 (带 tradeId)
             await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_holding_fcn_output_${lifeCycle}`), {
-                result: cleanResult, createdAt: serverTimestamp()
+                result: cleanResult, tradeId, createdAt: serverTimestamp()
             });
 
             // 3. 处理接货状况: 【严格只在状态 F (Terminated_Delivery) 时生成接货记录】
@@ -371,7 +390,7 @@ export default function FCNTradePage() {
                     const amountWithFee = amountNoFee;
 
                     const newDelivery: TransactionRecord = {
-                        id: Math.random().toString(36).substr(2, 9),
+                        tradeId, // 关联接货记录
                         date: pricerParams.pay_dates[pricerParams.pay_dates.length - 1],
                         account: pricerParams.account_name || basicParams.account_name,
                         market: pricerParams.market === 'USD' ? 'US' : pricerParams.market === 'JPY' ? 'JP' : pricerParams.market === 'CNY' ? 'CH' : 'HK',
@@ -389,14 +408,19 @@ export default function FCNTradePage() {
                         hkdAmount: amountWithFee * (pricerParams.fx_rate || 1.0)
                     };
                     
-                    setDeliveryRecords(prev => [...prev, newDelivery]);
-                    alert(`参数与结果已保存至 [${lifeCycle}] 库，并已自动生成接货纪录至下方展示模块！`);
+                    // 将生成的接货单存入缓冲库
+                    const cleanDelivery = replaceUndefinedWithNull(newDelivery);
+                    await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'), {
+                        ...cleanDelivery, createdAt: serverTimestamp()
+                    });
+                    fetchPendingDeliveries(); // 重新获取更新后的缓冲数据
+
+                    alert(`参数与结果已保存至 [${lifeCycle}] 库，并已自动生成接货纪录至下方展示模块(缓冲库)！`);
                 }
             } else {
                 alert(`参数与结果已成功保存至 [${lifeCycle}] 库！`);
             }
             setShowResultModal(false);
-            // 保存后自动刷新后台管理数据
             fetchDbRecords(activeDbTab);
         } catch (e: any) {
             alert("保存失败: " + e.message);
@@ -431,30 +455,49 @@ export default function FCNTradePage() {
         setEditFormData(newData as any);
     };
 
-    const handleSaveDeliveryEdit = () => {
+    const handleSaveDeliveryEdit = async () => {
         if (editingDeliveryIdx === null || !editFormData) return;
-        const newRecords = [...deliveryRecords];
-        newRecords[editingDeliveryIdx] = editFormData;
-        setDeliveryRecords(newRecords);
-        setEditingDeliveryIdx(null);
-        setEditFormData(null);
+        const record = deliveryRecords[editingDeliveryIdx];
+        try {
+            setLoading(true); setFetchStatus('正在更新缓冲库...');
+            if (record.firebaseId) {
+                 const cleanRecord = replaceUndefinedWithNull(editFormData);
+                 const { firebaseId, ...recordData } = cleanRecord;
+                 await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery', firebaseId), recordData);
+            }
+            await fetchPendingDeliveries();
+            setEditingDeliveryIdx(null);
+            setEditFormData(null);
+        } catch(e: any) {
+            alert("修改失败: " + e.message);
+        } finally {
+            setLoading(false); setFetchStatus('');
+        }
     };
 
     const handleSaveDeliveriesToDB = async () => {
         if (!user || deliveryRecords.length === 0) return;
-        if (!confirm(`确认将 ${deliveryRecords.length} 笔接货记录录入后方资料库吗？`)) return;
+        if (!confirm(`确认将这 ${deliveryRecords.length} 笔待处理的接货记录，正式推送到实际持仓库 (get-stock) 中吗？`)) return;
 
         try {
-            setLoading(true); setFetchStatus('正在录入接货数据...');
+            setLoading(true); setFetchStatus('正在推送到持仓接货库...');
             for (const record of deliveryRecords) {
                 const cleanRecord = replaceUndefinedWithNull(record);
+                const { firebaseId, ...recordData } = cleanRecord;
+                
+                // 1. 推送到最终的 get-stock 库
                 await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_get-stock'), {
-                    ...cleanRecord,
+                    ...recordData,
                     createdAt: serverTimestamp()
                 });
+
+                // 2. 从 pending_delivery 缓冲库中删除以完成闭环流转
+                if (firebaseId) {
+                    await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery', firebaseId));
+                }
             }
-            alert("接货数据已成功录入库 (get-stock)！");
-            setDeliveryRecords([]); 
+            alert("接货数据已成功推送到实际持仓接货库 (get-stock)，并清理了缓冲池！");
+            await fetchPendingDeliveries(); 
             if (activeDbTab === 'sip_holding_fcn_output_get-stock') fetchDbRecords(activeDbTab);
         } catch (e: any) {
             alert("录入失败: " + e.message);
@@ -1028,6 +1071,7 @@ export default function FCNTradePage() {
                         'sip_trade_fcn_input_died', 
                         'sip_holding_fcn_output_living', 
                         'sip_holding_fcn_output_died', 
+                        'sip_trade_fcn_pending_delivery',
                         'sip_holding_fcn_output_get-stock'
                     ].map(tab => (
                         <button 

@@ -1,12 +1,1225 @@
-import React from 'react';
+'use client';
 
-export default function DqAqHoldingsPage() {
-  return (
-    <div className="min-h-screen bg-gray-50 p-8">
-      <div className="max-w-4xl mx-auto">
-        <h1 className="text-2xl font-bold text-gray-900">DQ/AQ 持仓明细</h1>
-        <p className="mt-4 text-gray-500">此页面正在开发中...</p>
-      </div>
-    </div>
-  );
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  RefreshCw, 
+  Database, 
+  FileJson, 
+  Trash2, 
+  X, 
+  Save, 
+  Loader2, 
+  AlertCircle,
+  TrendingUp,
+  LineChart
+} from 'lucide-react';
+import { collection, getDocs, doc, updateDoc, addDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+
+import { db, auth, APP_ID } from '@/app/lib/stockService';
+import { FCNPricer, FCNParams, FCNResult } from '@/app/lib/fcnPricer';
+
+// --- 辅助函数：序列化处理 ---
+const replaceUndefinedWithNull = (obj: any): any => {
+    if (obj === undefined) return null;
+    if (obj === null || typeof obj !== 'object') return obj;
+    if (obj.toDate && typeof obj.toDate === 'function') return obj; // 跳过 Firestore Timestamp
+    if (Array.isArray(obj)) return obj.map(replaceUndefinedWithNull);
+    const newObj: any = {};
+    for (const key in obj) {
+        if (Object.prototype.hasOwnProperty.call(obj, key)) {
+            newObj[key] = replaceUndefinedWithNull(obj[key]);
+        }
+    }
+    return newObj;
+};
+
+const replaceNullWithUndefined = (obj: any): any => {
+    if (obj === null) return undefined;
+    if (typeof obj !== 'object') return obj;
+    if (obj.toDate && typeof obj.toDate === 'function') return obj; // 跳过 Firestore Timestamp
+    if (Array.isArray(obj)) return obj.map(replaceNullWithUndefined);
+    const newObj: any = {};
+    for (const key in obj) {
+        newObj[key] = replaceNullWithUndefined(obj[key]);
+    }
+    return newObj;
+};
+
+// --- 汇总数值格式化工具 ---
+const formatSum = (val: number) => {
+    return `${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} HKD`;
+};
+const formatSumWithSign = (val: number) => {
+    const sign = val > 0 ? '+' : '';
+    return `${sign}${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} HKD`;
+};
+
+interface MergedRecord {
+    tradeId: string;
+    inputId: string;
+    outputId: string;
+    inputData: any;
+    outputData: any;
+    createdAt: any;
+}
+
+// --- 可排序筛选表头组件 ---
+const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onFilter, align='left' }: any) => {
+    const justifyClass = align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start';
+    const textClass = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
+    
+    return (
+        <th className={`px-3 py-2 whitespace-nowrap align-top group ${textClass}`}>
+            <div 
+                className={`flex items-center ${justifyClass} gap-1 select-none ${sortKey ? 'cursor-pointer hover:text-gray-800' : ''}`}
+                onClick={() => sortKey && onSort(sortKey)}
+            >
+                {label}
+                {sortKey && currentSort.key === sortKey && (
+                    <span className="text-blue-500 text-[10px] ml-1">
+                        {currentSort.dir === 'asc' ? '▲' : '▼'}
+                    </span>
+                )}
+                {sortKey && currentSort.key !== sortKey && (
+                    <span className="text-gray-300 text-[10px] opacity-0 group-hover:opacity-100 transition-opacity ml-1">▲</span>
+                )}
+            </div>
+            {filterKey && (
+                <div className="mt-1">
+                    <input 
+                        type="text" 
+                        placeholder="筛选..." 
+                        value={currentFilter[filterKey] || ''}
+                        onChange={(e) => onFilter(filterKey, e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-full min-w-[60px] border border-gray-300 rounded px-1 py-0.5 text-[10px] font-normal focus:outline-none focus:border-blue-500 text-gray-700"
+                    />
+                </div>
+            )}
+        </th>
+    );
+};
+
+export default function FCNHoldingPage() {
+    const [user, setUser] = useState<any>(null);
+    
+    // --- 核心持仓状态 ---
+    const [livingRecords, setLivingRecords] = useState<MergedRecord[]>([]);
+    const [diedRecords, setDiedRecords] = useState<MergedRecord[]>([]);
+    const [loadingLiving, setLoadingLiving] = useState(false);
+    const [loadingDied, setLoadingDied] = useState(false);
+
+    // --- HKD 统一计价视图状态 ---
+    const [isHKDView, setIsHKDView] = useState(false);
+
+    // --- DB管理模块状态 ---
+    const [activeDbTab, setActiveDbTab] = useState('sip_holding_fcn_output_living');
+    const [dbRecords, setDbRecords] = useState<any[]>([]);
+    const [loadingDb, setLoadingDb] = useState(false);
+    const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
+
+    // --- 股价点位图 Modal 状态 ---
+    const [chartModalData, setChartModalData] = useState<{ pricerParams: FCNParams, result: FCNResult } | null>(null);
+
+    // --- 排序与筛选 State ---
+    const [livingSort, setLivingSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: '', dir: null});
+    const [livingFilters, setLivingFilters] = useState<Record<string, string>>({});
+    const [riskSort, setRiskSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: '', dir: null});
+    const [riskFilters, setRiskFilters] = useState<Record<string, string>>({});
+    const [diedSort, setDiedSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: '', dir: null});
+    const [diedFilters, setDiedFilters] = useState<Record<string, string>>({});
+
+    const toggleSort = (setSort: any) => (key: string) => {
+        setSort((prev: any) => {
+            if (prev.key === key) {
+                if (prev.dir === 'asc') return { key, dir: 'desc' };
+                if (prev.dir === 'desc') return { key: '', dir: null };
+            }
+            return { key, dir: 'asc' };
+        });
+    };
+    const handleFilter = (setFilter: any) => (key: string, val: string) => {
+        setFilter((prev: any) => ({ ...prev, [key]: val }));
+    };
+
+    const toggleLivingSort = toggleSort(setLivingSort);
+    const updateLivingFilter = handleFilter(setLivingFilters);
+    const toggleRiskSort = toggleSort(setRiskSort);
+    const updateRiskFilter = handleFilter(setRiskFilters);
+    const toggleDiedSort = toggleSort(setDiedSort);
+    const updateDiedFilter = handleFilter(setDiedFilters);
+
+    // --- 初始化 Auth ---
+    useEffect(() => {
+        const initAuth = async () => {
+            if (!auth.currentUser) {
+                // @ts-ignore
+                if (typeof window !== 'undefined' && window.__initial_auth_token) {
+                    // @ts-ignore
+                    await signInWithCustomToken(auth, window.__initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            }
+            onAuthStateChanged(auth, setUser);
+        };
+        initAuth();
+    }, []);
+
+    // --- 核心：通过 tradeId 映射合并 Input 和 Output 库 ---
+    const fetchMergedRecords = async (lifeCycle: 'living' | 'died'): Promise<MergedRecord[]> => {
+        try {
+            const inputSnap = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_fcn_input_${lifeCycle}`));
+            const outputSnap = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_holding_fcn_output_${lifeCycle}`));
+            
+            // 如果集合为空（文件不存在），直接返回空数组，避免后续报错
+            if (inputSnap.empty) return [];
+
+            const inputs = inputSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[];
+            const outputs = outputSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[];
+            
+            const merged = inputs.map(inp => {
+                // 依赖 tradeId 进行外键关联
+                const out = outputs.find(o => o.tradeId && o.tradeId === inp.tradeId);
+                if (!out) return null; // 忽略孤立的脏数据
+                return {
+                    tradeId: inp.tradeId,
+                    inputId: inp.id,
+                    outputId: out.id,
+                    inputData: inp,
+                    outputData: out,
+                    createdAt: inp.createdAt
+                };
+            }).filter(Boolean) as MergedRecord[];
+            
+            merged.sort((a,b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+            return merged;
+        } catch (error) {
+            console.warn(`[Graceful Fallback] Fetch ${lifeCycle} records failed, possibly empty:`, error);
+            return []; 
+        }
+    };
+
+    const loadRecords = async () => {
+        if (!user) return;
+        try {
+            const living = await fetchMergedRecords('living');
+            setLivingRecords(living);
+            const died = await fetchMergedRecords('died');
+            setDiedRecords(died);
+        } catch(e) { console.error(e); }
+    };
+
+    useEffect(() => {
+        if (user) {
+            loadRecords();
+            fetchDbRecords(activeDbTab);
+        }
+    }, [user]);
+
+    // --- 获取并刷新后台库数据 ---
+    const fetchDbRecords = async (collectionName: string) => {
+        if (!user) return;
+        setLoadingDb(true);
+        try {
+            const querySnapshot = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', collectionName));
+            let records: any[] = [];
+            querySnapshot.forEach((docSnap) => {
+                records.push({ id: docSnap.id, ...docSnap.data() });
+            });
+            records.sort((a, b) => {
+               const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+               const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+               return timeB - timeA;
+            });
+            setDbRecords(records);
+        } catch(e) {
+            console.error("读取数据库失败:", e);
+        } finally {
+            setLoadingDb(false);
+        }
+    };
+
+    useEffect(() => {
+        if (user) { fetchDbRecords(activeDbTab); }
+    }, [activeDbTab, user]);
+
+    // --- API 调用 (复用自FCNPanel) ---
+    const fetchQuotePrice = async (symbol: string): Promise<number | null> => {
+        try {
+            const res = await fetch(`/api/quote?symbol=${symbol}`);
+            if (!res.ok) return null;
+            const data = await res.json();
+            const price = data.regularMarketPrice || data.price || data.close;
+            return typeof price === 'number' ? price : null;
+        } catch { return null; }
+    };
+
+    const fetchHistoricalPrices = async (symbol: string, startDate: string, endDate?: string): Promise<{ date: string, close: number }[]> => {
+        try {
+            const apiUrl = `/api/history?symbol=${symbol}&start=${startDate}${endDate ? `&end=${endDate}` : ''}`;
+            const res = await fetch(apiUrl);
+            if (!res.ok) return [];
+            const data = await res.json();
+            let list = Array.isArray(data) ? data : (data.historical || data.data || []);
+            return list.map((item: any) => {
+                const rawDate = item.date || item.timestamp;
+                const d = new Date(rawDate);
+                return {
+                    date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+                    close: Number(item.close || item.adjClose || item.price)
+                };
+            }).filter((item: any) => !isNaN(item.close));
+        } catch { return []; }
+    };
+
+    // --- 刷新当前持仓 (Living) ---
+    const handleRefreshLiving = async () => {
+        setLoadingLiving(true);
+        let deliveredCount = 0;
+        try {
+            const currentLiving = await fetchMergedRecords('living');
+            
+            if (currentLiving.length === 0) {
+                setLivingRecords([]);
+                setLoadingLiving(false);
+                return;
+            }
+
+            for (const mergedRecord of currentLiving) {
+                const inputData = replaceNullWithUndefined(mergedRecord.inputData);
+                const outputData = replaceNullWithUndefined(mergedRecord.outputData);
+                const pricerParams = inputData.pricerParams as FCNParams;
+                if (!pricerParams) continue;
+                
+                const fetchedSpots = await Promise.all(pricerParams.tickers.map(async (t, i) => {
+                    const p = await fetchQuotePrice(t);
+                    return p !== null ? p : pricerParams.initial_spots[i];
+                }));
+                pricerParams.current_spots = fetchedSpots;
+                
+                const today = new Date(); today.setHours(0,0,0,0);
+                const hasPastObservation = pricerParams.obs_dates.some(d => new Date(d) <= today);
+                if (hasPastObservation && pricerParams.history_start_date) {
+                    const histMap: any = {};
+                    await Promise.all(pricerParams.tickers.map(async (t) => {
+                        histMap[t] = await fetchHistoricalPrices(t, pricerParams.history_start_date!);
+                    }));
+                    pricerParams.hist_prices = histMap;
+                }
+
+                if (pricerParams.market !== 'HKD' && (!pricerParams.fx_rate || isNaN(pricerParams.fx_rate))) {
+                    const fxSymbol = `${pricerParams.market}HKD=X`;
+                    const rate = await fetchQuotePrice(fxSymbol);
+                    pricerParams.fx_rate = rate !== null ? rate : 1.0;
+                } else if (pricerParams.market === 'HKD') {
+                    pricerParams.fx_rate = 1.0;
+                }
+                
+                const pricer = new FCNPricer(pricerParams);
+                const newResult = pricer.simulate_price();
+                
+                const cleanInputData = replaceUndefinedWithNull({ ...inputData, pricerParams });
+                const cleanOutputData = replaceUndefinedWithNull({ ...outputData, result: newResult });
+                const status = newResult.status;
+
+                if (['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(status)) {
+                    await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId), cleanInputData);
+                    await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_living', mergedRecord.outputId), cleanOutputData);
+                } else {
+                    await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_died'), cleanInputData);
+                    await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_died'), cleanOutputData);
+                    
+                    await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId));
+                    await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_living', mergedRecord.outputId));
+                    
+                    if (status === 'Terminated_Delivery') {
+                        deliveredCount++;
+                        const worstIdx = newResult.loss_attribution.findIndex((val: number) => val === 1.0);
+                        if (worstIdx !== -1) {
+                            const ticker = pricerParams.tickers[worstIdx];
+                            const strikePrice = pricerParams.initial_spots[worstIdx] * pricerParams.strike_pct;
+                            const quantity = pricerParams.total_notional / strikePrice;
+                            const amountNoFee = strikePrice * quantity;
+                            
+                            const newDelivery = {
+                                tradeId: mergedRecord.tradeId,
+                                date: pricerParams.pay_dates[pricerParams.pay_dates.length - 1],
+                                account: pricerParams.account_name || inputData.inputParams?.account_name || '',
+                                market: pricerParams.market === 'USD' ? 'US' : pricerParams.market === 'JPY' ? 'JP' : pricerParams.market === 'CNY' ? 'CH' : 'HK',
+                                executor: pricerParams.executor || inputData.inputParams?.executor || '',
+                                type: "FCN接货",
+                                stockCode: ticker,
+                                stockName: pricerParams.ticker_name?.[worstIdx] || ticker,
+                                direction: "BUY",
+                                quantity: Math.round(quantity),
+                                priceNoFee: strikePrice,
+                                amountNoFee: amountNoFee,
+                                fee: 0,
+                                amountWithFee: amountNoFee,
+                                priceWithFee: amountNoFee / quantity,
+                                hkdAmount: amountNoFee * (pricerParams.fx_rate || 1.0)
+                            };
+                            const cleanDelivery = replaceUndefinedWithNull(newDelivery);
+                            await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'), {
+                                ...cleanDelivery, createdAt: serverTimestamp()
+                            });
+                        }
+                    }
+                }
+            }
+            
+            await loadRecords();
+            if (activeDbTab === 'sip_holding_fcn_output_living' || activeDbTab === 'sip_trade_fcn_input_living') fetchDbRecords(activeDbTab);
+
+            if (deliveredCount > 0) {
+                alert(`刷新完毕！有 ${deliveredCount} 笔FCN触发了接货并已结束。接货记录已发往缓冲池，请移步 FCN Trade 页面的接货展示模块进行验证与推库！`);
+            } else {
+                alert('刷新完毕，已更新最新持仓与市值。');
+            }
+        } catch(e: any) {
+            alert("刷新当前持仓失败: " + e.message);
+        } finally {
+            setLoadingLiving(false);
+        }
+    };
+
+    // --- 刷新历史持仓 (Died) ---
+    const handleRefreshDied = async () => {
+        setLoadingDied(true);
+        let errorCount = 0;
+        try {
+            const currentDied = await fetchMergedRecords('died');
+            
+            if (currentDied.length === 0) {
+                setDiedRecords([]);
+                setLoadingDied(false);
+                return;
+            }
+
+            for (const mergedRecord of currentDied) {
+                const inputData = replaceNullWithUndefined(mergedRecord.inputData);
+                const outputData = replaceNullWithUndefined(mergedRecord.outputData);
+                const pricerParams = inputData.pricerParams as FCNParams;
+                if (!pricerParams) continue;
+                
+                const fetchedSpots = await Promise.all(pricerParams.tickers.map(async (t, i) => {
+                    const p = await fetchQuotePrice(t);
+                    return p !== null ? p : pricerParams.initial_spots[i];
+                }));
+                pricerParams.current_spots = fetchedSpots;
+                
+                const today = new Date(); today.setHours(0,0,0,0);
+                const hasPastObservation = pricerParams.obs_dates.some(d => new Date(d) <= today);
+                if (hasPastObservation && pricerParams.history_start_date) {
+                    const histMap: any = {};
+                    await Promise.all(pricerParams.tickers.map(async (t) => {
+                        histMap[t] = await fetchHistoricalPrices(t, pricerParams.history_start_date!);
+                    }));
+                    pricerParams.hist_prices = histMap;
+                }
+
+                if (pricerParams.market !== 'HKD' && (!pricerParams.fx_rate || isNaN(pricerParams.fx_rate))) {
+                    const fxSymbol = `${pricerParams.market}HKD=X`;
+                    const rate = await fetchQuotePrice(fxSymbol);
+                    pricerParams.fx_rate = rate !== null ? rate : 1.0;
+                } else if (pricerParams.market === 'HKD') {
+                    pricerParams.fx_rate = 1.0;
+                }
+                
+                const pricer = new FCNPricer(pricerParams);
+                const newResult = pricer.simulate_price();
+                
+                const status = newResult.status;
+                
+                const cleanInputData = replaceUndefinedWithNull({ ...inputData, pricerParams });
+                const cleanOutputData = replaceUndefinedWithNull({ ...outputData, result: newResult });
+                
+                await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_died', mergedRecord.inputId), cleanInputData);
+                await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_died', mergedRecord.outputId), cleanOutputData);
+
+                if (['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(status)) {
+                    errorCount++;
+                }
+            }
+            
+            await loadRecords();
+            if (activeDbTab === 'sip_holding_fcn_output_died' || activeDbTab === 'sip_trade_fcn_input_died') fetchDbRecords(activeDbTab);
+
+            if (errorCount > 0) {
+                alert(`出错！有 ${errorCount} 笔数据重新计算后发现仍在存续/结算中！请重新检查 died 库内容！`);
+            } else {
+                alert('历史持仓刷新完毕！数据已更新校验。');
+            }
+        } catch(e: any) {
+            alert("刷新历史持仓失败: " + e.message);
+        } finally {
+            setLoadingDied(false);
+        }
+    };
+
+    // --- 后台库管理 Handlers ---
+    const handleDeleteRecord = async (id: string) => {
+        if (!confirm("确定要永久删除这条记录吗？不可恢复。")) return;
+        try {
+            await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, id));
+            setDbRecords(dbRecords.filter(r => r.id !== id));
+        } catch(e: any) { alert("删除失败: " + e.message); }
+    };
+
+    const handleSaveRecordEdit = async () => {
+        if (!editRecordModal) return;
+        try {
+            const parsedData = JSON.parse(editRecordModal.rawJson);
+            const docId = parsedData.id || editRecordModal.record.id;
+            delete parsedData.id; 
+            await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
+            alert("数据修改成功！");
+            setEditRecordModal(null);
+            fetchDbRecords(activeDbTab); 
+        } catch(e: any) {
+            alert("修改失败 (请检查 JSON 格式是否正确): \n" + e.message);
+        }
+    };
+
+    // --- 核心工具 ---
+    const formatMoneyWithUnit = (val: number, market: string, fxRate: number = 1) => {
+        const value = isHKDView ? val * fxRate : val;
+        const currency = isHKDView ? 'HKD' : (market || 'HKD');
+        const numStr = value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return `${numStr} ${currency}`;
+    };
+
+    const formatNotionalWithUnit = (val: number, market: string, fxRate: number = 1) => {
+        const value = isHKDView ? val * fxRate : val;
+        const currency = isHKDView ? 'HKD' : (market || 'HKD');
+        const numStr = Math.round(value).toLocaleString('en-US');
+        return `${numStr} ${currency}`;
+    };
+
+    const renderName = (params: FCNParams) => {
+        if (!params) return 'N/A';
+        const tNames = params.ticker_name && params.ticker_name.length > 0 
+            ? params.ticker_name.join('~') 
+            : params.tickers?.join('~') || '';
+        return `${params.broker_name || '未知券商'} ${params.trade_date} 【${tNames}】`;
+    };
+    
+    const fmtPct = (val: number) => (val * 100).toFixed(2) + '%';
+    
+    const getStatusText = (status: string) => {
+        switch (status) {
+            case 'Active': return 'A (存续中)';
+            case 'Settling_NoDelivery': return 'B (结算中,无接货)';
+            case 'Settling_Delivery': return 'C (结算中,有接货)';
+            case 'Terminated_Early': return 'D (提前敲出)';
+            case 'Terminated_Normal': return 'E (正常结束,无接货)';
+            case 'Terminated_Delivery': return 'F (结束已接货)';
+            default: return status;
+        }
+    };
+
+    const calcExpectedCouponPeriods = (res: FCNResult) => {
+        if (!res) return 0;
+        const total_return = res.hist_coupons_paid + res.pending_coupons_pv + res.future_coupons_pv;
+        return res.avg_period_coupon > 0 ? total_return / res.avg_period_coupon : 0;
+    };
+
+    const getKnockInTooltip = (params: FCNParams, result: FCNResult) => {
+        if (!params || !result || !result.loss_attribution) return '';
+        return params.tickers.map((t, idx) => {
+            const name = params.ticker_name?.[idx] || t;
+            const prob = result.loss_attribution[idx] || 0;
+            return `${name}: ${fmtPct(prob)}`;
+        }).join('\n');
+    };
+
+    const getDeliveryTooltip = (params: FCNParams, result: FCNResult) => {
+        if (result.status !== 'Terminated_Delivery' && result.status !== 'Settling_Delivery') return '';
+        const worstIdx = result.loss_attribution.findIndex((val: number) => val === 1.0);
+        if (worstIdx !== -1) {
+            const name = params.ticker_name?.[worstIdx] || params.tickers[worstIdx];
+            const qty = params.total_notional / (params.initial_spots[worstIdx] * params.strike_pct);
+            return `${name} ${Math.round(qty)}股`;
+        }
+        return '';
+    };
+
+    const getNextObsDate = (dateRows: any[]) => {
+        if (!dateRows) return '';
+        const today = new Date(); today.setHours(0,0,0,0);
+        return dateRows.map(r => r.obsDate).filter(d => new Date(d) >= today).sort()[0] || '';
+    };
+
+    // --- 数据重构与扁平化 Hook (处理排序与筛选) ---
+    const useTableData = (data: any[], sortConfig: any, filterConfig: any, isHKDView: boolean) => {
+        return useMemo(() => {
+            let result = [...data];
+
+            Object.keys(filterConfig).forEach(key => {
+                const filterValue = filterConfig[key]?.toLowerCase();
+                if (filterValue) {
+                    result = result.filter(item => {
+                        const itemVal = item[key];
+                        if (itemVal == null) return false;
+                        return String(itemVal).toLowerCase().includes(filterValue);
+                    });
+                }
+            });
+
+            if (sortConfig.direction) {
+                // pnlRatio 盈亏比是纯百分比数字，不需要汇率折算
+                const isMonetary = ['notional', 'cost', 'mktVal', 'realized', 'unrealized', 'unrealizedCoupon', 'impliedLoss', 'totalPnl'].includes(sortConfig.key);
+                result.sort((a, b) => {
+                    let aVal = a[sortConfig.key];
+                    let bVal = b[sortConfig.key];
+                    
+                    if (isHKDView && isMonetary) {
+                        aVal = (aVal || 0) * (a.fx_rate || 1);
+                        bVal = (bVal || 0) * (b.fx_rate || 1);
+                    }
+                    
+                    if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+                    if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+                    return 0;
+                });
+            }
+
+            return result;
+        }, [data, sortConfig, filterConfig, isHKDView]);
+    };
+
+    // --- 准备展平后的数据字典 ---
+    const processedLiving = useMemo(() => {
+        return livingRecords.map((mergedRecord) => {
+            const inputData = replaceNullWithUndefined(mergedRecord.inputData);
+            const outputData = replaceNullWithUndefined(mergedRecord.outputData);
+            const res = outputData.result as FCNResult;
+            const p = inputData.pricerParams as FCNParams;
+            if (!res || !p) return null;
+            
+            const factor = Number(p.total_notional) / Number(p.denomination);
+            const mktVal = res.dirty_price * factor;
+            const realized = res.hist_coupons_paid * factor;
+            const unrealizedCoupon = (res.pending_coupons_pv + res.future_coupons_pv) * factor;
+            const impliedLoss = res.implied_loss_pv * factor;
+            const unrealized = unrealizedCoupon - impliedLoss;
+            const totalPnl = (res.dirty_price + res.hist_coupons_paid - Number(p.denomination)) * factor;
+            
+            // 计算 FCN盈亏比 = (当前市值 + 已实现票息) / 总名义本金 - 1
+            const notional = Number(p.total_notional);
+            const pnlRatio = notional ? ((mktVal + realized) / notional) - 1 : 0;
+            const account = p.account_name || inputData.inputParams?.account_name || 'N/A';
+
+            return {
+                id: mergedRecord.tradeId,
+                p, res, factor,
+                statusText: getStatusText(res.status),
+                name: renderName(p),
+                account,
+                market: p.market || 'HKD',
+                notional,
+                pnlRatio,
+                coupon: p.coupon_rate,
+                strikeStr: `${fmtPct(p.strike_pct)} / ${fmtPct(p.trigger_pct)}`,
+                strike: p.strike_pct,
+                nextObs: getNextObsDate(inputData.dateRows),
+                maturity: inputData.dateRows[inputData.dateRows.length-1]?.payDate || '',
+                earlyProb: res.early_redemption_prob,
+                lossProb: res.loss_prob,
+                mktVal, realized, unrealized, unrealizedCoupon, impliedLoss, totalPnl,
+                fx_rate: p.fx_rate || 1,
+                tooltipAutocall: `预期收息期数: ${calcExpectedCouponPeriods(res).toFixed(2)}`,
+                tooltipKnockIn: getKnockInTooltip(p, res)
+            };
+        }).filter(Boolean) as any[];
+    }, [livingRecords]);
+
+    const processedRisk = useMemo(() => {
+        const rows: any[] = [];
+        livingRecords.forEach(mergedRecord => {
+            const inputData = replaceNullWithUndefined(mergedRecord.inputData);
+            const outputData = replaceNullWithUndefined(mergedRecord.outputData);
+            const result = outputData.result as FCNResult;
+            const params = inputData.pricerParams as FCNParams;
+            if (!result || !params) return;
+            
+            if (result.status === 'Settling_Delivery' || (result.status === 'Active' && result.loss_prob > 0)) {
+                const factor = Number(params.total_notional) / Number(params.denomination);
+                const account = params.account_name || inputData.inputParams?.account_name || 'N/A';
+
+                params.tickers.forEach((ticker, idx) => {
+                    const initialP = params.initial_spots[idx];
+                    const currentP = params.current_spots?.[idx] || initialP;
+                    const strikePrice = initialP * params.strike_pct;
+                    const exposureShares = (result.exposure_shares_avg[idx] || 0) * factor;
+                    const exposureCost = strikePrice * exposureShares;
+                    const exposureMktVal = currentP * exposureShares;
+                    
+                    // 过滤市值为0的暴露行
+                    if (exposureMktVal === 0) return;
+                    
+                    rows.push({
+                        fcnName: renderName(params),
+                        account,
+                        ticker,
+                        name: params.ticker_name?.[idx] || ticker,
+                        costPrice: strikePrice,
+                        shares: exposureShares,
+                        cost: exposureCost,
+                        mktVal: exposureMktVal,
+                        pnlRatio: exposureCost > 0.0001 ? (exposureMktVal / exposureCost) - 1 : 0,
+                        isWorst: result.loss_attribution[idx] === 1.0,
+                        market: params.market,
+                        fx_rate: params.fx_rate || 1
+                    });
+                });
+            }
+        });
+        return rows;
+    }, [livingRecords]);
+
+    const processedDied = useMemo(() => {
+        return diedRecords.map(mergedRecord => {
+            const inputData = replaceNullWithUndefined(mergedRecord.inputData);
+            const outputData = replaceNullWithUndefined(mergedRecord.outputData);
+            const res = outputData.result as FCNResult;
+            const p = inputData.pricerParams as FCNParams;
+            if (!res || !p) return null;
+            
+            const factor = Number(p.total_notional) / Number(p.denomination);
+            const realized = res.hist_coupons_paid * factor;
+            const hasDelivery = res.status === 'Terminated_Delivery';
+            const account = p.account_name || inputData.inputParams?.account_name || 'N/A';
+
+            return {
+                id: mergedRecord.tradeId,
+                p, res, factor,
+                statusText: getStatusText(res.status),
+                name: renderName(p),
+                account,
+                market: p.market || 'HKD',
+                notional: Number(p.total_notional),
+                coupon: p.coupon_rate,
+                strikeStr: `${fmtPct(p.strike_pct)} / ${fmtPct(p.trigger_pct)}`,
+                strike: p.strike_pct,
+                realized,
+                hasDeliveryText: hasDelivery ? '是' : '否',
+                hasDelivery,
+                tooltip: getDeliveryTooltip(p, res),
+                fx_rate: p.fx_rate || 1
+            };
+        }).filter(Boolean) as any[];
+    }, [diedRecords]);
+
+    const finalLiving = useTableData(processedLiving, livingSort, livingFilters, isHKDView);
+    const finalRisk = useTableData(processedRisk, riskSort, riskFilters, isHKDView);
+    const finalDied = useTableData(processedDied, diedSort, diedFilters, isHKDView);
+
+    // --- 计算底层汇总 SUM (强制折合 HKD) ---
+    const livingSums = useMemo(() => {
+        return finalLiving.reduce((acc, item) => {
+            const rate = item.fx_rate || 1;
+            acc.notional += (item.notional || 0) * rate;
+            acc.mktVal += (item.mktVal || 0) * rate;
+            acc.realized += (item.realized || 0) * rate;
+            acc.unrealized += (item.unrealized || 0) * rate;
+            acc.unrealizedCoupon += (item.unrealizedCoupon || 0) * rate;
+            acc.impliedLoss += (item.impliedLoss || 0) * rate;
+            acc.totalPnl += (item.totalPnl || 0) * rate;
+            return acc;
+        }, { notional: 0, mktVal: 0, realized: 0, unrealized: 0, unrealizedCoupon: 0, impliedLoss: 0, totalPnl: 0 });
+    }, [finalLiving]);
+    // 汇总行的 FCN盈亏比 = (汇总市值 + 汇总已实现票息) / 汇总名义本金 - 1
+    const livingSumPnlRatio = livingSums.notional > 0 ? ((livingSums.mktVal + livingSums.realized) / livingSums.notional) - 1 : 0;
+
+    const riskSums = useMemo(() => {
+        return finalRisk.reduce((acc, item) => {
+            const rate = item.fx_rate || 1;
+            acc.cost += (item.cost || 0) * rate;
+            acc.mktVal += (item.mktVal || 0) * rate;
+            return acc;
+        }, { cost: 0, mktVal: 0 });
+    }, [finalRisk]);
+    // 汇总行的 暴露盈亏比 = 汇总暴露市值 / 汇总暴露成本总额 - 1
+    const riskSumPnlRatio = riskSums.cost > 0 ? (riskSums.mktVal / riskSums.cost) - 1 : 0;
+
+    const diedSums = useMemo(() => {
+        return finalDied.reduce((acc, item) => {
+            const rate = item.fx_rate || 1;
+            acc.notional += (item.notional || 0) * rate;
+            acc.realized += (item.realized || 0) * rate;
+            return acc;
+        }, { notional: 0, realized: 0 });
+    }, [finalDied]);
+
+    return (
+        <div className="space-y-8 pb-10">
+            {/* Header */}
+            <div className="border-b border-gray-200 pb-4 flex justify-between items-end">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900">FCN Holding (持仓与风控)</h1>
+                    <p className="mt-1 text-sm text-gray-500">统一管理您的 FCN 存续与历史持仓，执行实时定价、状态更新与接货抛转逻辑。</p>
+                </div>
+            </div>
+
+            {/* === 模块 1：FCN 持仓板块（存续中） === */}
+            <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
+                <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                        <Database size={20} className="text-blue-600"/>
+                        【FCN 持仓板块（存续中）】
+                    </h2>
+                    <div className="flex items-center gap-4">
+                        <span className="text-sm text-gray-500">Living 库总计: {livingRecords.length} 笔</span>
+                        <button 
+                            onClick={() => setIsHKDView(!isHKDView)} 
+                            className={`px-4 py-1.5 text-xs font-bold rounded-md border transition-all shadow-sm ${isHKDView ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+                        >
+                            {isHKDView ? '已转为 HKD 计价' : '转化为 HKD'}
+                        </button>
+                    </div>
+                </div>
+                
+                <div className="overflow-x-auto border rounded-lg mb-4 shadow-sm pb-16">
+                    <table className="min-w-full text-xs text-left divide-y divide-gray-200">
+                        <thead className="bg-gray-50 text-gray-600 font-medium">
+                            <tr>
+                                <Th label="当前状态" sortKey="statusText" filterKey="statusText" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
+                                <Th label="名称" sortKey={null} filterKey="name" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="left" />
+                                <Th label="账户" sortKey={null} filterKey="account" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
+                                <Th label="币种" sortKey={null} filterKey="market" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
+                                <Th label="总名义本金" sortKey="notional" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                <Th label="FCN盈亏比" sortKey="pnlRatio" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                <Th label="年化票息" sortKey="coupon" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                <Th label="敲入/出界限" sortKey="strike" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                <Th label="下一个观察日" sortKey="nextObs" filterKey="nextObs" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
+                                <Th label="最后结算日" sortKey="maturity" filterKey="maturity" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
+                                <Th label="点位图" sortKey={null} filterKey={null} align="center" />
+                                <Th label="提前赎回概率" sortKey="earlyProb" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                <Th label="敲入接货概率" sortKey="lossProb" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                <Th label="当前市值" sortKey="mktVal" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                <Th label="已实现票息" sortKey="realized" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                <Th label="未实现损益" sortKey="unrealized" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                <Th label="未实现票息" sortKey="unrealizedCoupon" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                <Th label="预计接货损失" sortKey="impliedLoss" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                <Th label="累计总损益" sortKey="totalPnl" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 bg-white">
+                            {finalLiving.length === 0 ? (
+                                <tr><td colSpan={19} className="px-4 py-8 text-center text-gray-400">暂无存续中的持仓数据 或 暂无匹配条件数据</td></tr>
+                            ) : finalLiving.map((item) => (
+                                <tr key={item.id} className="hover:bg-blue-50/50 transition-colors">
+                                    <td className="px-3 py-2 text-center whitespace-nowrap font-bold text-gray-700">{item.statusText}</td>
+                                    <td className="px-3 py-2 font-medium text-gray-800 whitespace-nowrap">{item.name}</td>
+                                    <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.account}</td>
+                                    <td className="px-3 py-2 text-center font-mono text-gray-500">{item.market}</td>
+                                    <td className="px-3 py-2 text-right font-mono whitespace-nowrap">{formatNotionalWithUnit(item.notional, item.market, item.fx_rate)}</td>
+                                    <td className={`px-3 py-2 text-right font-mono font-bold ${item.pnlRatio >= 0 ? 'text-green-600' : 'text-red-600'}`}>{item.pnlRatio > 0 ? '+' : ''}{fmtPct(item.pnlRatio)}</td>
+                                    <td className="px-3 py-2 text-right font-mono whitespace-nowrap">{fmtPct(item.coupon)}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-500 whitespace-nowrap">{item.strikeStr}</td>
+                                    <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.nextObs}</td>
+                                    <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.maturity}</td>
+                                    <td className="px-3 py-2 text-center">
+                                        <button onClick={() => setChartModalData({ pricerParams: item.p, result: item.res })} className="text-blue-500 hover:text-blue-700 bg-blue-50 p-1 rounded transition-colors" title="查看点位图">
+                                            <LineChart size={16}/>
+                                        </button>
+                                    </td>
+                                    <td className="px-3 py-2 text-right font-mono text-green-700 underline decoration-dotted cursor-help" title={item.tooltipAutocall}>{fmtPct(item.earlyProb)}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-red-600 underline decoration-dotted cursor-help" title={item.tooltipKnockIn}>{fmtPct(item.lossProb)}</td>
+                                    <td className="px-3 py-2 text-right font-mono font-medium">{formatMoneyWithUnit(item.mktVal, item.market, item.fx_rate)}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-600">{formatMoneyWithUnit(item.realized, item.market, item.fx_rate)}</td>
+                                    <td className={`px-3 py-2 text-right font-mono font-medium ${item.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {item.unrealized > 0 ? '+' : ''}{formatMoneyWithUnit(item.unrealized, item.market, item.fx_rate)}
+                                    </td>
+                                    <td className={`px-3 py-2 text-right font-mono ${item.unrealizedCoupon > 0 ? 'text-green-600' : 'text-gray-500'}`}>
+                                        {item.unrealizedCoupon > 0 ? '+' : ''}{formatMoneyWithUnit(item.unrealizedCoupon, item.market, item.fx_rate)}
+                                    </td>
+                                    <td className={`px-3 py-2 text-right font-mono ${item.impliedLoss > 0 ? 'text-red-600' : 'text-gray-500'}`}>
+                                        {item.impliedLoss > 0 ? '-' : ''}{formatMoneyWithUnit(item.impliedLoss, item.market, item.fx_rate)}
+                                    </td>
+                                    <td className={`px-3 py-2 text-right font-mono font-bold ${item.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {item.totalPnl > 0 ? '+' : ''}{formatMoneyWithUnit(item.totalPnl, item.market, item.fx_rate)}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                        {finalLiving.length > 0 && (
+                            <tfoot className="bg-gray-100 border-t-2 border-gray-300 shadow-inner">
+                                <tr>
+                                    <td colSpan={4} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(livingSums.notional)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold ${livingSumPnlRatio >= 0 ? 'text-green-600' : 'text-red-600'}`}>{livingSumPnlRatio > 0 ? '+' : ''}{fmtPct(livingSumPnlRatio)}</td>
+                                    <td colSpan={7}></td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(livingSums.mktVal)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(livingSums.realized)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold ${livingSums.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatSumWithSign(livingSums.unrealized)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold ${livingSums.unrealizedCoupon > 0 ? 'text-green-600' : 'text-gray-500'}`}>{formatSumWithSign(livingSums.unrealizedCoupon)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold ${livingSums.impliedLoss > 0 ? 'text-red-600' : 'text-gray-500'}`}>{livingSums.impliedLoss > 0 ? '-' : ''}{formatSum(livingSums.impliedLoss)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold ${livingSums.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatSumWithSign(livingSums.totalPnl)}</td>
+                                </tr>
+                            </tfoot>
+                        )}
+                    </table>
+                </div>
+
+                <button
+                    onClick={handleRefreshLiving}
+                    disabled={loadingLiving}
+                    className={`w-full py-3 px-4 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingLiving ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
+                >
+                    {loadingLiving ? <Loader2 className="animate-spin" size={18} /> : <RefreshCw size={18} />}
+                    {loadingLiving ? '重新计算并流转数据...' : '刷新当前持仓 (重新定价与生命周期流转)'}
+                </button>
+            </div>
+
+            {/* === 模块 2：FCN风控板块 === */}
+            <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
+                <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                        <TrendingUp size={20} className="text-red-600"/>
+                        【FCN 风控板块】
+                    </h2>
+                    <div className="flex items-center gap-4">
+                        <span className="text-sm text-gray-500">高风险标的: {finalRisk.length} 项</span>
+                        <button 
+                            onClick={() => setIsHKDView(!isHKDView)} 
+                            className={`px-4 py-1.5 text-xs font-bold rounded-md border transition-all shadow-sm ${isHKDView ? 'bg-red-600 text-white border-red-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+                        >
+                            {isHKDView ? '已转为 HKD 计价' : '转化为 HKD'}
+                        </button>
+                    </div>
+                </div>
+
+                <div className="overflow-x-auto border rounded-lg shadow-sm pb-16">
+                    <table className="min-w-full text-xs text-left divide-y divide-gray-200">
+                        <thead className="bg-red-50 text-red-800 font-medium">
+                            <tr>
+                                <Th label="标的代码 (Ticker)" filterKey="ticker" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="left" />
+                                <Th label="FCN 产品名称" filterKey="fcnName" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="left" />
+                                <Th label="账户" sortKey={null} filterKey="account" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="center" />
+                                <Th label="暴露成本价" sortKey="costPrice" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
+                                <Th label="暴露股数" sortKey="shares" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
+                                <Th label="暴露成本总额" sortKey="cost" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
+                                <Th label="暴露当前市值" sortKey="mktVal" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
+                                <Th label="暴露盈亏比" sortKey="pnlRatio" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 bg-white">
+                            {finalRisk.length === 0 ? (
+                                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">当前没有处于高接货风险或结算有接货的持仓</td></tr>
+                            ) : finalRisk.map((row, idx) => (
+                                <tr key={`${row.ticker}-${idx}`} className={`transition-colors ${row.isWorst ? 'bg-red-50/50 font-medium' : 'hover:bg-gray-50'}`}>
+                                    <td className="px-3 py-2 text-gray-900 whitespace-nowrap">{row.ticker} <span className="text-gray-400 text-[10px] ml-1">{row.name}</span></td>
+                                    <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{row.fcnName}</td>
+                                    <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{row.account}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-600">{row.costPrice.toFixed(2)}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-900">
+                                        {row.shares.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                                    </td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-700">{formatMoneyWithUnit(row.cost, row.market, row.fx_rate)}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-900">{formatMoneyWithUnit(row.mktVal, row.market, row.fx_rate)}</td>
+                                    <td className={`px-3 py-2 text-right font-mono font-bold ${row.pnlRatio >= 0 ? 'text-green-600' : 'text-red-600'}`}>{fmtPct(row.pnlRatio)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                        {finalRisk.length > 0 && (
+                            <tfoot className="bg-red-50 border-t-2 border-red-200 shadow-inner">
+                                <tr>
+                                    <td colSpan={5} className="px-3 py-3 text-center font-bold text-red-800 tracking-wider">SUM (折合 HKD)</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-red-900">{formatSum(riskSums.cost)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-red-900">{formatSum(riskSums.mktVal)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold ${riskSumPnlRatio >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {riskSumPnlRatio > 0 ? '+' : ''}{fmtPct(riskSumPnlRatio)}
+                                    </td>
+                                </tr>
+                            </tfoot>
+                        )}
+                    </table>
+                </div>
+            </div>
+
+            {/* === 模块 3：FCN 持仓板块（历史） === */}
+            <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
+                <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                        <Database size={20} className="text-orange-600"/>
+                        【FCN 持仓板块（历史）】
+                    </h2>
+                    <div className="flex items-center gap-4">
+                        <span className="text-sm text-gray-500">Died 库总计: {diedRecords.length} 笔</span>
+                        <button 
+                            onClick={() => setIsHKDView(!isHKDView)} 
+                            className={`px-4 py-1.5 text-xs font-bold rounded-md border transition-all shadow-sm ${isHKDView ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+                        >
+                            {isHKDView ? '已转为 HKD 计价' : '转化为 HKD'}
+                        </button>
+                    </div>
+                </div>
+                
+                <div className="overflow-x-auto border rounded-lg mb-4 shadow-sm pb-16">
+                    <table className="min-w-full text-xs text-left divide-y divide-gray-200">
+                        <thead className="bg-gray-50 text-gray-600 font-medium">
+                            <tr>
+                                <Th label="当前状态" sortKey="statusText" filterKey="statusText" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
+                                <Th label="名称" sortKey={null} filterKey="name" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="left" />
+                                <Th label="账户" sortKey={null} filterKey="account" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
+                                <Th label="币种" sortKey={null} filterKey="market" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
+                                <Th label="总名义本金" sortKey="notional" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
+                                <Th label="年化票息" sortKey="coupon" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
+                                <Th label="敲入/出界限" sortKey="strike" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
+                                <Th label="已实现票息" sortKey="realized" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
+                                <Th label="是否有接货" sortKey={null} filterKey="hasDeliveryText" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 bg-white">
+                            {finalDied.length === 0 ? (
+                                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">暂无历史持仓数据 或 暂无匹配条件数据</td></tr>
+                            ) : finalDied.map((item) => (
+                                <tr key={item.id} className="hover:bg-orange-50/50 transition-colors">
+                                    <td className="px-3 py-2 text-center whitespace-nowrap font-bold text-gray-700">{item.statusText}</td>
+                                    <td className="px-3 py-2 font-medium text-gray-600 whitespace-nowrap">{item.name}</td>
+                                    <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.account}</td>
+                                    <td className="px-3 py-2 text-center font-mono text-gray-500">{item.market}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-800">{formatNotionalWithUnit(item.notional, item.market, item.fx_rate)}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-600">{fmtPct(item.coupon)}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-500 whitespace-nowrap">{item.strikeStr}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-800">{formatMoneyWithUnit(item.realized, item.market, item.fx_rate)}</td>
+                                    <td className="px-3 py-2 text-center text-gray-800">
+                                        {item.hasDelivery ? (
+                                            <span className="px-2 py-0.5 bg-orange-100 text-orange-800 rounded font-bold underline decoration-dotted cursor-help" title={item.tooltip}>是</span>
+                                        ) : (
+                                            <span className="text-gray-400">否</span>
+                                        )}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                        {finalDied.length > 0 && (
+                            <tfoot className="bg-gray-100 border-t-2 border-gray-300 shadow-inner">
+                                <tr>
+                                    <td colSpan={4} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(diedSums.notional)}</td>
+                                    <td colSpan={2}></td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(diedSums.realized)}</td>
+                                    <td></td>
+                                </tr>
+                            </tfoot>
+                        )}
+                    </table>
+                </div>
+
+                <button
+                    onClick={handleRefreshDied}
+                    disabled={loadingDied}
+                    className={`w-full py-3 px-4 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingDied ? 'bg-orange-400 cursor-not-allowed' : 'bg-orange-600 hover:bg-orange-700'}`}
+                >
+                    {loadingDied ? <Loader2 className="animate-spin" size={18} /> : <RefreshCw size={18} />}
+                    {loadingDied ? '重新计算校验中...' : '刷新历史持仓 (校验状态准确性)'}
+                </button>
+            </div>
+
+            {/* === 模块 4：后台库管理模块 === */}
+            <div className="bg-white shadow rounded-lg p-6 border border-gray-200 mt-8">
+                <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                        <FileJson size={20} className="text-purple-600"/>
+                        【后台库管理模块】
+                    </h2>
+                    <button onClick={() => fetchDbRecords(activeDbTab)} className="text-sm text-purple-600 hover:text-purple-800 flex items-center gap-1">
+                        <RefreshCw size={14}/> 刷新数据
+                    </button>
+                </div>
+
+                {/* 资料库 Tab 切换 */}
+                <div className="flex gap-2 mb-4 border-b pb-2 overflow-x-auto">
+                    {[
+                        'sip_trade_fcn_input_living',
+                        'sip_holding_fcn_output_living', 
+                        'sip_trade_fcn_input_died',
+                        'sip_holding_fcn_output_died', 
+                        'sip_trade_fcn_pending_delivery',
+                        'sip_holding_fcn_output_get-stock'
+                    ].map(tab => (
+                        <button 
+                            key={tab} 
+                            onClick={() => setActiveDbTab(tab)} 
+                            className={`px-3 py-1.5 text-xs font-bold rounded whitespace-nowrap transition-colors ${activeDbTab === tab ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                        >
+                            {tab.replace('sip_', '').replace(/_/g, '/')}
+                        </button>
+                    ))}
+                </div>
+
+                {/* 资料库表格 */}
+                {loadingDb ? (
+                    <div className="py-10 text-center"><Loader2 className="animate-spin mx-auto text-purple-600" size={30}/></div>
+                ) : dbRecords.length === 0 ? (
+                    <div className="py-10 text-center text-gray-400 bg-gray-50 rounded border border-dashed">该库中暂无数据</div>
+                ) : (
+                    <div className="overflow-x-auto border rounded">
+                        <table className="min-w-full text-sm text-left divide-y divide-gray-200">
+                            <thead className="bg-gray-50 text-gray-500">
+                                <tr>
+                                    <th className="px-3 py-2 whitespace-nowrap">ID / 创建时间 / TradeId</th>
+                                    <th className="px-3 py-2">内容摘要 (Raw JSON Preview)</th>
+                                    <th className="px-3 py-2 text-center whitespace-nowrap">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                                {dbRecords.map(r => (
+                                    <tr key={r.id} className="hover:bg-gray-50">
+                                        <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap font-mono">
+                                            <div className="font-bold text-gray-700">doc: {r.id.substring(0,8)}...</div>
+                                            {r.tradeId && <div className="text-blue-600">tid: {r.tradeId.substring(0,8)}...</div>}
+                                            <div>{r.createdAt?.toDate ? r.createdAt.toDate().toLocaleString() : 'N/A'}</div>
+                                        </td>
+                                        <td className="px-3 py-2 text-xs">
+                                            <div className="max-w-md xl:max-w-2xl truncate text-gray-600 font-mono bg-gray-100 px-2 py-1 rounded">
+                                                {JSON.stringify(r).substring(0, 150)}...
+                                            </div>
+                                        </td>
+                                        <td className="px-3 py-2 text-center whitespace-nowrap">
+                                            <button 
+                                                onClick={() => setEditRecordModal({show: true, record: r, rawJson: JSON.stringify(r, null, 4)})} 
+                                                className="text-blue-600 hover:text-blue-800 mx-1 p-1 hover:bg-blue-50 rounded transition-colors"
+                                                title="修改 JSON"
+                                            >
+                                                <FileJson size={16}/>
+                                            </button>
+                                            <button 
+                                                onClick={() => handleDeleteRecord(r.id)} 
+                                                className="text-red-600 hover:text-red-800 mx-1 p-1 hover:bg-red-50 rounded transition-colors"
+                                                title="永久删除"
+                                            >
+                                                <Trash2 size={16}/>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+
+            {/* --- Modals --- */}
+            {/* 股价点位图 Modal */}
+            {chartModalData && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col relative overflow-hidden">
+                        <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50 flex-shrink-0">
+                            <div>
+                                <h3 className="text-xl font-bold text-gray-900">股价点位图</h3>
+                                <p className="text-xs text-gray-500 mt-1">{renderName(chartModalData.pricerParams)}</p>
+                            </div>
+                            <button onClick={() => setChartModalData(null)} className="text-gray-400 hover:text-gray-600 bg-white p-1 rounded-full shadow-sm border"><X size={24}/></button>
+                        </div>
+                        <div className="p-6 overflow-y-auto flex-1 bg-white space-y-6">
+                            {chartModalData.pricerParams.tickers.map((ticker, idx) => {
+                                const initial = chartModalData.pricerParams.initial_spots[idx];
+                                const current = chartModalData.pricerParams.current_spots?.[idx] || initial;
+                                const strike = initial * chartModalData.pricerParams.strike_pct;
+                                const ko = initial * chartModalData.pricerParams.trigger_pct;
+
+                                const leftPct = (strike / current) - 1;
+                                const rightPct = (ko / current) - 1;
+
+                                const values = [strike, current, ko];
+                                const minVal = Math.min(...values) * 0.85;
+                                const maxVal = Math.max(...values) * 1.15;
+                                const range = maxVal - minVal;
+
+                                const getPos = (val: number) => ((val - minVal) / range) * 100;
+                                const name = chartModalData.pricerParams.ticker_name?.[idx] || ticker;
+
+                                return (
+                                    <div key={ticker} className="bg-white p-5 rounded-lg border border-gray-200 shadow-sm">
+                                        <div className="flex justify-between items-end mb-4">
+                                            <div>
+                                                <span className="text-lg font-bold text-gray-800 mr-2">{name}</span>
+                                                <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{ticker}</span>
+                                            </div>
+                                            <div className="text-right">
+                                                <span className="text-xs text-gray-500 mr-1">现价</span>
+                                                <span className="text-base font-semibold text-gray-900">{current.toFixed(2)}</span>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center gap-4">
+                                            <div className={`flex flex-col items-center justify-center w-24 h-16 rounded-lg border-2 transition-colors ${leftPct > 0 ? 'bg-red-50 border-red-500 text-red-700' : 'bg-white border-gray-100 text-gray-400'}`}>
+                                                <span className="text-[10px] font-semibold uppercase tracking-wider">距敲入</span>
+                                                <span className="text-lg font-bold">{fmtPct(leftPct)}</span>
+                                            </div>
+
+                                            <div className="flex-1 relative h-16 mx-4 select-none">
+                                                <div className="absolute top-1/2 left-0 right-0 h-1.5 bg-gray-100 rounded-full transform -translate-y-1/2"></div>
+                                                <div className="absolute top-1/2 h-1.5 bg-blue-50 transform -translate-y-1/2" style={{ left: `${getPos(strike)}%`, width: `${getPos(ko) - getPos(strike)}%` }}></div>
+                                                <div className="absolute top-1/2" style={{ left: `${getPos(strike)}%` }}>
+                                                    <div className="absolute transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-red-500 border-2 border-white rounded-full shadow z-10"></div>
+                                                    <div className="absolute transform -translate-x-1/2 translate-y-3 flex flex-col items-center w-max">
+                                                        <span className="text-[10px] text-red-600 font-bold">Strike</span>
+                                                        <span className="text-[9px] text-gray-400">{strike.toFixed(2)}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="absolute top-1/2" style={{ left: `${getPos(ko)}%` }}>
+                                                    <div className="absolute transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-green-500 border-2 border-white rounded-full shadow z-10"></div>
+                                                    <div className="absolute transform -translate-x-1/2 translate-y-3 flex flex-col items-center w-max">
+                                                        <span className="text-[10px] text-green-600 font-bold">KO</span>
+                                                        <span className="text-[9px] text-gray-400">{ko.toFixed(2)}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="absolute top-1/2" style={{ left: `${getPos(current)}%` }}>
+                                                    <div className="absolute transform -translate-x-1/2 -translate-y-1/2 w-4 h-4 bg-purple-600 border-2 border-white rounded-full shadow-lg z-20 ring-4 ring-purple-100"></div>
+                                                    <div className="absolute transform -translate-x-1/2 -translate-y-full -top-3 flex flex-col items-center w-max">
+                                                        <span className="bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded shadow-sm font-bold">Now</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div className={`flex flex-col items-center justify-center w-24 h-16 rounded-lg border-2 transition-colors ${rightPct < 0 ? 'bg-yellow-50 border-yellow-400 text-yellow-700' : 'bg-white border-gray-100 text-gray-400'}`}>
+                                                <span className="text-[10px] font-semibold uppercase tracking-wider">距敲出</span>
+                                                <span className="text-lg font-bold">{fmtPct(rightPct)}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* 修改 Raw JSON 弹窗 */}
+            {editRecordModal && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-5xl flex flex-col h-[85vh] max-h-[90vh]">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700">
+                                <FileJson size={20}/> 
+                                进阶修改记录 - {editRecordModal.record.id}
+                            </h3>
+                            <button onClick={() => setEditRecordModal(null)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
+                        </div>
+                        <p className="text-xs text-gray-500 mb-2 border-l-2 border-orange-400 pl-2">
+                            警告：直接修改 Raw JSON 属于高阶操作，请确保 JSON 格式合法且结构正确，否则可能会导致页面崩溃或逻辑错误。
+                        </p>
+                        <textarea 
+                            className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none" 
+                            value={editRecordModal.rawJson}
+                            onChange={(e) => setEditRecordModal({...editRecordModal, rawJson: e.target.value})}
+                        />
+                        <div className="flex justify-end gap-3 pt-2 border-t">
+                            <button onClick={() => setEditRecordModal(null)} className="px-5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-medium transition-colors">取消</button>
+                            <button onClick={handleSaveRecordEdit} className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-sm font-bold flex items-center gap-2 transition-colors">
+                                <Save size={16}/> 保存强制覆盖
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
 }
