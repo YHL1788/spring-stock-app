@@ -11,9 +11,10 @@ import {
   Loader2, 
   AlertCircle,
   TrendingUp,
-  LineChart
+  LineChart,
+  PieChart
 } from 'lucide-react';
-import { collection, getDocs, doc, updateDoc, addDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, addDoc, deleteDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
@@ -48,11 +49,11 @@ const replaceNullWithUndefined = (obj: any): any => {
 
 // --- 汇总数值格式化工具 ---
 const formatSum = (val: number) => {
-    return `${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} HKD`;
+    return `${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 const formatSumWithSign = (val: number) => {
     const sign = val > 0 ? '+' : '';
-    return `${sign}${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} HKD`;
+    return `${sign}${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 interface MergedRecord {
@@ -109,6 +110,7 @@ export default function FCNHoldingPage() {
     const [diedRecords, setDiedRecords] = useState<MergedRecord[]>([]);
     const [loadingLiving, setLoadingLiving] = useState(false);
     const [loadingDied, setLoadingDied] = useState(false);
+    const [loadingSum, setLoadingSum] = useState(false); // FCN统计保存 Loading
 
     // --- HKD 统一计价视图状态 ---
     const [isHKDView, setIsHKDView] = useState(false);
@@ -173,16 +175,14 @@ export default function FCNHoldingPage() {
             const inputSnap = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_fcn_input_${lifeCycle}`));
             const outputSnap = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_holding_fcn_output_${lifeCycle}`));
             
-            // 如果集合为空（文件不存在），直接返回空数组，避免后续报错
             if (inputSnap.empty) return [];
 
             const inputs = inputSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[];
             const outputs = outputSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[];
             
             const merged = inputs.map(inp => {
-                // 依赖 tradeId 进行外键关联
                 const out = outputs.find(o => o.tradeId && o.tradeId === inp.tradeId);
-                if (!out) return null; // 忽略孤立的脏数据
+                if (!out) return null; 
                 return {
                     tradeId: inp.tradeId,
                     inputId: inp.id,
@@ -569,7 +569,6 @@ export default function FCNHoldingPage() {
             });
 
             if (sortConfig.direction) {
-                // pnlRatio 盈亏比是纯百分比数字，不需要汇率折算
                 const isMonetary = ['notional', 'cost', 'mktVal', 'realized', 'unrealized', 'unrealizedCoupon', 'impliedLoss', 'totalPnl'].includes(sortConfig.key);
                 result.sort((a, b) => {
                     let aVal = a[sortConfig.key];
@@ -607,10 +606,10 @@ export default function FCNHoldingPage() {
             const unrealized = unrealizedCoupon - impliedLoss;
             const totalPnl = (res.dirty_price + res.hist_coupons_paid - Number(p.denomination)) * factor;
             
-            // 计算 FCN盈亏比 = (当前市值 + 已实现票息) / 总名义本金 - 1
             const notional = Number(p.total_notional);
             const pnlRatio = notional ? ((mktVal + realized) / notional) - 1 : 0;
             const account = p.account_name || inputData.inputParams?.account_name || 'N/A';
+            const expectedPeriods = calcExpectedCouponPeriods(res);
 
             return {
                 id: mergedRecord.tradeId,
@@ -628,9 +627,10 @@ export default function FCNHoldingPage() {
                 maturity: inputData.dateRows[inputData.dateRows.length-1]?.payDate || '',
                 earlyProb: res.early_redemption_prob,
                 lossProb: res.loss_prob,
+                expectedPeriods,
                 mktVal, realized, unrealized, unrealizedCoupon, impliedLoss, totalPnl,
                 fx_rate: p.fx_rate || 1,
-                tooltipAutocall: `预期收息期数: ${calcExpectedCouponPeriods(res).toFixed(2)}`,
+                tooltipAutocall: `预期收息期数: ${expectedPeriods.toFixed(2)}`,
                 tooltipKnockIn: getKnockInTooltip(p, res)
             };
         }).filter(Boolean) as any[];
@@ -657,7 +657,6 @@ export default function FCNHoldingPage() {
                     const exposureCost = strikePrice * exposureShares;
                     const exposureMktVal = currentP * exposureShares;
                     
-                    // 过滤市值为0的暴露行
                     if (exposureMktVal === 0) return;
                     
                     rows.push({
@@ -717,9 +716,64 @@ export default function FCNHoldingPage() {
     const finalRisk = useTableData(processedRisk, riskSort, riskFilters, isHKDView);
     const finalDied = useTableData(processedDied, diedSort, diedFilters, isHKDView);
 
-    // --- 计算底层汇总 SUM (强制折合 HKD) ---
-    const livingSums = useMemo(() => {
-        return finalLiving.reduce((acc, item) => {
+    // --- 计算全局 SUM 与统计 ---
+    const globalStats = useMemo(() => {
+        const markets: Record<string, any> = {};
+
+        const initMarket = (mkt: string) => {
+            if (!markets[mkt]) {
+                markets[mkt] = {
+                    market: mkt,
+                    notionalTotal: 0,
+                    notionalLiving: 0,
+                    mktValLiving: 0,
+                    realizedTotal: 0,
+                    unrealized: 0,
+                    totalPnl: 0,
+                    fxRate: 1
+                };
+            }
+        };
+
+        finalLiving.forEach(item => {
+            const mkt = item.market || 'HKD';
+            initMarket(mkt);
+            markets[mkt].fxRate = item.fx_rate || 1;
+            markets[mkt].notionalLiving += item.notional || 0;
+            markets[mkt].notionalTotal += item.notional || 0;
+            markets[mkt].mktValLiving += item.mktVal || 0;
+            markets[mkt].realizedTotal += item.realized || 0;
+            markets[mkt].unrealized += item.unrealized || 0;
+        });
+
+        finalDied.forEach(item => {
+            const mkt = item.market || 'HKD';
+            initMarket(mkt);
+            markets[mkt].fxRate = item.fx_rate || 1;
+            markets[mkt].notionalTotal += item.notional || 0;
+            markets[mkt].realizedTotal += item.realized || 0;
+        });
+
+        const marketList = Object.values(markets).map(m => {
+            m.totalPnl = m.realizedTotal + m.unrealized;
+            return m;
+        });
+
+        const hkdSum = marketList.reduce((acc, m) => {
+            const rate = m.fxRate;
+            acc.notionalTotal += m.notionalTotal * rate;
+            acc.notionalLiving += m.notionalLiving * rate;
+            acc.mktValLiving += m.mktValLiving * rate;
+            acc.realizedTotal += m.realizedTotal * rate;
+            acc.unrealized += m.unrealized * rate;
+            acc.totalPnl += m.totalPnl * rate;
+            return acc;
+        }, {
+            notionalTotal: 0, notionalLiving: 0, mktValLiving: 0, realizedTotal: 0, unrealized: 0, totalPnl: 0
+        });
+
+        // 计算用于 living 和 died 版块的底部汇总信息
+        const livingSumsForTable = finalLiving.reduce((acc, item) => {
             const rate = item.fx_rate || 1;
             acc.notional += (item.notional || 0) * rate;
             acc.mktVal += (item.mktVal || 0) * rate;
@@ -730,9 +784,23 @@ export default function FCNHoldingPage() {
             acc.totalPnl += (item.totalPnl || 0) * rate;
             return acc;
         }, { notional: 0, mktVal: 0, realized: 0, unrealized: 0, unrealizedCoupon: 0, impliedLoss: 0, totalPnl: 0 });
-    }, [finalLiving]);
-    // 汇总行的 FCN盈亏比 = (汇总市值 + 汇总已实现票息) / 汇总名义本金 - 1
-    const livingSumPnlRatio = livingSums.notional > 0 ? ((livingSums.mktVal + livingSums.realized) / livingSums.notional) - 1 : 0;
+
+        const diedSumsForTable = finalDied.reduce((acc, item) => {
+            const rate = item.fx_rate || 1;
+            acc.notional += (item.notional || 0) * rate;
+            acc.realized += (item.realized || 0) * rate;
+            return acc;
+        }, { notional: 0, realized: 0 });
+
+        return {
+            marketList,
+            hkdSum,
+            livingSums: livingSumsForTable,
+            diedSums: diedSumsForTable,
+        };
+    }, [finalLiving, finalDied]);
+
+    const livingSumPnlRatio = globalStats.livingSums.notional > 0 ? ((globalStats.livingSums.mktVal + globalStats.livingSums.realized) / globalStats.livingSums.notional) - 1 : 0;
 
     const riskSums = useMemo(() => {
         return finalRisk.reduce((acc, item) => {
@@ -742,17 +810,38 @@ export default function FCNHoldingPage() {
             return acc;
         }, { cost: 0, mktVal: 0 });
     }, [finalRisk]);
-    // 汇总行的 暴露盈亏比 = 汇总暴露市值 / 汇总暴露成本总额 - 1
     const riskSumPnlRatio = riskSums.cost > 0 ? (riskSums.mktVal / riskSums.cost) - 1 : 0;
 
-    const diedSums = useMemo(() => {
-        return finalDied.reduce((acc, item) => {
-            const rate = item.fx_rate || 1;
-            acc.notional += (item.notional || 0) * rate;
-            acc.realized += (item.realized || 0) * rate;
-            return acc;
-        }, { notional: 0, realized: 0 });
-    }, [finalDied]);
+    // --- FCN 统计入库逻辑 ---
+    const handleSaveSum = async (isAuto = false) => {
+        if (!user) return;
+        try {
+            if (!isAuto) setLoadingSum(true);
+            const payload = replaceUndefinedWithNull({
+                marketStats: globalStats.marketList,
+                hkdSum: globalStats.hkdSum,
+                updatedAt: serverTimestamp()
+            });
+
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_sum', 'latest_summary'), payload);
+            
+            if (!isAuto) alert("FCN 统计已成功覆盖更新至 sum 库！");
+        } catch (e: any) {
+            if (!isAuto) alert("保存 FCN 统计失败: " + e.message);
+            console.error("Auto-save sum failed", e);
+        } finally {
+            if (!isAuto) setLoadingSum(false);
+        }
+    };
+
+    // 每分钟自动保存统计
+    useEffect(() => {
+        if (!user) return;
+        const intervalId = setInterval(() => {
+            handleSaveSum(true);
+        }, 60000); // 60,000 ms = 1 minute
+        return () => clearInterval(intervalId);
+    }, [user, globalStats]); // 依赖 globalStats，使其保存最新切片
 
     return (
         <div className="space-y-8 pb-10">
@@ -850,15 +939,15 @@ export default function FCNHoldingPage() {
                             <tfoot className="bg-gray-100 border-t-2 border-gray-300 shadow-inner">
                                 <tr>
                                     <td colSpan={4} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(livingSums.notional)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.livingSums.notional)}</td>
                                     <td className={`px-3 py-3 text-right font-mono font-bold ${livingSumPnlRatio >= 0 ? 'text-green-600' : 'text-red-600'}`}>{livingSumPnlRatio > 0 ? '+' : ''}{fmtPct(livingSumPnlRatio)}</td>
                                     <td colSpan={7}></td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(livingSums.mktVal)}</td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(livingSums.realized)}</td>
-                                    <td className={`px-3 py-3 text-right font-mono font-bold ${livingSums.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatSumWithSign(livingSums.unrealized)}</td>
-                                    <td className={`px-3 py-3 text-right font-mono font-bold ${livingSums.unrealizedCoupon > 0 ? 'text-green-600' : 'text-gray-500'}`}>{formatSumWithSign(livingSums.unrealizedCoupon)}</td>
-                                    <td className={`px-3 py-3 text-right font-mono font-bold ${livingSums.impliedLoss > 0 ? 'text-red-600' : 'text-gray-500'}`}>{livingSums.impliedLoss > 0 ? '-' : ''}{formatSum(livingSums.impliedLoss)}</td>
-                                    <td className={`px-3 py-3 text-right font-mono font-bold ${livingSums.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatSumWithSign(livingSums.totalPnl)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.livingSums.mktVal)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.livingSums.realized)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.livingSums.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatSumWithSign(globalStats.livingSums.unrealized)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.livingSums.unrealizedCoupon > 0 ? 'text-green-600' : 'text-gray-500'}`}>{formatSumWithSign(globalStats.livingSums.unrealizedCoupon)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.livingSums.impliedLoss > 0 ? 'text-red-600' : 'text-gray-500'}`}>{globalStats.livingSums.impliedLoss > 0 ? '-' : ''}{formatSum(globalStats.livingSums.impliedLoss)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.livingSums.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatSumWithSign(globalStats.livingSums.totalPnl)}</td>
                                 </tr>
                             </tfoot>
                         )}
@@ -1001,9 +1090,9 @@ export default function FCNHoldingPage() {
                             <tfoot className="bg-gray-100 border-t-2 border-gray-300 shadow-inner">
                                 <tr>
                                     <td colSpan={4} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(diedSums.notional)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.diedSums.notional)}</td>
                                     <td colSpan={2}></td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(diedSums.realized)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.diedSums.realized)}</td>
                                     <td></td>
                                 </tr>
                             </tfoot>
@@ -1021,7 +1110,82 @@ export default function FCNHoldingPage() {
                 </button>
             </div>
 
-            {/* === 模块 4：后台库管理模块 === */}
+            {/* === 模块 4：FCN 统计 === */}
+            <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
+                <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                        <PieChart size={20} className="text-indigo-600"/>
+                        【FCN 统计】
+                        <span className="text-sm font-normal text-gray-500 ml-2">全局数据汇总</span>
+                    </h2>
+                    <span className="text-xs text-gray-400">数据每分钟自动刷新存库</span>
+                </div>
+                
+                <div className="overflow-x-auto border rounded-lg mb-6 shadow-sm">
+                    <table className="min-w-full text-sm text-left divide-y divide-gray-200">
+                        <thead className="bg-indigo-50 text-indigo-900 font-medium">
+                            <tr>
+                                <th className="px-3 py-2 text-center whitespace-nowrap">币种</th>
+                                <th className="px-3 py-2 text-right whitespace-nowrap">总名义本金(含历史)</th>
+                                <th className="px-3 py-2 text-right whitespace-nowrap">总名义本金(存续中)</th>
+                                <th className="px-3 py-2 text-right whitespace-nowrap">总市值(存续中)</th>
+                                <th className="px-3 py-2 text-right whitespace-nowrap">已实现票息(含历史)</th>
+                                <th className="px-3 py-2 text-right whitespace-nowrap">未实现损益</th>
+                                <th className="px-3 py-2 text-right whitespace-nowrap">总损益</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 bg-white">
+                            {globalStats.marketList.length === 0 ? (
+                                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">暂无统计数据</td></tr>
+                            ) : globalStats.marketList.map((m: any) => (
+                                <tr key={m.market} className="hover:bg-indigo-50/30">
+                                    <td className="px-3 py-2 text-center font-bold text-gray-700">{m.market}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-800">{m.notionalTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-800">{m.notionalLiving.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-800">{m.mktValLiving.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-800">{m.realizedTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                    <td className={`px-3 py-2 text-right font-mono font-medium ${m.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {m.unrealized > 0 ? '+' : ''}{m.unrealized.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </td>
+                                    <td className={`px-3 py-2 text-right font-mono font-bold ${m.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {m.totalPnl > 0 ? '+' : ''}{m.totalPnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                        {globalStats.marketList.length > 0 && (
+                            <tfoot className="bg-indigo-100 border-t-2 border-indigo-200 shadow-inner">
+                                <tr>
+                                    <td className="px-3 py-3 text-center font-bold text-indigo-900 tracking-wider">SUM (折合 HKD)</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.notionalTotal)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.notionalLiving)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.mktValLiving)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.realizedTotal)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.hkdSum.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {formatSumWithSign(globalStats.hkdSum.unrealized)}
+                                    </td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.hkdSum.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {formatSumWithSign(globalStats.hkdSum.totalPnl)}
+                                    </td>
+                                </tr>
+                            </tfoot>
+                        )}
+                    </table>
+                </div>
+
+                <div className="flex justify-end">
+                    <button
+                        onClick={() => handleSaveSum(false)}
+                        disabled={loadingSum}
+                        className={`py-2 px-6 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingSum ? 'bg-indigo-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+                    >
+                        {loadingSum ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
+                        {loadingSum ? '正在保存统计...' : '手动更新至 Sum 库'}
+                    </button>
+                </div>
+            </div>
+
+            {/* === 模块 5：后台库管理模块 === */}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200 mt-8">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
@@ -1041,7 +1205,8 @@ export default function FCNHoldingPage() {
                         'sip_trade_fcn_input_died',
                         'sip_holding_fcn_output_died', 
                         'sip_trade_fcn_pending_delivery',
-                        'sip_holding_fcn_output_get-stock'
+                        'sip_holding_fcn_output_get-stock',
+                        'sip_holding_fcn_output_sum'
                     ].map(tab => (
                         <button 
                             key={tab} 
@@ -1074,7 +1239,7 @@ export default function FCNHoldingPage() {
                                         <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap font-mono">
                                             <div className="font-bold text-gray-700">doc: {r.id.substring(0,8)}...</div>
                                             {r.tradeId && <div className="text-blue-600">tid: {r.tradeId.substring(0,8)}...</div>}
-                                            <div>{r.createdAt?.toDate ? r.createdAt.toDate().toLocaleString() : 'N/A'}</div>
+                                            <div>{r.updatedAt?.toDate ? r.updatedAt.toDate().toLocaleString() : (r.createdAt?.toDate ? r.createdAt.toDate().toLocaleString() : 'N/A')}</div>
                                         </td>
                                         <td className="px-3 py-2 text-xs">
                                             <div className="max-w-md xl:max-w-2xl truncate text-gray-600 font-mono bg-gray-100 px-2 py-1 rounded">
