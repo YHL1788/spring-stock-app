@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   RefreshCw, 
   Database, 
@@ -112,8 +112,11 @@ export default function FCNHoldingPage() {
     const [loadingDied, setLoadingDied] = useState(false);
     const [loadingSum, setLoadingSum] = useState(false); // FCN统计保存 Loading
 
-    // --- HKD 统一计价视图状态 ---
+    // --- 全局最新汇率与 HKD 视图状态 (完全盯市 Option A) ---
     const [isHKDView, setIsHKDView] = useState(false);
+    const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
+    const [isFetchingFx, setIsFetchingFx] = useState(false);
+    const hasFetchedInitialFxRates = useRef(false);
 
     // --- DB管理模块状态 ---
     const [activeDbTab, setActiveDbTab] = useState('sip_holding_fcn_output_living');
@@ -211,14 +214,7 @@ export default function FCNHoldingPage() {
         } catch(e) { console.error(e); }
     };
 
-    useEffect(() => {
-        if (user) {
-            loadRecords();
-            fetchDbRecords(activeDbTab);
-        }
-    }, [user]);
-
-    // --- 获取并刷新后台库数据 ---
+    // --- 获取并刷新后台库数据 (修复缺失的方法) ---
     const fetchDbRecords = async (collectionName: string) => {
         if (!user) return;
         setLoadingDb(true);
@@ -245,7 +241,14 @@ export default function FCNHoldingPage() {
         if (user) { fetchDbRecords(activeDbTab); }
     }, [activeDbTab, user]);
 
-    // --- API 调用 (复用自FCNPanel) ---
+    useEffect(() => {
+        if (user) {
+            loadRecords();
+            fetchDbRecords(activeDbTab);
+        }
+    }, [user]);
+
+    // --- API 调用 ---
     const fetchQuotePrice = async (symbol: string): Promise<number | null> => {
         try {
             const res = await fetch(`/api/quote?symbol=${symbol}`);
@@ -272,6 +275,56 @@ export default function FCNHoldingPage() {
                 };
             }).filter((item: any) => !isNaN(item.close));
         } catch { return []; }
+    };
+
+    // --- 获取全局最新汇率 (Mark-to-Market 完全盯市核心逻辑) ---
+    const fetchLatestFxRates = async () => {
+        const markets = new Set<string>();
+        livingRecords.forEach(r => {
+            const mkt = r.inputData?.pricerParams?.market;
+            if (mkt && mkt !== 'HKD') markets.add(mkt);
+        });
+        diedRecords.forEach(r => {
+            const mkt = r.inputData?.pricerParams?.market;
+            if (mkt && mkt !== 'HKD') markets.add(mkt);
+        });
+
+        if (markets.size === 0) return;
+
+        setIsFetchingFx(true);
+        const newRates: Record<string, number> = {};
+        try {
+            await Promise.all(Array.from(markets).map(async (mkt) => {
+                // 使用优化后的高速汇率查询通道
+                const res = await fetch(`/api/quote?currency=${mkt}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data && data.rate) {
+                        newRates[mkt] = data.rate;
+                    }
+                }
+            }));
+            setGlobalFxRates(prev => ({ ...prev, ...newRates }));
+        } catch (e) {
+            console.error("Failed to fetch global FX rates", e);
+        } finally {
+            setIsFetchingFx(false);
+        }
+    };
+
+    // 页面初次加载持仓数据后，静默拉取一次最新汇率供全局统计模块(FCN统计)使用
+    useEffect(() => {
+        if ((livingRecords.length > 0 || diedRecords.length > 0) && !hasFetchedInitialFxRates.current) {
+            fetchLatestFxRates();
+            hasFetchedInitialFxRates.current = true;
+        }
+    }, [livingRecords, diedRecords]);
+
+    const handleToggleHKDView = async () => {
+        if (!isHKDView) {
+            await fetchLatestFxRates(); // 切换为 HKD 时强制确保是最新的全局汇率
+        }
+        setIsHKDView(!isHKDView);
     };
 
     // --- 刷新当前持仓 (Living) ---
@@ -309,11 +362,12 @@ export default function FCNHoldingPage() {
                     pricerParams.hist_prices = histMap;
                 }
 
-                if (pricerParams.market !== 'HKD' && (!pricerParams.fx_rate || isNaN(pricerParams.fx_rate))) {
-                    const fxSymbol = `${pricerParams.market}HKD=X`;
-                    const rate = await fetchQuotePrice(fxSymbol);
-                    pricerParams.fx_rate = rate !== null ? rate : 1.0;
-                } else if (pricerParams.market === 'HKD') {
+                // 使用优化后的高速汇率查询通道更新底单快照
+                if (pricerParams.market !== 'HKD') {
+                    const res = await fetch(`/api/quote?currency=${pricerParams.market}`);
+                    const data = res.ok ? await res.json() : null;
+                    pricerParams.fx_rate = data?.rate || pricerParams.fx_rate || 1.0;
+                } else {
                     pricerParams.fx_rate = 1.0;
                 }
                 
@@ -371,6 +425,9 @@ export default function FCNHoldingPage() {
             }
             
             await loadRecords();
+            // 重新刷新全局汇率以保证精度
+            await fetchLatestFxRates();
+
             if (activeDbTab === 'sip_holding_fcn_output_living' || activeDbTab === 'sip_trade_fcn_input_living') fetchDbRecords(activeDbTab);
 
             if (deliveredCount > 0) {
@@ -420,11 +477,12 @@ export default function FCNHoldingPage() {
                     pricerParams.hist_prices = histMap;
                 }
 
-                if (pricerParams.market !== 'HKD' && (!pricerParams.fx_rate || isNaN(pricerParams.fx_rate))) {
-                    const fxSymbol = `${pricerParams.market}HKD=X`;
-                    const rate = await fetchQuotePrice(fxSymbol);
-                    pricerParams.fx_rate = rate !== null ? rate : 1.0;
-                } else if (pricerParams.market === 'HKD') {
+                // 使用优化后的高速汇率查询通道更新底单快照
+                if (pricerParams.market !== 'HKD') {
+                    const res = await fetch(`/api/quote?currency=${pricerParams.market}`);
+                    const data = res.ok ? await res.json() : null;
+                    pricerParams.fx_rate = data?.rate || pricerParams.fx_rate || 1.0;
+                } else {
                     pricerParams.fx_rate = 1.0;
                 }
                 
@@ -445,6 +503,8 @@ export default function FCNHoldingPage() {
             }
             
             await loadRecords();
+            await fetchLatestFxRates();
+
             if (activeDbTab === 'sip_holding_fcn_output_died' || activeDbTab === 'sip_trade_fcn_input_died') fetchDbRecords(activeDbTab);
 
             if (errorCount > 0) {
@@ -483,16 +543,19 @@ export default function FCNHoldingPage() {
         }
     };
 
-    // --- 核心工具 ---
+    // --- 核心工具 (融合全局实时汇率逻辑) ---
     const formatMoneyWithUnit = (val: number, market: string, fxRate: number = 1) => {
-        const value = isHKDView ? val * fxRate : val;
+        // Option A: 完全盯市，优先使用最新的全局汇率
+        const effectiveRate = globalFxRates[market] || fxRate || 1;
+        const value = isHKDView ? val * effectiveRate : val;
         const currency = isHKDView ? 'HKD' : (market || 'HKD');
         const numStr = value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         return `${numStr} ${currency}`;
     };
 
     const formatNotionalWithUnit = (val: number, market: string, fxRate: number = 1) => {
-        const value = isHKDView ? val * fxRate : val;
+        const effectiveRate = globalFxRates[market] || fxRate || 1;
+        const value = isHKDView ? val * effectiveRate : val;
         const currency = isHKDView ? 'HKD' : (market || 'HKD');
         const numStr = Math.round(value).toLocaleString('en-US');
         return `${numStr} ${currency}`;
@@ -503,7 +566,7 @@ export default function FCNHoldingPage() {
         const tNames = params.ticker_name && params.ticker_name.length > 0 
             ? params.ticker_name.join('~') 
             : params.tickers?.join('~') || '';
-        return `${params.broker_name || '未知券商'} ${params.trade_date} 【${tNames}】`;
+        return `${params.broker_name || '未知券商'} 【${tNames}】`;
     };
     
     const fmtPct = (val: number) => (val * 100).toFixed(2) + '%';
@@ -553,7 +616,7 @@ export default function FCNHoldingPage() {
     };
 
     // --- 数据重构与扁平化 Hook (处理排序与筛选) ---
-    const useTableData = (data: any[], sortConfig: any, filterConfig: any, isHKDView: boolean) => {
+    const useTableData = (data: any[], sortConfig: any, filterConfig: any, isHKDView: boolean, globalFx: Record<string, number>) => {
         return useMemo(() => {
             let result = [...data];
 
@@ -575,8 +638,10 @@ export default function FCNHoldingPage() {
                     let bVal = b[sortConfig.key];
                     
                     if (isHKDView && isMonetary) {
-                        aVal = (aVal || 0) * (a.fx_rate || 1);
-                        bVal = (bVal || 0) * (b.fx_rate || 1);
+                        const rateA = globalFx[a.market] || a.fx_rate || 1;
+                        const rateB = globalFx[b.market] || b.fx_rate || 1;
+                        aVal = (aVal || 0) * rateA;
+                        bVal = (bVal || 0) * rateB;
                     }
                     
                     if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
@@ -586,7 +651,7 @@ export default function FCNHoldingPage() {
             }
 
             return result;
-        }, [data, sortConfig, filterConfig, isHKDView]);
+        }, [data, sortConfig, filterConfig, isHKDView, globalFx]);
     };
 
     // --- 准备展平后的数据字典 ---
@@ -615,6 +680,7 @@ export default function FCNHoldingPage() {
                 id: mergedRecord.tradeId,
                 p, res, factor,
                 statusText: getStatusText(res.status),
+                tradeDate: p.trade_date || '',
                 name: renderName(p),
                 account,
                 market: p.market || 'HKD',
@@ -696,6 +762,7 @@ export default function FCNHoldingPage() {
                 id: mergedRecord.tradeId,
                 p, res, factor,
                 statusText: getStatusText(res.status),
+                tradeDate: p.trade_date || '',
                 name: renderName(p),
                 account,
                 market: p.market || 'HKD',
@@ -712,9 +779,9 @@ export default function FCNHoldingPage() {
         }).filter(Boolean) as any[];
     }, [diedRecords]);
 
-    const finalLiving = useTableData(processedLiving, livingSort, livingFilters, isHKDView);
-    const finalRisk = useTableData(processedRisk, riskSort, riskFilters, isHKDView);
-    const finalDied = useTableData(processedDied, diedSort, diedFilters, isHKDView);
+    const finalLiving = useTableData(processedLiving, livingSort, livingFilters, isHKDView, globalFxRates);
+    const finalRisk = useTableData(processedRisk, riskSort, riskFilters, isHKDView, globalFxRates);
+    const finalDied = useTableData(processedDied, diedSort, diedFilters, isHKDView, globalFxRates);
 
     // --- 计算全局 SUM 与统计 ---
     const globalStats = useMemo(() => {
@@ -738,7 +805,8 @@ export default function FCNHoldingPage() {
         finalLiving.forEach(item => {
             const mkt = item.market || 'HKD';
             initMarket(mkt);
-            markets[mkt].fxRate = item.fx_rate || 1;
+            // 核心：强制使用最新的全局汇率参与 HKD 汇总
+            markets[mkt].fxRate = globalFxRates[mkt] || item.fx_rate || 1;
             markets[mkt].notionalLiving += item.notional || 0;
             markets[mkt].notionalTotal += item.notional || 0;
             markets[mkt].mktValLiving += item.mktVal || 0;
@@ -749,7 +817,8 @@ export default function FCNHoldingPage() {
         finalDied.forEach(item => {
             const mkt = item.market || 'HKD';
             initMarket(mkt);
-            markets[mkt].fxRate = item.fx_rate || 1;
+            // 核心：历史板块也强制使用最新的全局汇率 (完全盯市 Option A)
+            markets[mkt].fxRate = globalFxRates[mkt] || item.fx_rate || 1;
             markets[mkt].notionalTotal += item.notional || 0;
             markets[mkt].realizedTotal += item.realized || 0;
         });
@@ -774,7 +843,7 @@ export default function FCNHoldingPage() {
 
         // 计算用于 living 和 died 版块的底部汇总信息
         const livingSumsForTable = finalLiving.reduce((acc, item) => {
-            const rate = item.fx_rate || 1;
+            const rate = globalFxRates[item.market] || item.fx_rate || 1;
             acc.notional += (item.notional || 0) * rate;
             acc.mktVal += (item.mktVal || 0) * rate;
             acc.realized += (item.realized || 0) * rate;
@@ -786,7 +855,7 @@ export default function FCNHoldingPage() {
         }, { notional: 0, mktVal: 0, realized: 0, unrealized: 0, unrealizedCoupon: 0, impliedLoss: 0, totalPnl: 0 });
 
         const diedSumsForTable = finalDied.reduce((acc, item) => {
-            const rate = item.fx_rate || 1;
+            const rate = globalFxRates[item.market] || item.fx_rate || 1;
             acc.notional += (item.notional || 0) * rate;
             acc.realized += (item.realized || 0) * rate;
             return acc;
@@ -798,18 +867,18 @@ export default function FCNHoldingPage() {
             livingSums: livingSumsForTable,
             diedSums: diedSumsForTable,
         };
-    }, [finalLiving, finalDied]);
+    }, [finalLiving, finalDied, globalFxRates]);
 
     const livingSumPnlRatio = globalStats.livingSums.notional > 0 ? ((globalStats.livingSums.mktVal + globalStats.livingSums.realized) / globalStats.livingSums.notional) - 1 : 0;
 
     const riskSums = useMemo(() => {
         return finalRisk.reduce((acc, item) => {
-            const rate = item.fx_rate || 1;
+            const rate = globalFxRates[item.market] || item.fx_rate || 1;
             acc.cost += (item.cost || 0) * rate;
             acc.mktVal += (item.mktVal || 0) * rate;
             return acc;
         }, { cost: 0, mktVal: 0 });
-    }, [finalRisk]);
+    }, [finalRisk, globalFxRates]);
     const riskSumPnlRatio = riskSums.cost > 0 ? (riskSums.mktVal / riskSums.cost) - 1 : 0;
 
     // --- FCN 统计入库逻辑 ---
@@ -863,10 +932,12 @@ export default function FCNHoldingPage() {
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">Living 库总计: {livingRecords.length} 笔</span>
                         <button 
-                            onClick={() => setIsHKDView(!isHKDView)} 
-                            className={`px-4 py-1.5 text-xs font-bold rounded-md border transition-all shadow-sm ${isHKDView ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+                            onClick={handleToggleHKDView} 
+                            disabled={isFetchingFx}
+                            className={`px-4 py-1.5 text-xs font-bold rounded-md border transition-all shadow-sm flex items-center gap-1 ${isHKDView ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
                         >
-                            {isHKDView ? '已转为 HKD 计价' : '转化为 HKD'}
+                            {isFetchingFx && <Loader2 size={12} className="animate-spin" />}
+                            {isHKDView ? '已转为 HKD 计价' : '转化为 HKD (完全盯市)'}
                         </button>
                     </div>
                 </div>
@@ -876,6 +947,7 @@ export default function FCNHoldingPage() {
                         <thead className="bg-gray-50 text-gray-600 font-medium">
                             <tr>
                                 <Th label="当前状态" sortKey="statusText" filterKey="statusText" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
+                                <Th label="交易日期" sortKey="tradeDate" filterKey="tradeDate" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
                                 <Th label="名称" sortKey={null} filterKey="name" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="left" />
                                 <Th label="账户" sortKey={null} filterKey="account" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
                                 <Th label="币种" sortKey={null} filterKey="market" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
@@ -898,10 +970,11 @@ export default function FCNHoldingPage() {
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                             {finalLiving.length === 0 ? (
-                                <tr><td colSpan={19} className="px-4 py-8 text-center text-gray-400">暂无存续中的持仓数据 或 暂无匹配条件数据</td></tr>
+                                <tr><td colSpan={20} className="px-4 py-8 text-center text-gray-400">暂无存续中的持仓数据 或 暂无匹配条件数据</td></tr>
                             ) : finalLiving.map((item) => (
                                 <tr key={item.id} className="hover:bg-blue-50/50 transition-colors">
                                     <td className="px-3 py-2 text-center whitespace-nowrap font-bold text-gray-700">{item.statusText}</td>
+                                    <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.tradeDate}</td>
                                     <td className="px-3 py-2 font-medium text-gray-800 whitespace-nowrap">{item.name}</td>
                                     <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.account}</td>
                                     <td className="px-3 py-2 text-center font-mono text-gray-500">{item.market}</td>
@@ -938,7 +1011,7 @@ export default function FCNHoldingPage() {
                         {finalLiving.length > 0 && (
                             <tfoot className="bg-gray-100 border-t-2 border-gray-300 shadow-inner">
                                 <tr>
-                                    <td colSpan={4} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
+                                    <td colSpan={5} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
                                     <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.livingSums.notional)}</td>
                                     <td className={`px-3 py-3 text-right font-mono font-bold ${livingSumPnlRatio >= 0 ? 'text-green-600' : 'text-red-600'}`}>{livingSumPnlRatio > 0 ? '+' : ''}{fmtPct(livingSumPnlRatio)}</td>
                                     <td colSpan={7}></td>
@@ -974,10 +1047,12 @@ export default function FCNHoldingPage() {
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">高风险标的: {finalRisk.length} 项</span>
                         <button 
-                            onClick={() => setIsHKDView(!isHKDView)} 
-                            className={`px-4 py-1.5 text-xs font-bold rounded-md border transition-all shadow-sm ${isHKDView ? 'bg-red-600 text-white border-red-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+                            onClick={handleToggleHKDView} 
+                            disabled={isFetchingFx}
+                            className={`px-4 py-1.5 text-xs font-bold rounded-md border transition-all shadow-sm flex items-center gap-1 ${isHKDView ? 'bg-red-600 text-white border-red-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
                         >
-                            {isHKDView ? '已转为 HKD 计价' : '转化为 HKD'}
+                            {isFetchingFx && <Loader2 size={12} className="animate-spin" />}
+                            {isHKDView ? '已转为 HKD 计价' : '转化为 HKD (完全盯市)'}
                         </button>
                     </div>
                 </div>
@@ -1040,10 +1115,12 @@ export default function FCNHoldingPage() {
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">Died 库总计: {diedRecords.length} 笔</span>
                         <button 
-                            onClick={() => setIsHKDView(!isHKDView)} 
-                            className={`px-4 py-1.5 text-xs font-bold rounded-md border transition-all shadow-sm ${isHKDView ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+                            onClick={handleToggleHKDView} 
+                            disabled={isFetchingFx}
+                            className={`px-4 py-1.5 text-xs font-bold rounded-md border transition-all shadow-sm flex items-center gap-1 ${isHKDView ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
                         >
-                            {isHKDView ? '已转为 HKD 计价' : '转化为 HKD'}
+                            {isFetchingFx && <Loader2 size={12} className="animate-spin" />}
+                            {isHKDView ? '已转为 HKD 计价' : '转化为 HKD (完全盯市)'}
                         </button>
                     </div>
                 </div>
@@ -1053,6 +1130,7 @@ export default function FCNHoldingPage() {
                         <thead className="bg-gray-50 text-gray-600 font-medium">
                             <tr>
                                 <Th label="当前状态" sortKey="statusText" filterKey="statusText" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
+                                <Th label="交易日期" sortKey="tradeDate" filterKey="tradeDate" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
                                 <Th label="名称" sortKey={null} filterKey="name" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="left" />
                                 <Th label="账户" sortKey={null} filterKey="account" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
                                 <Th label="币种" sortKey={null} filterKey="market" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
@@ -1065,10 +1143,11 @@ export default function FCNHoldingPage() {
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                             {finalDied.length === 0 ? (
-                                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">暂无历史持仓数据 或 暂无匹配条件数据</td></tr>
+                                <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-400">暂无历史持仓数据 或 暂无匹配条件数据</td></tr>
                             ) : finalDied.map((item) => (
                                 <tr key={item.id} className="hover:bg-orange-50/50 transition-colors">
                                     <td className="px-3 py-2 text-center whitespace-nowrap font-bold text-gray-700">{item.statusText}</td>
+                                    <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.tradeDate}</td>
                                     <td className="px-3 py-2 font-medium text-gray-600 whitespace-nowrap">{item.name}</td>
                                     <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.account}</td>
                                     <td className="px-3 py-2 text-center font-mono text-gray-500">{item.market}</td>
@@ -1089,7 +1168,7 @@ export default function FCNHoldingPage() {
                         {finalDied.length > 0 && (
                             <tfoot className="bg-gray-100 border-t-2 border-gray-300 shadow-inner">
                                 <tr>
-                                    <td colSpan={4} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
+                                    <td colSpan={5} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
                                     <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.diedSums.notional)}</td>
                                     <td colSpan={2}></td>
                                     <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.diedSums.realized)}</td>
@@ -1156,7 +1235,7 @@ export default function FCNHoldingPage() {
                         {globalStats.marketList.length > 0 && (
                             <tfoot className="bg-indigo-100 border-t-2 border-indigo-200 shadow-inner">
                                 <tr>
-                                    <td className="px-3 py-3 text-center font-bold text-indigo-900 tracking-wider">SUM (折合 HKD)</td>
+                                    <td className="px-3 py-3 text-center font-bold text-indigo-900 tracking-wider">SUM (实时最新 HKD)</td>
                                     <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.notionalTotal)}</td>
                                     <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.notionalLiving)}</td>
                                     <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.mktValLiving)}</td>
