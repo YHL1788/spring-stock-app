@@ -783,7 +783,7 @@ export default function FCNHoldingPage() {
     const finalRisk = useTableData(processedRisk, riskSort, riskFilters, isHKDView, globalFxRates);
     const finalDied = useTableData(processedDied, diedSort, diedFilters, isHKDView, globalFxRates);
 
-    // --- 计算全局 SUM 与统计 ---
+    // --- 计算全局 SUM 与统计 (核心修改: 分市场数据统一折算为 HKD) ---
     const globalStats = useMemo(() => {
         const markets: Record<string, any> = {};
 
@@ -805,22 +805,24 @@ export default function FCNHoldingPage() {
         finalLiving.forEach(item => {
             const mkt = item.market || 'HKD';
             initMarket(mkt);
-            // 核心：强制使用最新的全局汇率参与 HKD 汇总
-            markets[mkt].fxRate = globalFxRates[mkt] || item.fx_rate || 1;
-            markets[mkt].notionalLiving += item.notional || 0;
-            markets[mkt].notionalTotal += item.notional || 0;
-            markets[mkt].mktValLiving += item.mktVal || 0;
-            markets[mkt].realizedTotal += item.realized || 0;
-            markets[mkt].unrealized += item.unrealized || 0;
+            // 强制获取最新汇率，并将各项指标统一乘以汇率转换为 HKD
+            const rate = globalFxRates[mkt] || item.fx_rate || 1;
+            markets[mkt].fxRate = rate;
+            markets[mkt].notionalLiving += (item.notional || 0) * rate;
+            markets[mkt].notionalTotal += (item.notional || 0) * rate;
+            markets[mkt].mktValLiving += (item.mktVal || 0) * rate;
+            markets[mkt].realizedTotal += (item.realized || 0) * rate;
+            markets[mkt].unrealized += (item.unrealized || 0) * rate;
         });
 
         finalDied.forEach(item => {
             const mkt = item.market || 'HKD';
             initMarket(mkt);
-            // 核心：历史板块也强制使用最新的全局汇率 (完全盯市 Option A)
-            markets[mkt].fxRate = globalFxRates[mkt] || item.fx_rate || 1;
-            markets[mkt].notionalTotal += item.notional || 0;
-            markets[mkt].realizedTotal += item.realized || 0;
+            // 强制获取最新汇率，并将各项指标统一乘以汇率转换为 HKD
+            const rate = globalFxRates[mkt] || item.fx_rate || 1;
+            markets[mkt].fxRate = rate;
+            markets[mkt].notionalTotal += (item.notional || 0) * rate;
+            markets[mkt].realizedTotal += (item.realized || 0) * rate;
         });
 
         const marketList = Object.values(markets).map(m => {
@@ -829,13 +831,13 @@ export default function FCNHoldingPage() {
         });
 
         const hkdSum = marketList.reduce((acc, m) => {
-            const rate = m.fxRate;
-            acc.notionalTotal += m.notionalTotal * rate;
-            acc.notionalLiving += m.notionalLiving * rate;
-            acc.mktValLiving += m.mktValLiving * rate;
-            acc.realizedTotal += m.realizedTotal * rate;
-            acc.unrealized += m.unrealized * rate;
-            acc.totalPnl += m.totalPnl * rate;
+            // marketList 中的单项数值已经折合为 HKD，因此直接相加，不再乘以汇率
+            acc.notionalTotal += m.notionalTotal;
+            acc.notionalLiving += m.notionalLiving;
+            acc.mktValLiving += m.mktValLiving;
+            acc.realizedTotal += m.realizedTotal;
+            acc.unrealized += m.unrealized;
+            acc.totalPnl += m.totalPnl;
             return acc;
         }, {
             notionalTotal: 0, notionalLiving: 0, mktValLiving: 0, realizedTotal: 0, unrealized: 0, totalPnl: 0
@@ -1195,7 +1197,7 @@ export default function FCNHoldingPage() {
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
                         <PieChart size={20} className="text-indigo-600"/>
                         【FCN 统计】
-                        <span className="text-sm font-normal text-gray-500 ml-2">全局数据汇总</span>
+                        <span className="text-sm font-normal text-gray-500 ml-2">全局数据统一折合为 HKD</span>
                     </h2>
                     <span className="text-xs text-gray-400">数据每分钟自动刷新存库</span>
                 </div>
@@ -1204,13 +1206,13 @@ export default function FCNHoldingPage() {
                     <table className="min-w-full text-sm text-left divide-y divide-gray-200">
                         <thead className="bg-indigo-50 text-indigo-900 font-medium">
                             <tr>
-                                <th className="px-3 py-2 text-center whitespace-nowrap">币种</th>
-                                <th className="px-3 py-2 text-right whitespace-nowrap">总名义本金(含历史)</th>
-                                <th className="px-3 py-2 text-right whitespace-nowrap">总名义本金(存续中)</th>
-                                <th className="px-3 py-2 text-right whitespace-nowrap">总市值(存续中)</th>
-                                <th className="px-3 py-2 text-right whitespace-nowrap">已实现票息(含历史)</th>
-                                <th className="px-3 py-2 text-right whitespace-nowrap">未实现损益</th>
-                                <th className="px-3 py-2 text-right whitespace-nowrap">总损益</th>
+                                <th className="px-3 py-2 text-center whitespace-nowrap">市场(币种)</th>
+                                <th className="px-3 py-2 text-right whitespace-nowrap">总名义本金(含历史) HKD</th>
+                                <th className="px-3 py-2 text-right whitespace-nowrap">总名义本金(存续中) HKD</th>
+                                <th className="px-3 py-2 text-right whitespace-nowrap">总市值(存续中) HKD</th>
+                                <th className="px-3 py-2 text-right whitespace-nowrap">已实现票息(含历史) HKD</th>
+                                <th className="px-3 py-2 text-right whitespace-nowrap">未实现损益 HKD</th>
+                                <th className="px-3 py-2 text-right whitespace-nowrap">总损益 HKD</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
@@ -1235,7 +1237,7 @@ export default function FCNHoldingPage() {
                         {globalStats.marketList.length > 0 && (
                             <tfoot className="bg-indigo-100 border-t-2 border-indigo-200 shadow-inner">
                                 <tr>
-                                    <td className="px-3 py-3 text-center font-bold text-indigo-900 tracking-wider">SUM (实时最新 HKD)</td>
+                                    <td className="px-3 py-3 text-center font-bold text-indigo-900 tracking-wider">全局大盘 SUM</td>
                                     <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.notionalTotal)}</td>
                                     <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.notionalLiving)}</td>
                                     <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.mktValLiving)}</td>
