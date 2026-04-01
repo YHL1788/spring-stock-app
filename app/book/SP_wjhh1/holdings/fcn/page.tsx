@@ -214,7 +214,7 @@ export default function FCNHoldingPage() {
         } catch(e) { console.error(e); }
     };
 
-    // --- 获取并刷新后台库数据 (修复缺失的方法) ---
+    // --- 获取并刷新后台库数据 ---
     const fetchDbRecords = async (collectionName: string) => {
         if (!user) return;
         setLoadingDb(true);
@@ -295,7 +295,6 @@ export default function FCNHoldingPage() {
         const newRates: Record<string, number> = {};
         try {
             await Promise.all(Array.from(markets).map(async (mkt) => {
-                // 使用优化后的高速汇率查询通道
                 const res = await fetch(`/api/quote?currency=${mkt}`);
                 if (res.ok) {
                     const data = await res.json();
@@ -312,7 +311,6 @@ export default function FCNHoldingPage() {
         }
     };
 
-    // 页面初次加载持仓数据后，静默拉取一次最新汇率供全局统计模块(FCN统计)使用
     useEffect(() => {
         if ((livingRecords.length > 0 || diedRecords.length > 0) && !hasFetchedInitialFxRates.current) {
             fetchLatestFxRates();
@@ -322,7 +320,7 @@ export default function FCNHoldingPage() {
 
     const handleToggleHKDView = async () => {
         if (!isHKDView) {
-            await fetchLatestFxRates(); // 切换为 HKD 时强制确保是最新的全局汇率
+            await fetchLatestFxRates();
         }
         setIsHKDView(!isHKDView);
     };
@@ -362,7 +360,6 @@ export default function FCNHoldingPage() {
                     pricerParams.hist_prices = histMap;
                 }
 
-                // 使用优化后的高速汇率查询通道更新底单快照
                 if (pricerParams.market !== 'HKD') {
                     const res = await fetch(`/api/quote?currency=${pricerParams.market}`);
                     const data = res.ok ? await res.json() : null;
@@ -425,7 +422,6 @@ export default function FCNHoldingPage() {
             }
             
             await loadRecords();
-            // 重新刷新全局汇率以保证精度
             await fetchLatestFxRates();
 
             if (activeDbTab === 'sip_holding_fcn_output_living' || activeDbTab === 'sip_trade_fcn_input_living') fetchDbRecords(activeDbTab);
@@ -477,7 +473,6 @@ export default function FCNHoldingPage() {
                     pricerParams.hist_prices = histMap;
                 }
 
-                // 使用优化后的高速汇率查询通道更新底单快照
                 if (pricerParams.market !== 'HKD') {
                     const res = await fetch(`/api/quote?currency=${pricerParams.market}`);
                     const data = res.ok ? await res.json() : null;
@@ -545,7 +540,6 @@ export default function FCNHoldingPage() {
 
     // --- 核心工具 (融合全局实时汇率逻辑) ---
     const formatMoneyWithUnit = (val: number, market: string, fxRate: number = 1) => {
-        // Option A: 完全盯市，优先使用最新的全局汇率
         const effectiveRate = globalFxRates[market] || fxRate || 1;
         const value = isHKDView ? val * effectiveRate : val;
         const currency = isHKDView ? 'HKD' : (market || 'HKD');
@@ -631,7 +625,7 @@ export default function FCNHoldingPage() {
                 }
             });
 
-            if (sortConfig.direction) {
+            if (sortConfig.dir) {
                 const isMonetary = ['notional', 'cost', 'mktVal', 'realized', 'unrealized', 'unrealizedCoupon', 'impliedLoss', 'totalPnl'].includes(sortConfig.key);
                 result.sort((a, b) => {
                     let aVal = a[sortConfig.key];
@@ -640,12 +634,27 @@ export default function FCNHoldingPage() {
                     if (isHKDView && isMonetary) {
                         const rateA = globalFx[a.market] || a.fx_rate || 1;
                         const rateB = globalFx[b.market] || b.fx_rate || 1;
-                        aVal = (aVal || 0) * rateA;
-                        bVal = (bVal || 0) * rateB;
+                        // 强制转为数字进行倍乘，防止 undefined * 汇率 变成 NaN
+                        aVal = (typeof aVal === 'number' ? aVal : parseFloat(aVal) || 0) * rateA;
+                        bVal = (typeof bVal === 'number' ? bVal : parseFloat(bVal) || 0) * rateB;
                     }
                     
-                    if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
-                    if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+                    // 1. 空值与脏数据兜底防线 (把 NaN, null, undefined, 空字符串 沉底)
+                    const isAEmpty = aVal === null || aVal === undefined || aVal === '' || (typeof aVal === 'number' && Number.isNaN(aVal));
+                    const isBEmpty = bVal === null || bVal === undefined || bVal === '' || (typeof bVal === 'number' && Number.isNaN(bVal));
+                    
+                    if (isAEmpty && isBEmpty) return 0;
+                    if (isAEmpty) return 1; // A是空值，永远放后面
+                    if (isBEmpty) return -1; // B是空值，永远放后面
+
+                    // 2. 字符串安全对比 (支持中文和日期)
+                    if (typeof aVal === 'string' && typeof bVal === 'string') {
+                        return sortConfig.dir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+                    }
+
+                    // 3. 正常数字对比
+                    if (aVal < bVal) return sortConfig.dir === 'asc' ? -1 : 1;
+                    if (aVal > bVal) return sortConfig.dir === 'asc' ? 1 : -1;
                     return 0;
                 });
             }
@@ -783,7 +792,7 @@ export default function FCNHoldingPage() {
     const finalRisk = useTableData(processedRisk, riskSort, riskFilters, isHKDView, globalFxRates);
     const finalDied = useTableData(processedDied, diedSort, diedFilters, isHKDView, globalFxRates);
 
-    // --- 计算全局 SUM 与统计 (核心修改: 分市场数据统一折算为 HKD) ---
+    // --- 计算全局 SUM 与统计 ---
     const globalStats = useMemo(() => {
         const markets: Record<string, any> = {};
 
@@ -805,7 +814,6 @@ export default function FCNHoldingPage() {
         finalLiving.forEach(item => {
             const mkt = item.market || 'HKD';
             initMarket(mkt);
-            // 强制获取最新汇率，并将各项指标统一乘以汇率转换为 HKD
             const rate = globalFxRates[mkt] || item.fx_rate || 1;
             markets[mkt].fxRate = rate;
             markets[mkt].notionalLiving += (item.notional || 0) * rate;
@@ -818,7 +826,6 @@ export default function FCNHoldingPage() {
         finalDied.forEach(item => {
             const mkt = item.market || 'HKD';
             initMarket(mkt);
-            // 强制获取最新汇率，并将各项指标统一乘以汇率转换为 HKD
             const rate = globalFxRates[mkt] || item.fx_rate || 1;
             markets[mkt].fxRate = rate;
             markets[mkt].notionalTotal += (item.notional || 0) * rate;
@@ -831,7 +838,6 @@ export default function FCNHoldingPage() {
         });
 
         const hkdSum = marketList.reduce((acc, m) => {
-            // marketList 中的单项数值已经折合为 HKD，因此直接相加，不再乘以汇率
             acc.notionalTotal += m.notionalTotal;
             acc.notionalLiving += m.notionalLiving;
             acc.mktValLiving += m.mktValLiving;
@@ -843,7 +849,6 @@ export default function FCNHoldingPage() {
             notionalTotal: 0, notionalLiving: 0, mktValLiving: 0, realizedTotal: 0, unrealized: 0, totalPnl: 0
         });
 
-        // 计算用于 living 和 died 版块的底部汇总信息
         const livingSumsForTable = finalLiving.reduce((acc, item) => {
             const rate = globalFxRates[item.market] || item.fx_rate || 1;
             acc.notional += (item.notional || 0) * rate;
@@ -950,9 +955,9 @@ export default function FCNHoldingPage() {
                             <tr>
                                 <Th label="当前状态" sortKey="statusText" filterKey="statusText" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
                                 <Th label="交易日期" sortKey="tradeDate" filterKey="tradeDate" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
-                                <Th label="名称" sortKey={null} filterKey="name" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="left" />
-                                <Th label="账户" sortKey={null} filterKey="account" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
-                                <Th label="币种" sortKey={null} filterKey="market" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
+                                <Th label="名称" sortKey="name" filterKey="name" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="left" />
+                                <Th label="账户" sortKey="account" filterKey="account" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
+                                <Th label="币种" sortKey="market" filterKey="market" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
                                 <Th label="总名义本金" sortKey="notional" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
                                 <Th label="FCN盈亏比" sortKey="pnlRatio" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
                                 <Th label="年化票息" sortKey="coupon" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
@@ -1065,7 +1070,7 @@ export default function FCNHoldingPage() {
                             <tr>
                                 <Th label="标的代码 (Ticker)" filterKey="ticker" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="left" />
                                 <Th label="FCN 产品名称" filterKey="fcnName" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="left" />
-                                <Th label="账户" sortKey={null} filterKey="account" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="center" />
+                                <Th label="账户" sortKey="account" filterKey="account" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="center" />
                                 <Th label="暴露成本价" sortKey="costPrice" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
                                 <Th label="暴露股数" sortKey="shares" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
                                 <Th label="暴露成本总额" sortKey="cost" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
@@ -1133,14 +1138,14 @@ export default function FCNHoldingPage() {
                             <tr>
                                 <Th label="当前状态" sortKey="statusText" filterKey="statusText" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
                                 <Th label="交易日期" sortKey="tradeDate" filterKey="tradeDate" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
-                                <Th label="名称" sortKey={null} filterKey="name" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="left" />
-                                <Th label="账户" sortKey={null} filterKey="account" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
-                                <Th label="币种" sortKey={null} filterKey="market" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
+                                <Th label="名称" sortKey="name" filterKey="name" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="left" />
+                                <Th label="账户" sortKey="account" filterKey="account" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
+                                <Th label="币种" sortKey="market" filterKey="market" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
                                 <Th label="总名义本金" sortKey="notional" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
                                 <Th label="年化票息" sortKey="coupon" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
                                 <Th label="敲入/出界限" sortKey="strike" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
                                 <Th label="已实现票息" sortKey="realized" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
-                                <Th label="是否有接货" sortKey={null} filterKey="hasDeliveryText" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
+                                <Th label="是否有接货" sortKey="hasDeliveryText" filterKey="hasDeliveryText" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
