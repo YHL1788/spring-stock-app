@@ -229,6 +229,7 @@ export default function FCNTradePage() {
             if (basicParams.strike_pct === '') throw new Error("请输入敲入界限");
             if (basicParams.trigger_pct === '') throw new Error("请输入敲出界限");
             if (basicParams.coupon_rate === '') throw new Error("请输入年化票息");
+            if (basicParams.risk_free_rate === '') throw new Error("请输入无风险利率");
             
             const tickers: string[] = [];
             const ticker_names: string[] = [];
@@ -277,7 +278,7 @@ export default function FCNTradePage() {
                 seed: basicParams.seed === '' ? undefined : (basicParams.seed as number),
                 n_sims: basicParams.n_sims === '' ? 5000 : (basicParams.n_sims as number),
                 coupon_freq: basicParams.coupon_freq === '' ? 12 : (basicParams.coupon_freq as number),
-                risk_free_rate: basicParams.risk_free_rate === '' ? 0.03 : (basicParams.risk_free_rate as number),
+                risk_free_rate: basicParams.risk_free_rate as number, 
                 total_notional: Number(basicParams.total_notional), denomination: Number(basicParams.denomination),
                 strike_pct: Number(basicParams.strike_pct), trigger_pct: Number(basicParams.trigger_pct),
                 coupon_rate: Number(basicParams.coupon_rate),
@@ -541,7 +542,7 @@ export default function FCNTradePage() {
     const fmtPct = (val: number) => (val * 100).toFixed(2) + '%';
     const getDisplayCurrency = () => isHKDView ? 'HKD' : (basicParams.market || 'HKD');
     const getDisplayValue = (val: number) => {
-        const rate = typeof basicParams.fx_rate === 'number' ? basicParams.fx_rate : 1.0;
+        const rate = currentResult?.fx_rate || 1.0;
         if (isHKDView) return val * rate;
         return val;
     };
@@ -605,12 +606,12 @@ export default function FCNTradePage() {
                                     <option value="HKD">HKD</option><option value="USD">USD</option><option value="CNY">CNY</option><option value="JPY">JPY</option>
                                 </select>
                             </div>
-                            <div><label className="block text-gray-600 mb-1">总名义本金</label><input type="number" name="total_notional" value={basicParams.total_notional} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.total_notional.toString()} className="w-full border-gray-300 rounded border p-1.5 outline-none" /></div>
-                            <div><label className="block text-gray-600 mb-1">单张面值</label><input type="number" name="denomination" value={basicParams.denomination} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.denomination.toString()} className="w-full border-gray-300 rounded border p-1.5 outline-none" /></div>
-                            <div className="col-span-2"><label className="block text-gray-600 mb-1">交易日期 (Trade Date)</label><input type="date" name="trade_date" value={basicParams.trade_date} onChange={handleBasicChange} className="w-full border-gray-300 rounded border p-1.5 outline-none" /></div>
-                            <div><label className="block text-gray-600 mb-1">敲出界限 (%)</label><input type="number" step="0.01" name="trigger_pct" value={pctToInput(basicParams.trigger_pct)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.trigger_pct * 100).toString()} className="w-full border-gray-300 rounded border p-1.5 outline-none" /></div>
-                            <div><label className="block text-gray-600 mb-1">敲入界限 (%)</label><input type="number" step="0.01" name="strike_pct" value={pctToInput(basicParams.strike_pct)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.strike_pct * 100).toString()} className="w-full border-gray-300 rounded border p-1.5 outline-none" /></div>
-                            <div className="col-span-2"><label className="block text-gray-600 mb-1">年化票息 (%)</label><input type="number" step="0.01" name="coupon_rate" value={pctToInput(basicParams.coupon_rate)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.coupon_rate * 100).toString()} className="w-full border-gray-300 rounded border p-1.5 outline-none" /></div>
+                            <div><label className="block text-gray-600 mb-1">总名义本金 <span className="text-red-500">*</span></label><input type="number" name="total_notional" value={basicParams.total_notional} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.total_notional.toString()} className="w-full border-gray-300 rounded border p-1.5 outline-none" /></div>
+                            <div><label className="block text-gray-600 mb-1">单张面值 <span className="text-red-500">*</span></label><input type="number" name="denomination" value={basicParams.denomination} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.denomination.toString()} className="w-full border-gray-300 rounded border p-1.5 outline-none" /></div>
+                            <div className="col-span-2"><label className="block text-gray-600 mb-1">交易日期 (Trade Date) <span className="text-red-500">*</span></label><input type="date" name="trade_date" value={basicParams.trade_date} onChange={handleBasicChange} className="w-full border-gray-300 rounded border p-1.5 outline-none" /></div>
+                            <div><label className="block text-gray-600 mb-1">敲出界限 (%) <span className="text-red-500">*</span></label><input type="number" step="0.01" name="trigger_pct" value={pctToInput(basicParams.trigger_pct)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.trigger_pct * 100).toString()} className="w-full border-gray-300 rounded border p-1.5 outline-none" /></div>
+                            <div><label className="block text-gray-600 mb-1">敲入界限 (%) <span className="text-red-500">*</span></label><input type="number" step="0.01" name="strike_pct" value={pctToInput(basicParams.strike_pct)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.strike_pct * 100).toString()} className="w-full border-gray-300 rounded border p-1.5 outline-none" /></div>
+                            <div className="col-span-2"><label className="block text-gray-600 mb-1">年化票息 (%) <span className="text-red-500">*</span></label><input type="number" step="0.01" name="coupon_rate" value={pctToInput(basicParams.coupon_rate)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.coupon_rate * 100).toString()} className="w-full border-gray-300 rounded border p-1.5 outline-none" /></div>
                         </div>
                     </div>
 
@@ -664,7 +665,7 @@ export default function FCNTradePage() {
                                 <div><label className="block text-gray-600 mb-1">模拟汇率 (To HKD)</label><input type="number" step="0.0001" name="fx_rate" value={basicParams.fx_rate} onChange={handleBasicChange} placeholder="自动" className="w-full border-gray-300 rounded border p-1" /></div>
                                 <div><label className="block text-gray-600 mb-1">历史起始日</label><input type="date" name="history_start_date" value={basicParams.history_start_date} max={basicParams.trade_date} onChange={handleBasicChange} className="w-full border-gray-300 rounded border p-1" /></div>
                                 <div><label className="block text-gray-600 mb-1">模拟次数</label><input type="number" name="n_sims" value={basicParams.n_sims} onChange={handleBasicChange} placeholder="5000" className="w-full border-gray-300 rounded border p-1" /></div>
-                                <div><label className="block text-gray-600 mb-1">无风险利率 (%)</label><input type="number" step="0.01" name="risk_free_rate" value={pctToInput(basicParams.risk_free_rate)} onChange={handlePercentChange} placeholder="3" className="w-full border-gray-300 rounded border p-1" /></div>
+                                <div><label className="block text-gray-600 mb-1">无风险利率 (%) <span className="text-red-500">*</span></label><input type="number" step="0.01" name="risk_free_rate" value={pctToInput(basicParams.risk_free_rate)} onChange={handlePercentChange} placeholder={(EXAMPLE_PARAMS.risk_free_rate * 100).toString()} className="w-full border-gray-300 rounded border p-1" /></div>
                                 <div><label className="block text-gray-600 mb-1">随机种子 (Seed)</label><input type="number" name="seed" value={basicParams.seed} onChange={handleBasicChange} placeholder="随机" className="w-full border-gray-300 rounded border p-1" /></div>
                                 <div>
                                     <label className="block text-gray-600 mb-1">&nbsp;</label>

@@ -31,12 +31,13 @@ const DEFAULTS = {
     tradeDate: "2025-10-08",
     dailyShares: -6.0,
     maxGlobalShares: -1488.0,
-    kiPct: 1.2835,
-    koPct: 0.93,
+    guaranteedDays: 0,
+    strikePct: 128.35, 
+    koPct: 93,
     leverage: 2.0,
     simCount: 5000,
     randomSeed: 42,
-    riskFree: 0.045,
+    riskFree: 4.5,
     fxRate: 7.8
 };
 
@@ -58,13 +59,12 @@ interface TransactionRecord {
 }
 
 const SimulationChart = ({ data }: { data: PlotData }) => {
-    const { history_prices, future_paths, spot_price, barrier_ki, barrier_ko, total_days } = data;
+    const { history_prices, future_paths, spot_price, barrier_strike, barrier_ko, total_days } = data;
 
-    // S0 + History
     const fullHistory = [spot_price, ...history_prices];
     const historyLen = fullHistory.length;
 
-    let allPrices = [...fullHistory, barrier_ki, barrier_ko];
+    let allPrices = [...fullHistory, barrier_strike, barrier_ko];
     future_paths.forEach(path => allPrices.push(...path));
     const minP = Math.min(...allPrices) * 0.95;
     const maxP = Math.max(...allPrices) * 1.05;
@@ -102,9 +102,9 @@ const SimulationChart = ({ data }: { data: PlotData }) => {
                     {/* Grid */}
                     <rect x={padding} y={padding} width={plotW} height={plotH} fill="#fafafa" stroke="#eee" />
 
-                    {/* KI Line */}
-                    <line x1={padding} y1={getY(barrier_ki)} x2={width - padding} y2={getY(barrier_ki)} stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4 4" />
-                    <text x={width - padding + 5} y={getY(barrier_ki) + 3} fontSize="10" fill="#ef4444">KI</text>
+                    {/* Strike Line */}
+                    <line x1={padding} y1={getY(barrier_strike)} x2={width - padding} y2={getY(barrier_strike)} stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4 4" />
+                    <text x={width - padding + 5} y={getY(barrier_strike) + 3} fontSize="10" fill="#ef4444">Strike</text>
 
                     {/* KO Line */}
                     <line x1={padding} y1={getY(barrier_ko)} x2={width - padding} y2={getY(barrier_ko)} stroke="#10b981" strokeWidth="1.5" strokeDasharray="4 4" />
@@ -142,7 +142,7 @@ const SimulationChart = ({ data }: { data: PlotData }) => {
             <div className="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
                 <div className="flex items-center"><span className="w-3 h-0.5 bg-gray-800 mr-1"></span>历史路径</div>
                 <div className="flex items-center"><span className="w-3 h-0.5 bg-gradient-to-r from-red-400 via-green-400 to-blue-400 mr-1"></span>未来模拟</div>
-                <div className="flex items-center"><span className="w-3 h-0.5 border-t border-dashed border-red-500 mr-1"></span>KI界限</div>
+                <div className="flex items-center"><span className="w-3 h-0.5 border-t border-dashed border-red-500 mr-1"></span>行权界限</div>
                 <div className="flex items-center"><span className="w-3 h-0.5 border-t border-dashed border-green-500 mr-1"></span>KO界限</div>
             </div>
         </div>
@@ -166,7 +166,8 @@ export default function DQAQPanel() {
     const [tradeDate, setTradeDate] = useState("");
     const [dailyShares, setDailyShares] = useState<string>("");
     const [maxGlobalShares, setMaxGlobalShares] = useState<string>("");
-    const [kiPct, setKiPct] = useState<string>("");
+    const [guaranteedDays, setGuaranteedDays] = useState<string>(""); 
+    const [strikePct, setStrikePct] = useState<string>("");
     const [koPct, setKoPct] = useState<string>("");
     const [leverage, setLeverage] = useState<string>("");
 
@@ -230,8 +231,8 @@ export default function DQAQPanel() {
     interface CalcParams {
         ticker: string; stockName: string; spotPrice: number; currentMktPriceStr: string;
         broker: string; account: string; executor: string; currency: string;
-        tradeDate: string; dailyShares: number; maxGlobalShares: number;
-        kiPct: number; koPct: number; leverage: number;
+        tradeDate: string; dailyShares: number; maxGlobalShares: number; guaranteedDays: number;
+        strikePct: number; koPct: number; leverage: number;
         simCount: number; randomSeed: number;
         riskFreeInputStr: string; fxRateInputStr: string; historyStartStr: string;
         contractType: 'DQ' | 'AQ';
@@ -251,31 +252,41 @@ export default function DQAQPanel() {
         await new Promise(r => setTimeout(r, 100));
 
         try {
-            let r = DEFAULTS.riskFree;
-            if (params.riskFreeInputStr === "") {
-                try {
-                    const tnx = await fetchQuotePrice("^TNX");
-                    if (tnx !== null) r = tnx / 100;
-                } catch (e) { }
-            } else {
-                r = parseFloat(params.riskFreeInputStr);
+            // 1. 无风险利率（现已改为必填项）
+            let r = parseFloat(params.riskFreeInputStr) / 100;
+            if (isNaN(r)) {
+                throw new Error("无风险利率无效，请重新输入");
             }
 
-            let fx = DEFAULTS.fxRate;
-            if (params.fxRateInputStr === "") {
-                try {
-                    const fxP = await fetchQuotePrice("HKD=X");
-                    if (fxP !== null) fx = fxP;
-                } catch (e) { }
-            } else {
+            // 2. 汇率抓取及 UI 回填
+            let fx = 1.0;
+            if (params.currency === 'HKD') {
+                fx = 1.0;
+                if (params.fxRateInputStr === "") setFxRateInput("1.0");
+            } else if (params.fxRateInputStr !== "") {
                 fx = parseFloat(params.fxRateInputStr);
+            } else {
+                try {
+                    const res = await fetch(`/api/quote?currency=${params.currency}`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        fx = data?.rate || DEFAULTS.fxRate;
+                    } else {
+                        fx = DEFAULTS.fxRate;
+                    }
+                } catch (e) { 
+                    fx = DEFAULTS.fxRate;
+                }
+                setFxRateInput(fx.toFixed(4)); // 自动回填真实使用的汇率
             }
 
+            // 3. 历史数据起点推算及 UI 回填
             let hStart = params.historyStartStr;
             if (hStart === "") {
                 const d = new Date(params.tradeDate);
                 d.setDate(d.getDate() - 28);
                 hStart = d.toISOString().split('T')[0];
+                setHistoryStartInput(hStart); // 自动回填推算的日期
             }
 
             let historyPrices: number[] = [];
@@ -301,8 +312,20 @@ export default function DQAQPanel() {
                 console.warn("History fetch error:", e);
             }
 
+            // --- 时序错位安检门 (Security Check) ---
+            const valDtStr = new Date().toISOString().split('T')[0];
+            for (const p of params.periodsToUse) {
+                if (p.obs_end < valDtStr) {
+                    const days_in_history = historyDates.filter(d => d >= p.obs_start && d <= p.obs_end).length;
+                    if (days_in_history !== p.trading_days) {
+                        throw new Error(`[日期错位拦截] 第 ${p.period_id} 期 (${p.obs_start} 至 ${p.obs_end}) 实际拉取到 ${days_in_history} 个有效交易日收盘价，但您输入的交易日数为 ${p.trading_days} 天。请检查该区间是否包含节假日/恶劣天气休市，并修正【日期信息】表格中的天数，以保证估值精准！`);
+                    }
+                }
+            }
+
             const sigma = calculateVolatility(historyPrices);
 
+            // 4. 当前市价抓取及 UI 回填
             let finalMktPrice = params.spotPrice;
             if (params.currentMktPriceStr !== "") {
                 finalMktPrice = parseFloat(params.currentMktPriceStr);
@@ -310,9 +333,12 @@ export default function DQAQPanel() {
                 const p = await fetchQuotePrice(params.ticker);
                 if (p !== null) {
                     finalMktPrice = p;
-                    setCurrentMktPrice(p.toString());
+                    setCurrentMktPrice(p.toString()); // 自动回填市价
                 } else if (historyPrices.length > 0) {
                     finalMktPrice = historyPrices[historyPrices.length - 1];
+                    setCurrentMktPrice(finalMktPrice.toString()); // 自动回填最后一个历史收盘价
+                } else {
+                    setCurrentMktPrice(finalMktPrice.toString()); // 如果都没抓到，用 S0 兜底填入
                 }
             }
 
@@ -325,8 +351,9 @@ export default function DQAQPanel() {
                 trade_date: params.tradeDate,
                 daily_shares: params.dailyShares,
                 max_global_shares: params.maxGlobalShares,
-                ki_barrier_pct: params.kiPct,
-                ko_barrier_pct: params.koPct,
+                guaranteed_days: params.guaranteedDays,
+                strike_pct: params.strikePct / 100,
+                ko_barrier_pct: params.koPct / 100,
                 leverage: params.leverage
             };
             const underlying: UnderlyingInfo = {
@@ -343,9 +370,8 @@ export default function DQAQPanel() {
             };
 
             const valuator = new DQAQValuator(basic, underlying, sim, params.periodsToUse, sigma);
-            const valDt = new Date().toISOString().split('T')[0];
-
-            const res = valuator.generate_report(finalMktPrice, historyPrices, historyDates, valDt, fx);
+            
+            const res = valuator.generate_report(finalMktPrice, historyPrices, historyDates, valDtStr, fx);
             setResult(res);
 
             if (res.history_records) {
@@ -357,8 +383,8 @@ export default function DQAQPanel() {
                         let qty = Math.abs(rec.shares);
                         if (direction === 'Sell') qty = -Math.abs(qty);
 
-                        const defaultTradePrice = params.spotPrice;
-                        const amountNoFee = qty * defaultTradePrice;
+                        const strikePrice = params.spotPrice * (params.strikePct / 100);
+                        const amountNoFee = qty * strikePrice;
                         const fee = 0;
                         const amountWithFee = amountNoFee + fee;
 
@@ -370,7 +396,7 @@ export default function DQAQPanel() {
                         if (Math.abs(qty) > 0.0001) {
                             newTxRecords.push({
                                 id: `tx-${index}-${Date.now()}`,
-                                date: rec.settle_date,
+                                date: rec.settle_date, 
                                 account: params.account,
                                 market: marketCode,
                                 executor: params.executor,
@@ -379,7 +405,7 @@ export default function DQAQPanel() {
                                 stockCode: params.ticker,
                                 stockName: params.stockName || params.ticker,
                                 quantity: Number(qty.toFixed(2)),
-                                priceNoFee: Number(defaultTradePrice.toFixed(4)),
+                                priceNoFee: Number(strikePrice.toFixed(4)),
                                 fee: 0,
                                 amountNoFee: Number(amountNoFee.toFixed(2)),
                                 hkdAmount: Number((amountWithFee * (fx || 1)).toFixed(2))
@@ -391,7 +417,7 @@ export default function DQAQPanel() {
             }
 
         } catch (e: any) {
-            alert("计算错误: " + e.message || e);
+            alert("计算/数据错误: " + (e.message || e));
         } finally {
             setCalculating(false);
         }
@@ -405,11 +431,13 @@ export default function DQAQPanel() {
         if (!tradeDate) newErrors["tradeDate"] = "！，请输入数据";
         if (!dailyShares) newErrors["dailyShares"] = "！，请输入数据";
         if (!maxGlobalShares) newErrors["maxGlobalShares"] = "！，请输入数据";
-        if (!kiPct) newErrors["kiPct"] = "！，请输入数据";
+        if (!strikePct) newErrors["strikePct"] = "！，请输入数据";
         if (!koPct) newErrors["koPct"] = "！，请输入数据";
         if (!leverage) newErrors["leverage"] = "！，请输入数据";
         if (!simCount) newErrors["simCount"] = "！，请输入数据";
         if (!randomSeed) newErrors["randomSeed"] = "！，请输入数据";
+        if (guaranteedDays === "") newErrors["guaranteedDays"] = "！，请输入数据";
+        if (riskFreeInput === "") newErrors["riskFree"] = "！，请输入数据";
 
         if (periods.length === 0) newErrors["periods"] = "！，请至少添加一个观察期";
 
@@ -431,7 +459,8 @@ export default function DQAQPanel() {
             tradeDate,
             dailyShares: Number(dailyShares),
             maxGlobalShares: Number(maxGlobalShares),
-            kiPct: Number(kiPct),
+            guaranteedDays: Number(guaranteedDays),
+            strikePct: Number(strikePct),
             koPct: Number(koPct),
             leverage: Number(leverage),
             simCount: Number(simCount),
@@ -455,11 +484,13 @@ export default function DQAQPanel() {
         setTradeDate(DEFAULTS.tradeDate);
         setDailyShares(String(DEFAULTS.dailyShares));
         setMaxGlobalShares(String(DEFAULTS.maxGlobalShares));
-        setKiPct(String(DEFAULTS.kiPct));
+        setGuaranteedDays(String(DEFAULTS.guaranteedDays));
+        setStrikePct(String(DEFAULTS.strikePct));
         setKoPct(String(DEFAULTS.koPct));
         setLeverage(String(DEFAULTS.leverage));
         setSimCount(String(DEFAULTS.simCount));
         setRandomSeed(String(DEFAULTS.randomSeed));
+        setRiskFreeInput(String(DEFAULTS.riskFree)); // 回填 UI 的默认无风险利率
         setContractType('DQ');
         setPeriods(DEFAULT_PERIODS);
 
@@ -477,12 +508,13 @@ export default function DQAQPanel() {
             tradeDate: DEFAULTS.tradeDate,
             dailyShares: DEFAULTS.dailyShares,
             maxGlobalShares: DEFAULTS.maxGlobalShares,
-            kiPct: DEFAULTS.kiPct,
+            guaranteedDays: DEFAULTS.guaranteedDays,
+            strikePct: DEFAULTS.strikePct,
             koPct: DEFAULTS.koPct,
             leverage: DEFAULTS.leverage,
             simCount: DEFAULTS.simCount,
             randomSeed: DEFAULTS.randomSeed,
-            riskFreeInputStr: "",
+            riskFreeInputStr: String(DEFAULTS.riskFree),
             fxRateInputStr: "",
             historyStartStr: "",
             contractType: 'DQ',
@@ -503,7 +535,8 @@ export default function DQAQPanel() {
         setTradeDate("");
         setDailyShares("");
         setMaxGlobalShares("");
-        setKiPct("");
+        setGuaranteedDays("");
+        setStrikePct("");
         setKoPct("");
         setLeverage("");
         setSimCount("");
@@ -560,9 +593,8 @@ export default function DQAQPanel() {
     };
 
     const uiSpot = spotPrice ? Number(spotPrice) : 0;
-    const uiKiPct = kiPct ? Number(kiPct) : 0;
+    const uiStrikePct = strikePct ? Number(strikePct) : 0;
     const uiKoPct = koPct ? Number(koPct) : 0;
-    const fmtPct = (val: number) => (val * 100).toFixed(2) + '%';
 
     return (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -588,7 +620,7 @@ export default function DQAQPanel() {
                         </div>
                         <div>
                             <label className="block text-gray-500 text-xs">币种 (Currency)</label>
-                            <select className="border w-full p-1 rounded" value={currency} onChange={(e: any) => setContractType(e.target.value)}>
+                            <select className="border w-full p-1 rounded" value={currency} onChange={(e: any) => setCurrency(e.target.value)}>
                                 <option value="HKD">HKD</option>
                                 <option value="USD">USD</option>
                                 <option value="CNY">CNY</option>
@@ -603,8 +635,8 @@ export default function DQAQPanel() {
                         <div>
                             <label className="block text-gray-500 text-xs">合约类型 (Type)</label>
                             <select className="border w-full p-1 rounded" value={contractType} onChange={(e: any) => setContractType(e.target.value)}>
-                                <option value="DQ">DQ</option>
-                                <option value="AQ">AQ</option>
+                                <option value="DQ">DQ (减持)</option>
+                                <option value="AQ">AQ (累积)</option>
                             </select>
                         </div>
                         <div>
@@ -616,25 +648,37 @@ export default function DQAQPanel() {
                             <label className="block text-gray-500 text-xs">每日股数 (Daily) <span className="text-red-500">*</span></label>
                             <input type="number" className={`border w-full p-1 rounded ${errors.dailyShares ? 'border-red-500 bg-red-50' : ''}`} value={dailyShares} placeholder={String(DEFAULTS.dailyShares)} onChange={e => setDailyShares(e.target.value)} />
                             {errors.dailyShares && <p className="text-red-500 text-[10px] mt-0.5">{errors.dailyShares}</p>}
-                            <span className="text-[9px] text-gray-400">DQ负</span>
+                            <span className="text-[9px] font-bold text-red-500">DQ必须为负，AQ必须为正</span>
                         </div>
                         <div>
                             <label className="block text-gray-500 text-xs">最大股数 (Max) <span className="text-red-500">*</span></label>
                             <input type="number" className={`border w-full p-1 rounded ${errors.maxGlobalShares ? 'border-red-500 bg-red-50' : ''}`} value={maxGlobalShares} placeholder={String(DEFAULTS.maxGlobalShares)} onChange={e => setMaxGlobalShares(e.target.value)} />
                             {errors.maxGlobalShares && <p className="text-red-500 text-[10px] mt-0.5">{errors.maxGlobalShares}</p>}
-                            <span className="text-[9px] text-gray-400">DQ负</span>
+                            <span className="text-[9px] font-bold text-red-500">DQ必须为负，AQ必须为正</span>
                         </div>
                         <div>
-                            <label className="block text-gray-500 text-xs">敲入 (KI %) <span className="text-red-500">*</span></label>
-                            <input type="number" className={`border w-full p-1 rounded ${errors.kiPct ? 'border-red-500 bg-red-50' : ''}`} value={kiPct} placeholder={String(DEFAULTS.kiPct)} onChange={e => setKiPct(e.target.value)} step={0.0001} />
-                            {errors.kiPct && <p className="text-red-500 text-[10px] mt-0.5">{errors.kiPct}</p>}
-                            <span className="text-[9px] text-gray-400">{(uiSpot * uiKiPct).toFixed(2)}</span>
+                            <label className="block text-gray-500 text-xs font-bold text-indigo-600">保证天数 (Guaranteed Days) <span className="text-red-500">*</span></label>
+                            <input type="number" min="0" className={`border w-full p-1 rounded bg-indigo-50 border-indigo-200 focus:ring-1 focus:ring-indigo-400 ${errors.guaranteedDays ? 'border-red-500' : ''}`} value={guaranteedDays} placeholder={String(DEFAULTS.guaranteedDays)} onChange={e => setGuaranteedDays(e.target.value)} />
+                            {errors.guaranteedDays && <p className="text-red-500 text-[10px] mt-0.5">{errors.guaranteedDays}</p>}
+                        </div>
+                        <div className="hidden sm:block"></div> {/* 占位符 */}
+                        <div>
+                            <label className="block text-gray-500 text-xs">行权价 (Strike) <span className="text-red-500">*</span></label>
+                            <div className="relative">
+                                <input type="number" className={`border w-full p-1 pr-5 rounded ${errors.strikePct ? 'border-red-500 bg-red-50' : ''}`} value={strikePct} placeholder={String(DEFAULTS.strikePct)} onChange={e => setStrikePct(e.target.value)} step={0.01} />
+                                <span className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 text-xs pointer-events-none">%</span>
+                            </div>
+                            {errors.strikePct && <p className="text-red-500 text-[10px] mt-0.5">{errors.strikePct}</p>}
+                            <span className="text-[9px] text-gray-400">{(uiSpot * uiStrikePct / 100).toFixed(2)}</span>
                         </div>
                         <div>
-                            <label className="block text-gray-500 text-xs">敲出 (KO %) <span className="text-red-500">*</span></label>
-                            <input type="number" className={`border w-full p-1 rounded ${errors.koPct ? 'border-red-500 bg-red-50' : ''}`} value={koPct} placeholder={String(DEFAULTS.koPct)} onChange={e => setKoPct(e.target.value)} step={0.01} />
+                            <label className="block text-gray-500 text-xs">敲出 (KO) <span className="text-red-500">*</span></label>
+                            <div className="relative">
+                                <input type="number" className={`border w-full p-1 pr-5 rounded ${errors.koPct ? 'border-red-500 bg-red-50' : ''}`} value={koPct} placeholder={String(DEFAULTS.koPct)} onChange={e => setKoPct(e.target.value)} step={0.01} />
+                                <span className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 text-xs pointer-events-none">%</span>
+                            </div>
                             {errors.koPct && <p className="text-red-500 text-[10px] mt-0.5">{errors.koPct}</p>}
-                            <span className="text-[9px] text-gray-400">{(uiSpot * uiKoPct).toFixed(2)}</span>
+                            <span className="text-[9px] text-gray-400">{(uiSpot * uiKoPct / 100).toFixed(2)}</span>
                         </div>
                     </div>
                 </div>
@@ -717,13 +761,17 @@ export default function DQAQPanel() {
                     <h3 className="font-bold text-gray-700 border-b pb-2 mb-3">4. 模拟信息 (Simulation Params)</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                         <div>
-                            <label className="block text-gray-500 text-xs">无风险利率 (r)</label>
-                            <input className="border w-full p-1 rounded" placeholder="留白读取Yahoo" value={riskFreeInput} onChange={e => setRiskFreeInput(e.target.value)} />
+                            <label className="block text-gray-500 text-xs">无风险利率 (r) <span className="text-red-500">*</span></label>
+                            <div className="relative">
+                                <input type="number" className={`border w-full p-1 pr-5 rounded ${errors.riskFree ? 'border-red-500 bg-red-50' : ''}`} placeholder={String(DEFAULTS.riskFree)} value={riskFreeInput} onChange={e => setRiskFreeInput(e.target.value)} step={0.01} />
+                                <span className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 text-xs pointer-events-none">%</span>
+                            </div>
+                            {errors.riskFree && <p className="text-red-500 text-[10px] mt-0.5">{errors.riskFree}</p>}
                         </div>
                         <div>
                             <label className="block text-gray-500 text-xs">历史数据起始日 (Start)</label>
                             <input type="date" className="border w-full p-1 rounded" value={historyStartInput} onChange={e => setHistoryStartInput(e.target.value)} />
-                            <span className="text-[9px] text-gray-400">留白T-28</span>
+                            <span className="text-[9px] text-gray-400">留白自动T-28</span>
                         </div>
                         <div>
                             <label className="block text-gray-500 text-xs">模拟路径 (Paths) <span className="text-red-500">*</span></label>
@@ -737,7 +785,7 @@ export default function DQAQPanel() {
                         </div>
                         <div className="col-span-1 sm:col-span-2">
                             <label className="block text-gray-500 text-xs">汇率 (To HKD)</label>
-                            <input className="border w-full p-1 rounded" placeholder="留白读取Yahoo" value={fxRateInput} onChange={e => setFxRateInput(e.target.value)} />
+                            <input className="border w-full p-1 rounded" placeholder={`留白自动获取 ${currency !== 'HKD' ? currency : 'USD'}/HKD`} value={fxRateInput} onChange={e => setFxRateInput(e.target.value)} />
                         </div>
                     </div>
                 </div>
@@ -798,7 +846,9 @@ export default function DQAQPanel() {
                             </div>
                             <div className="bg-blue-50 p-4 rounded border border-blue-100">
                                 <p className="text-blue-500 text-xs mb-1">预期完成率 (Completion Rate)</p>
-                                <p className="font-bold text-2xl text-blue-700">{(result.exp_completion_rate * 100).toFixed(2)}%</p>
+                                <p className="font-bold text-2xl text-blue-700">
+                                    {Number(maxGlobalShares) !== 0 ? ((result.expected_shares * Number(leverage) / Number(maxGlobalShares)) * 100).toFixed(2) : "0.00"}%
+                                </p>
                             </div>
                         </div>
 
@@ -853,7 +903,7 @@ export default function DQAQPanel() {
                         {(txRecords && txRecords.length > 0) && (
                             <div className="mt-8 border-t border-gray-200 pt-6">
                                 <div className="flex justify-between items-center mb-4">
-                                    <h3 className="text-lg font-bold text-gray-800">交易记录 (Settled Transactions)</h3>
+                                    <h3 className="text-lg font-bold text-gray-800">交易记录 (自动生成)</h3>
                                     <div>
                                         {editingTxId ? (
                                             <button onClick={() => setEditingTxId(null)} className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 transition-colors">完成</button>
@@ -886,17 +936,17 @@ export default function DQAQPanel() {
                                         <tbody className="divide-y divide-gray-200">
                                             {txRecords.map((rec) => (
                                                 <tr key={rec.id} className="hover:bg-gray-50">
-                                                    <td className="px-3 py-2">{editingTxId ? <input type="date" value={rec.date} onChange={(e) => handleTxChange(rec.id, 'date', e.target.value)} className="border rounded p-1 w-24 text-xs" /> : rec.date}</td>
-                                                    <td className="px-3 py-2">{editingTxId ? <input value={rec.account} onChange={(e) => handleTxChange(rec.id, 'account', e.target.value)} className="border rounded p-1 w-20 text-xs" /> : rec.account}</td>
-                                                    <td className="px-3 py-2">{editingTxId ? <select value={rec.market} onChange={(e) => handleTxChange(rec.id, 'market', e.target.value)} className="border rounded p-1 w-16 text-xs"><option value="HK">HK</option><option value="US">US</option><option value="JP">JP</option><option value="CH">CH</option></select> : rec.market}</td>
-                                                    <td className="px-3 py-2">{editingTxId ? <input value={rec.executor} onChange={(e) => handleTxChange(rec.id, 'executor', e.target.value)} className="border rounded p-1 w-20 text-xs" /> : rec.executor}</td>
-                                                    <td className="px-3 py-2">{editingTxId ? <input value={rec.type} onChange={(e) => handleTxChange(rec.id, 'type', e.target.value)} className="border rounded p-1 w-16 text-xs" /> : rec.type}</td>
-                                                    <td className="px-3 py-2 text-green-600 font-medium">{editingTxId ? <select value={rec.direction} onChange={(e) => handleTxChange(rec.id, 'direction', e.target.value)} className="border rounded p-1 w-20 text-xs"><option value="Buy">Buy</option><option value="Sell">Sell</option></select> : rec.direction}</td>
-                                                    <td className="px-3 py-2">{editingTxId ? <input value={rec.stockCode} onChange={(e) => handleTxChange(rec.id, 'stockCode', e.target.value)} className="border rounded p-1 w-20 text-xs" /> : rec.stockCode}</td>
-                                                    <td className="px-3 py-2">{editingTxId ? <input value={rec.stockName} onChange={(e) => handleTxChange(rec.id, 'stockName', e.target.value)} className="border rounded p-1 w-24 text-xs" /> : rec.stockName}</td>
-                                                    <td className={`px-3 py-2 text-right ${rec.quantity < 0 ? 'text-red-600' : ''}`}>{editingTxId ? <input type="number" value={rec.quantity} onChange={(e) => handleTxChange(rec.id, 'quantity', e.target.value)} className="border rounded p-1 w-20 text-xs text-right" /> : rec.quantity}</td>
-                                                    <td className="px-3 py-2 text-right">{editingTxId ? <input type="number" value={rec.priceNoFee} onChange={(e) => handleTxChange(rec.id, 'priceNoFee', e.target.value)} className="border rounded p-1 w-20 text-xs text-right" /> : fmtMoney(getDisplayValue(rec.priceNoFee), getDisplayCurrency())}</td>
-                                                    <td className="px-3 py-2 text-right">{editingTxId ? <input type="number" value={rec.fee} onChange={(e) => handleTxChange(rec.id, 'fee', e.target.value)} className="border rounded p-1 w-16 text-xs text-right" /> : fmtMoney(getDisplayValue(rec.fee), getDisplayCurrency())}</td>
+                                                    <td className="px-3 py-2 text-blue-700 font-bold">{editingTxId === 'all' || editingTxId === rec.id ? <input type="date" value={rec.date} onChange={(e) => handleTxChange(rec.id, 'date', e.target.value)} className="border rounded p-1 w-24 text-xs" /> : rec.date}</td>
+                                                    <td className="px-3 py-2">{editingTxId === 'all' || editingTxId === rec.id ? <input value={rec.account} onChange={(e) => handleTxChange(rec.id, 'account', e.target.value)} className="border rounded p-1 w-20 text-xs" /> : rec.account}</td>
+                                                    <td className="px-3 py-2">{editingTxId === 'all' || editingTxId === rec.id ? <select value={rec.market} onChange={(e) => handleTxChange(rec.id, 'market', e.target.value)} className="border rounded p-1 w-16 text-xs"><option value="HK">HK</option><option value="US">US</option><option value="JP">JP</option><option value="CH">CH</option></select> : rec.market}</td>
+                                                    <td className="px-3 py-2">{editingTxId === 'all' || editingTxId === rec.id ? <input value={rec.executor} onChange={(e) => handleTxChange(rec.id, 'executor', e.target.value)} className="border rounded p-1 w-20 text-xs" /> : rec.executor}</td>
+                                                    <td className="px-3 py-2">{editingTxId === 'all' || editingTxId === rec.id ? <input value={rec.type} onChange={(e) => handleTxChange(rec.id, 'type', e.target.value)} className="border rounded p-1 w-16 text-xs" /> : rec.type}</td>
+                                                    <td className="px-3 py-2 text-green-600 font-medium">{editingTxId === 'all' || editingTxId === rec.id ? <select value={rec.direction} onChange={(e) => handleTxChange(rec.id, 'direction', e.target.value)} className="border rounded p-1 w-20 text-xs"><option value="Buy">Buy</option><option value="Sell">Sell</option></select> : rec.direction}</td>
+                                                    <td className="px-3 py-2">{editingTxId === 'all' || editingTxId === rec.id ? <input value={rec.stockCode} onChange={(e) => handleTxChange(rec.id, 'stockCode', e.target.value)} className="border rounded p-1 w-20 text-xs" /> : rec.stockCode}</td>
+                                                    <td className="px-3 py-2">{editingTxId === 'all' || editingTxId === rec.id ? <input value={rec.stockName} onChange={(e) => handleTxChange(rec.id, 'stockName', e.target.value)} className="border rounded p-1 w-24 text-xs" /> : rec.stockName}</td>
+                                                    <td className={`px-3 py-2 text-right ${rec.quantity < 0 ? 'text-red-600' : ''}`}>{editingTxId === 'all' || editingTxId === rec.id ? <input type="number" value={rec.quantity} onChange={(e) => handleTxChange(rec.id, 'quantity', e.target.value)} className="border rounded p-1 w-20 text-xs text-right" /> : rec.quantity}</td>
+                                                    <td className="px-3 py-2 text-right">{editingTxId === 'all' || editingTxId === rec.id ? <input type="number" value={rec.priceNoFee} onChange={(e) => handleTxChange(rec.id, 'priceNoFee', e.target.value)} className="border rounded p-1 w-20 text-xs text-right" /> : fmtMoney(getDisplayValue(rec.priceNoFee), getDisplayCurrency())}</td>
+                                                    <td className="px-3 py-2 text-right">{editingTxId === 'all' || editingTxId === rec.id ? <input type="number" value={rec.fee} onChange={(e) => handleTxChange(rec.id, 'fee', e.target.value)} className="border rounded p-1 w-16 text-xs text-right" /> : fmtMoney(getDisplayValue(rec.fee), getDisplayCurrency())}</td>
                                                     <td className={`px-3 py-2 text-right ${rec.amountNoFee < 0 ? 'text-red-600' : ''}`}>{fmtMoney(getDisplayValue(rec.amountNoFee), getDisplayCurrency())}</td>
                                                     <td className="px-3 py-2 text-right">{fmtMoney(getDisplayValue(getPriceWithFee(rec)), getDisplayCurrency())}</td>
                                                     <td className={`px-3 py-2 text-right ${getAmountWithFee(rec) < 0 ? 'text-red-600' : ''}`}>{fmtMoney(getDisplayValue(getAmountWithFee(rec)), getDisplayCurrency())}</td>
