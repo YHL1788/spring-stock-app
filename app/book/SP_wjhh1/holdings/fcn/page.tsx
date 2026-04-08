@@ -921,12 +921,21 @@ export default function FCNHoldingPage() {
 
     return (
         <div className="space-y-8 pb-10">
-            {/* Header */}
-            <div className="border-b border-gray-200 pb-4 flex justify-between items-end">
+            {/* === 全局 Header === */}
+            <div className="border-b border-gray-200 pb-4 flex justify-between items-center">
                 <div>
                     <h1 className="text-2xl font-bold text-gray-900">FCN Holding (持仓与风控)</h1>
-                    <p className="mt-1 text-sm text-gray-500">统一管理您的 FCN 存续与历史持仓，执行实时定价、状态更新与接货抛转逻辑。</p>
+                    <p className="mt-1 text-sm text-gray-500">统一管理您的 FCN 存续与历史持仓，执行实时定价、状态流转与接货覆写。</p>
                 </div>
+                {/* 全局 HKD 切换按钮 */}
+                <button 
+                    onClick={handleToggleHKDView} 
+                    disabled={isFetchingFx}
+                    className={`px-5 py-2.5 text-sm font-bold rounded-lg border transition-all shadow-sm flex items-center gap-2 ${isHKDView ? 'bg-blue-600 text-white border-blue-600 shadow-blue-200' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+                >
+                    {isFetchingFx && <Loader2 size={16} className="animate-spin" />}
+                    {isHKDView ? '已转为 HKD 全局计价' : '转化为 HKD (全局盯市)'}
+                </button>
             </div>
 
             {/* === 模块 1：FCN 持仓板块（存续中） === */}
@@ -938,14 +947,6 @@ export default function FCNHoldingPage() {
                     </h2>
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">Living 库总计: {livingRecords.length} 笔</span>
-                        <button 
-                            onClick={handleToggleHKDView} 
-                            disabled={isFetchingFx}
-                            className={`px-4 py-1.5 text-xs font-bold rounded-md border transition-all shadow-sm flex items-center gap-1 ${isHKDView ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
-                        >
-                            {isFetchingFx && <Loader2 size={12} className="animate-spin" />}
-                            {isHKDView ? '已转为 HKD 计价' : '转化为 HKD (完全盯市)'}
-                        </button>
                     </div>
                 </div>
                 
@@ -1053,14 +1054,6 @@ export default function FCNHoldingPage() {
                     </h2>
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">高风险标的: {finalRisk.length} 项</span>
-                        <button 
-                            onClick={handleToggleHKDView} 
-                            disabled={isFetchingFx}
-                            className={`px-4 py-1.5 text-xs font-bold rounded-md border transition-all shadow-sm flex items-center gap-1 ${isHKDView ? 'bg-red-600 text-white border-red-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
-                        >
-                            {isFetchingFx && <Loader2 size={12} className="animate-spin" />}
-                            {isHKDView ? '已转为 HKD 计价' : '转化为 HKD (完全盯市)'}
-                        </button>
                     </div>
                 </div>
 
@@ -1121,14 +1114,6 @@ export default function FCNHoldingPage() {
                     </h2>
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">Died 库总计: {diedRecords.length} 笔</span>
-                        <button 
-                            onClick={handleToggleHKDView} 
-                            disabled={isFetchingFx}
-                            className={`px-4 py-1.5 text-xs font-bold rounded-md border transition-all shadow-sm flex items-center gap-1 ${isHKDView ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
-                        >
-                            {isFetchingFx && <Loader2 size={12} className="animate-spin" />}
-                            {isHKDView ? '已转为 HKD 计价' : '转化为 HKD (完全盯市)'}
-                        </button>
                     </div>
                 </div>
                 
