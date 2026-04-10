@@ -110,9 +110,9 @@ export default function FCNHoldingPage() {
     const [diedRecords, setDiedRecords] = useState<MergedRecord[]>([]);
     const [loadingLiving, setLoadingLiving] = useState(false);
     const [loadingDied, setLoadingDied] = useState(false);
-    const [loadingSum, setLoadingSum] = useState(false); // FCN统计保存 Loading
+    const [loadingSum, setLoadingSum] = useState(false);
 
-    // --- 全局最新汇率与 HKD 视图状态 (完全盯市 Option A) ---
+    // --- 全局最新汇率与 HKD 视图状态 ---
     const [isHKDView, setIsHKDView] = useState(false);
     const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
     const [isFetchingFx, setIsFetchingFx] = useState(false);
@@ -180,8 +180,18 @@ export default function FCNHoldingPage() {
             
             if (inputSnap.empty) return [];
 
-            const inputs = inputSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[];
-            const outputs = outputSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[];
+            // 解析数据时，严格 delete 掉 data 中的污染 id
+            const inputs = inputSnap.docs.map(d => {
+                const data = d.data();
+                delete data.id; 
+                return { ...data, id: d.id };
+            }) as any[];
+            
+            const outputs = outputSnap.docs.map(d => {
+                const data = d.data();
+                delete data.id;
+                return { ...data, id: d.id };
+            }) as any[];
             
             const merged = inputs.map(inp => {
                 const out = outputs.find(o => o.tradeId && o.tradeId === inp.tradeId);
@@ -222,7 +232,9 @@ export default function FCNHoldingPage() {
             const querySnapshot = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', collectionName));
             let records: any[] = [];
             querySnapshot.forEach((docSnap) => {
-                records.push({ id: docSnap.id, ...docSnap.data() });
+                const data = docSnap.data();
+                delete data.id; // 防止污染
+                records.push({ ...data, id: docSnap.id });
             });
             records.sort((a, b) => {
                const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
@@ -277,7 +289,6 @@ export default function FCNHoldingPage() {
         } catch { return []; }
     };
 
-    // --- 获取全局最新汇率 (Mark-to-Market 完全盯市核心逻辑) ---
     const fetchLatestFxRates = async () => {
         const markets = new Set<string>();
         livingRecords.forEach(r => {
@@ -371,17 +382,29 @@ export default function FCNHoldingPage() {
                 const pricer = new FCNPricer(pricerParams);
                 const newResult = pricer.simulate_price();
                 
+                // 保存入库前，务必剔除可能带有旧主键的 id 字段
                 const cleanInputData = replaceUndefinedWithNull({ ...inputData, pricerParams });
+                delete cleanInputData.id; 
+                delete cleanInputData.inputId; 
+                delete cleanInputData.outputId;
+
                 const cleanOutputData = replaceUndefinedWithNull({ ...outputData, result: newResult });
+                delete cleanOutputData.id; 
+                delete cleanOutputData.inputId; 
+                delete cleanOutputData.outputId;
+
                 const status = newResult.status;
 
+                // 【核心修复】：全部使用 setDoc 替代 updateDoc，实现无报错的 Upsert
                 if (['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(status)) {
-                    await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId), cleanInputData);
-                    await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_living', mergedRecord.outputId), cleanOutputData);
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId), cleanInputData);
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_living', mergedRecord.outputId), cleanOutputData);
                 } else {
-                    await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_died'), cleanInputData);
-                    await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_died'), cleanOutputData);
+                    // 转生入历史库：使用 setDoc 保持相同的 ID
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_died', mergedRecord.inputId), cleanInputData);
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_died', mergedRecord.outputId), cleanOutputData);
                     
+                    // 彻底删除原 Living 库文件
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId));
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_living', mergedRecord.outputId));
                     
@@ -486,14 +509,31 @@ export default function FCNHoldingPage() {
                 
                 const status = newResult.status;
                 
+                // 保存入库前剔除 ID，防止污染
                 const cleanInputData = replaceUndefinedWithNull({ ...inputData, pricerParams });
-                const cleanOutputData = replaceUndefinedWithNull({ ...outputData, result: newResult });
-                
-                await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_died', mergedRecord.inputId), cleanInputData);
-                await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_died', mergedRecord.outputId), cleanOutputData);
+                delete cleanInputData.id;
+                delete cleanInputData.inputId;
+                delete cleanInputData.outputId;
 
+                const cleanOutputData = replaceUndefinedWithNull({ ...outputData, result: newResult });
+                delete cleanOutputData.id;
+                delete cleanOutputData.inputId;
+                delete cleanOutputData.outputId;
+
+                // 【核心修复】：使用 setDoc，并增加智能纠错 (Self-Healing) 回流至 Living
                 if (['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(status)) {
+                    // 发现应该存活，转生回存续库 (智能修复)
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId), cleanInputData);
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_living', mergedRecord.outputId), cleanOutputData);
+                    
+                    // 彻底删除 died 库中的错误记录
+                    await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_died', mergedRecord.inputId));
+                    await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_died', mergedRecord.outputId));
                     errorCount++;
+                } else {
+                    // 依然已死，使用 setDoc 无脑覆写（永远不会报 No document to update）
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_died', mergedRecord.inputId), cleanInputData);
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_died', mergedRecord.outputId), cleanOutputData);
                 }
             }
             
@@ -503,7 +543,7 @@ export default function FCNHoldingPage() {
             if (activeDbTab === 'sip_holding_fcn_output_died' || activeDbTab === 'sip_trade_fcn_input_died') fetchDbRecords(activeDbTab);
 
             if (errorCount > 0) {
-                alert(`出错！有 ${errorCount} 笔数据重新计算后发现仍在存续/结算中！请重新检查 died 库内容！`);
+                alert(`出错纠正！有 ${errorCount} 笔数据重新计算后发现仍在存续/结算中！系统已将其自动修复并转移回 Living 存续库！`);
             } else {
                 alert('历史持仓刷新完毕！数据已更新校验。');
             }
@@ -535,6 +575,32 @@ export default function FCNHoldingPage() {
             fetchDbRecords(activeDbTab); 
         } catch(e: any) {
             alert("修改失败 (请检查 JSON 格式是否正确): \n" + e.message);
+        }
+    };
+
+    // --- 动态展示记录摘要 Helper ---
+    const getRecordSummary = (r: any, tab: string) => {
+        try {
+            if (tab.includes('input')) {
+                const p = r.pricerParams || r.inputParams;
+                if (!p) return 'FCN Input 参数';
+                const names = p.ticker_name?.length ? p.ticker_name.join('~') : (p.tickers?.join('~') || '');
+                return `${p.broker_name || p.broker || '未知'} 【${names}】 | ${p.trade_date || ''}`;
+            }
+            if (tab.includes('output_living') || tab.includes('output_died')) {
+                if (r.result?.product_name_display) return r.result.product_name_display;
+                if (r.name) return r.name;
+                return 'FCN 测算结果';
+            }
+            if (tab.includes('get-stock') || tab.includes('pending_delivery')) {
+                return `【交收】${r.account || ''} | ${r.direction || ''} ${r.quantity || 0}股 ${r.stockName || r.stockCode || ''}`;
+            }
+            if (tab.includes('sum')) {
+                return `全局大盘统计快照 (更新于: ${r.updatedAt?.toDate ? r.updatedAt.toDate().toLocaleString() : 'N/A'})`;
+            }
+            return JSON.stringify(r).substring(0, 100) + '...';
+        } catch (e) {
+            return '解析失败...';
         }
     };
 
@@ -915,9 +981,9 @@ export default function FCNHoldingPage() {
         if (!user) return;
         const intervalId = setInterval(() => {
             handleSaveSum(true);
-        }, 60000); // 60,000 ms = 1 minute
+        }, 60000); 
         return () => clearInterval(intervalId);
-    }, [user, globalStats]); // 依赖 globalStats，使其保存最新切片
+    }, [user, globalStats]); 
 
     return (
         <div className="space-y-8 pb-10">
@@ -1299,22 +1365,25 @@ export default function FCNHoldingPage() {
                         <table className="min-w-full text-sm text-left divide-y divide-gray-200">
                             <thead className="bg-gray-50 text-gray-500">
                                 <tr>
-                                    <th className="px-3 py-2 whitespace-nowrap">ID / 创建时间 / TradeId</th>
-                                    <th className="px-3 py-2">内容摘要 (Raw JSON Preview)</th>
+                                    <th className="px-3 py-2 whitespace-nowrap">ID / 创建时间</th>
+                                    <th className="px-3 py-2">绑定 TradeID</th>
+                                    <th className="px-3 py-2">内容摘要 / 产品名称</th>
                                     <th className="px-3 py-2 text-center whitespace-nowrap">操作</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
                                 {dbRecords.map(r => (
-                                    <tr key={r.id} className="hover:bg-gray-50">
+                                    <tr key={r.id} className="hover:bg-gray-50 transition-colors">
                                         <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap font-mono">
-                                            <div className="font-bold text-gray-700">doc: {r.id.substring(0,8)}...</div>
-                                            {r.tradeId && <div className="text-blue-600">tid: {r.tradeId.substring(0,8)}...</div>}
+                                            <div className="font-bold text-gray-700">{r.id.substring(0,8)}...</div>
                                             <div>{r.updatedAt?.toDate ? r.updatedAt.toDate().toLocaleString() : (r.createdAt?.toDate ? r.createdAt.toDate().toLocaleString() : 'N/A')}</div>
                                         </td>
+                                        <td className="px-3 py-2 text-xs font-mono text-blue-600">
+                                            {r.tradeId || 'None'}
+                                        </td>
                                         <td className="px-3 py-2 text-xs">
-                                            <div className="max-w-md xl:max-w-2xl truncate text-gray-600 font-mono bg-gray-100 px-2 py-1 rounded">
-                                                {JSON.stringify(r).substring(0, 150)}...
+                                            <div className="max-w-md xl:max-w-2xl truncate text-gray-700 bg-blue-50/50 px-2 py-1.5 rounded border border-blue-100 font-medium">
+                                                {getRecordSummary(r, activeDbTab)}
                                             </div>
                                         </td>
                                         <td className="px-3 py-2 text-center whitespace-nowrap">
@@ -1432,7 +1501,7 @@ export default function FCNHoldingPage() {
             {editRecordModal && (
                 <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
                     <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-5xl flex flex-col h-[85vh] max-h-[90vh]">
-                        <div className="flex justify-between items-center mb-4">
+                        <div className="flex justify-between items-center mb-4 border-b pb-4">
                             <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700">
                                 <FileJson size={20}/> 
                                 进阶修改记录 - {editRecordModal.record.id}
@@ -1442,11 +1511,13 @@ export default function FCNHoldingPage() {
                         <p className="text-xs text-gray-500 mb-2 border-l-2 border-orange-400 pl-2">
                             警告：直接修改 Raw JSON 属于高阶操作，请确保 JSON 格式合法且结构正确，否则可能会导致页面崩溃或逻辑错误。
                         </p>
+                        
                         <textarea 
                             className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none" 
                             value={editRecordModal.rawJson}
                             onChange={(e) => setEditRecordModal({...editRecordModal, rawJson: e.target.value})}
                         />
+                        
                         <div className="flex justify-end gap-3 pt-2 border-t">
                             <button onClick={() => setEditRecordModal(null)} className="px-5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-medium transition-colors">取消</button>
                             <button onClick={handleSaveRecordEdit} className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-sm font-bold flex items-center gap-2 transition-colors">
@@ -1456,6 +1527,7 @@ export default function FCNHoldingPage() {
                     </div>
                 </div>
             )}
+
         </div>
     );
 }

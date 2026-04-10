@@ -18,9 +18,6 @@ import {
 import { collection, addDoc, serverTimestamp, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
-// ============================================================================
-// 引入你本地專案中真實的 Firebase 配置與定價引擎
-// ============================================================================
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { FCNPricer, FCNParams, FCNResult } from '@/app/lib/fcnPricer';
 
@@ -34,8 +31,8 @@ interface DateRow {
 interface TransactionRecord {
     id?: string; date: string; account: string; market: string; executor: string; type: string; stockCode: string; stockName: string;
     direction: string; quantity: number; priceNoFee: number; amountNoFee: number; fee: number; amountWithFee: number; priceWithFee: number; hkdAmount: number;
-    firebaseId?: string; // 新增：用于跟踪缓冲库中的底层文档 ID
-    tradeId?: string;    // 新增：全局唯一关联 ID
+    firebaseId?: string; 
+    tradeId?: string;    
 }
 
 // 示例参数
@@ -56,7 +53,6 @@ const INITIAL_BASIC = {
     fx_rate: '' as number | string, history_start_date: '', n_sims: '' as number | string, seed: '' as number | string
 };
 
-// 辅助函数：将对象中所有的 undefined 替换为 null
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) {
         return null;
@@ -76,11 +72,17 @@ const replaceUndefinedWithNull = (obj: any): any => {
     return newObj;
 };
 
+// 工具：推算接货的原始货币
+const getRecCurrency = (mkt: string) => {
+    if (mkt === 'US') return 'USD';
+    if (mkt === 'JP') return 'JPY';
+    if (mkt === 'CH') return 'CNY';
+    return 'HKD';
+};
+
 export default function FCNTradePage() {
-    // --- Auth State ---
     const [user, setUser] = useState<any>(null);
 
-    // --- 【模块1: 参数输入】State ---
     const [basicParams, setBasicParams] = useState(INITIAL_BASIC);
     const [underlyingRows, setUnderlyingRows] = useState<UnderlyingRow[]>([{
         id: 'init_1', ticker: '', name: '', initialPrice: '', currentPrice: '', dividendDate: '', dividendAmount: ''
@@ -89,24 +91,21 @@ export default function FCNTradePage() {
     const [loading, setLoading] = useState(false);
     const [fetchStatus, setFetchStatus] = useState<string>('');
 
-    // --- 子操作框 (Modal) State ---
     const [showResultModal, setShowResultModal] = useState(false);
     const [currentResult, setCurrentResult] = useState<FCNResult | null>(null);
     const [currentCalcParams, setCurrentCalcParams] = useState<any>(null);
     const [isHKDView, setIsHKDView] = useState(false); 
+    const [currentTradeId, setCurrentTradeId] = useState<string>("");
 
-    // --- 【模块2: 接货展示】State ---
     const [deliveryRecords, setDeliveryRecords] = useState<TransactionRecord[]>([]);
     const [editingDeliveryIdx, setEditingDeliveryIdx] = useState<number | null>(null);
     const [editFormData, setEditFormData] = useState<TransactionRecord | null>(null);
 
-    // --- 【模块3: 后台库管理】State ---
     const [activeDbTab, setActiveDbTab] = useState('sip_trade_fcn_input_living');
     const [dbRecords, setDbRecords] = useState<any[]>([]);
     const [loadingDb, setLoadingDb] = useState(false);
     const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
 
-    // --- 初始化 Firebase Auth ---
     useEffect(() => {
         const initAuth = async () => {
             if (!auth.currentUser) {
@@ -123,7 +122,6 @@ export default function FCNTradePage() {
         initAuth();
     }, []);
 
-    // --- 获取并刷新接货缓冲库数据 (新逻辑) ---
     const fetchPendingDeliveries = async () => {
         if (!user) return;
         try {
@@ -136,7 +134,6 @@ export default function FCNTradePage() {
         }
     };
 
-    // --- 获取并刷新后台库数据 ---
     const fetchDbRecords = async (collectionName: string) => {
         if (!user) return;
         setLoadingDb(true);
@@ -162,11 +159,10 @@ export default function FCNTradePage() {
     useEffect(() => {
         if (user) {
             fetchDbRecords(activeDbTab);
-            fetchPendingDeliveries(); // 加载时自动读取缓冲库
+            fetchPendingDeliveries(); 
         }
     }, [activeDbTab, user]);
 
-    // --- API 调用 (复用逻辑, 对齐 FCNPanel) ---
     const fetchQuotePrice = async (symbol: string): Promise<number | null> => {
         try {
             const res = await fetch(`/api/quote?symbol=${symbol}`);
@@ -195,7 +191,6 @@ export default function FCNTradePage() {
         } catch { return []; }
     };
 
-    // --- 【模块1: 参数输入】Handers ---
     const handleBasicChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
         const { name, value } = e.target;
         if (value === '') { setBasicParams(prev => ({ ...prev, [name]: '' })); return; }
@@ -223,6 +218,9 @@ export default function FCNTradePage() {
     const handleRunAndRecord = async () => {
         setLoading(true); setFetchStatus('参数解析中...');
         try {
+            const newTradeId = crypto.randomUUID();
+            setCurrentTradeId(newTradeId);
+
             if (!basicParams.total_notional) throw new Error("请输入总名义本金");
             if (!basicParams.denomination) throw new Error("请输入单张面值");
             if (!basicParams.trade_date) throw new Error("请选择交易日期");
@@ -238,7 +236,6 @@ export default function FCNTradePage() {
             const discrete_dividends: { [key: string]: [string, number][] } = {};
             const processedTickers = new Set<string>();
 
-            // 对齐 FCNPanel: 去重且组装 discrete_dividends
             for (const row of underlyingRows) {
                 if (!row.ticker) continue;
                 const divAmt = parseFloat(row.dividendAmount);
@@ -264,7 +261,6 @@ export default function FCNTradePage() {
             if (tickers.length === 0) { throw new Error("请至少添加一个标的"); }
             if (obs_dates.length === 0) { throw new Error("请至少添加一个观察日"); }
             
-            // 对齐 FCNPanel: 检查历史起始日
             const histStart = basicParams.history_start_date as string;
             if (!histStart) throw new Error("请添加历史数据起始日");
             if (histStart && basicParams.trade_date && histStart >= basicParams.trade_date) {
@@ -294,7 +290,6 @@ export default function FCNTradePage() {
             }));
             calcParams.current_spots = fetchedSpots;
 
-            // 对齐 FCNPanel: 更新UI上的当前价格
             const updatedRows = underlyingRows.map(row => {
                 const tIdx = tickers.indexOf(row.ticker);
                 if (tIdx !== -1 && fetchedSpots[tIdx] !== undefined) {
@@ -306,7 +301,6 @@ export default function FCNTradePage() {
             });
             setUnderlyingRows(updatedRows);
 
-            // 对齐 FCNPanel: 判断是否需要拉取历史数据
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             const hasPastObservation = obs_dates.some(d => new Date(d) <= today);
@@ -334,12 +328,10 @@ export default function FCNTradePage() {
             
             setTimeout(() => {
                 try {
-                    // --- 呼叫真實的 FCNPricer 引擎 ---
                     const pricer = new FCNPricer(calcParams);
                     const res = pricer.simulate_price();
                     
                     setCurrentResult(res);
-                    // 保存 updatedRows 以便入库
                     setCurrentCalcParams({ inputParams: basicParams, underlyingRows: updatedRows, dateRows, pricerParams: calcParams });
                     setShowResultModal(true); 
                 } catch (e: any) { alert("计算错误: " + e.message); }
@@ -351,7 +343,6 @@ export default function FCNTradePage() {
         }
     };
 
-    // --- 子操作框 Handlers ---
     const handleSaveToDB = async () => {
         if (!user || !currentResult || !currentCalcParams) return;
         
@@ -359,27 +350,25 @@ export default function FCNTradePage() {
         const isLiving = status === 'Active' || status === 'Settling_NoDelivery' || status === 'Settling_Delivery';
         const lifeCycle = isLiving ? 'living' : 'died';
 
-        // 核心修复：生成唯一的 tradeId 来关联 input 和 output
-        const tradeId = crypto.randomUUID();
+        const tradeId = currentTradeId || crypto.randomUUID();
 
         try {
             setLoading(true); setFetchStatus('写入资料库中...');
 
-            // 在保存到数据库之前，清理数据中的 undefined，并注入 tradeId
+            // 【核心修复】：严格剔除 id 字段，防止污染后续搬家流程
             const cleanCalcParams = replaceUndefinedWithNull({ ...currentCalcParams, tradeId });
+            delete cleanCalcParams.id;
             const cleanResult = replaceUndefinedWithNull(currentResult);
+            delete cleanResult.id;
             
-            // 1. 保存输入参数 (带 tradeId)
             await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_fcn_input_${lifeCycle}`), {
                 ...cleanCalcParams, createdAt: serverTimestamp()
             });
             
-            // 2. 保存输出结果 (带 tradeId)
             await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_holding_fcn_output_${lifeCycle}`), {
                 result: cleanResult, tradeId, createdAt: serverTimestamp()
             });
 
-            // 3. 处理接货状况: 【严格只在状态 F (Terminated_Delivery) 时生成接货记录】
             if (status === 'Terminated_Delivery') {
                 const worstIdx = currentResult.loss_attribution.findIndex(val => val === 1.0);
                 if (worstIdx !== -1) {
@@ -391,7 +380,7 @@ export default function FCNTradePage() {
                     const amountWithFee = amountNoFee;
 
                     const newDelivery: TransactionRecord = {
-                        tradeId, // 关联接货记录
+                        tradeId, 
                         date: pricerParams.pay_dates[pricerParams.pay_dates.length - 1],
                         account: pricerParams.account_name || basicParams.account_name,
                         market: pricerParams.market === 'USD' ? 'US' : pricerParams.market === 'JPY' ? 'JP' : pricerParams.market === 'CNY' ? 'CH' : 'HK',
@@ -409,12 +398,12 @@ export default function FCNTradePage() {
                         hkdAmount: amountWithFee * (pricerParams.fx_rate || 1.0)
                     };
                     
-                    // 将生成的接货单存入缓冲库
                     const cleanDelivery = replaceUndefinedWithNull(newDelivery);
+                    delete cleanDelivery.id;
                     await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'), {
                         ...cleanDelivery, createdAt: serverTimestamp()
                     });
-                    fetchPendingDeliveries(); // 重新获取更新后的缓冲数据
+                    fetchPendingDeliveries(); 
 
                     alert(`参数与结果已保存至 [${lifeCycle}] 库，并已自动生成接货纪录至下方展示模块(缓冲库)！`);
                 }
@@ -430,7 +419,6 @@ export default function FCNTradePage() {
         }
     };
 
-    // --- 【模块2: 接货展示】Handers ---
     const handleEditDelivery = (idx: number) => {
         setEditingDeliveryIdx(idx);
         setEditFormData({ ...deliveryRecords[idx] });
@@ -484,15 +472,14 @@ export default function FCNTradePage() {
             setLoading(true); setFetchStatus('正在推送到持仓接货库...');
             for (const record of deliveryRecords) {
                 const cleanRecord = replaceUndefinedWithNull(record);
+                delete cleanRecord.id;
                 const { firebaseId, ...recordData } = cleanRecord;
                 
-                // 1. 推送到最终的 get-stock 库
                 await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_get-stock'), {
                     ...recordData,
                     createdAt: serverTimestamp()
                 });
 
-                // 2. 从 pending_delivery 缓冲库中删除以完成闭环流转
                 if (firebaseId) {
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery', firebaseId));
                 }
@@ -507,7 +494,6 @@ export default function FCNTradePage() {
         }
     };
 
-    // --- 【模块3: 后台库管理】Handlers ---
     const handleDeleteRecord = async (id: string) => {
         if (!confirm("确定要永久删除这条记录吗？不可恢复。")) return;
         try {
@@ -522,7 +508,7 @@ export default function FCNTradePage() {
         if (!editRecordModal) return;
         try {
             const parsedData = JSON.parse(editRecordModal.rawJson);
-            const docId = parsedData.id || editRecordModal.record.id;
+            const docId = parsedData.id || editRecordModal.record?.id;
             delete parsedData.id; 
             
             await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
@@ -534,19 +520,60 @@ export default function FCNTradePage() {
         }
     };
 
-    // --- UI Formatting Helpers ---
+    // --- 动态展示记录摘要 Helper ---
+    const getRecordSummary = (r: any, tab: string) => {
+        try {
+            if (tab.includes('input')) {
+                const p = r.pricerParams || r.inputParams || r.basic;
+                if (!p) return 'FCN Input 参数';
+                const names = p.ticker_name?.length ? p.ticker_name.join('~') : (p.tickers?.join('~') || '');
+                return `${p.broker_name || p.broker || '未知'} 【${names}】 | ${p.trade_date || ''}`;
+            }
+            if (tab.includes('output_living') || tab.includes('output_died')) {
+                if (r.result?.product_name_display) return r.result.product_name_display;
+                if (r.name) return r.name;
+                return 'FCN 测算结果';
+            }
+            if (tab.includes('get-stock') || tab.includes('pending_delivery')) {
+                return `【交收】${r.account || ''} | ${r.direction || ''} ${r.quantity || 0}股 ${r.stockName || r.stockCode || ''}`;
+            }
+            if (tab.includes('sum')) {
+                return `全局大盘统计快照 (更新于: ${r.updatedAt?.toDate ? r.updatedAt.toDate().toLocaleString() : 'N/A'})`;
+            }
+            return JSON.stringify(r).substring(0, 100) + '...';
+        } catch (e) {
+            return '解析失败...';
+        }
+    };
+
+    // 3. 清空输入
+    const handleReset = () => {
+        setBasicParams(INITIAL_BASIC);
+        setUnderlyingRows([{ id: 'init_1', ticker: '', name: '', initialPrice: '', currentPrice: '', dividendDate: '', dividendAmount: '' }]);
+        setDateRows([{ id: 'init_d1', obsDate: '', payDate: '' }]);
+        setCurrentResult(null);
+        setDeliveryRecords([]);
+        setLoading(false);
+        setCurrentTradeId("");
+        setFetchStatus('');
+        setShowResultModal(false);
+    };
+
+    const fmtPct = (val: number) => (val * 100).toFixed(2) + '%';
+    
     const pctToInput = (val: number | string) => {
         if (val === '' || val === undefined) return '';
         return parseFloat((Number(val) * 100).toFixed(4)).toString();
     };
-    const fmtPct = (val: number) => (val * 100).toFixed(2) + '%';
+
     const getDisplayCurrency = () => isHKDView ? 'HKD' : (basicParams.market || 'HKD');
     const getDisplayValue = (val: number) => {
         const rate = currentResult?.fx_rate || 1.0;
         if (isHKDView) return val * rate;
         return val;
     };
-    const fmtMoney = (val: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: getDisplayCurrency() }).format(val);
+    const fmtMoney = (val: number, ccy: string = "") => new Intl.NumberFormat('en-US', { style: 'currency', currency: ccy || getDisplayCurrency() }).format(val);
+    
     const calcExpectedCouponPeriods = (res: FCNResult) => {
         const total_return = res.hist_coupons_paid + res.pending_coupons_pv + res.future_coupons_pv;
         return res.avg_period_coupon > 0 ? total_return / res.avg_period_coupon : 0;
@@ -694,280 +721,206 @@ export default function FCNTradePage() {
             </div>
 
             {/* === 子操作框 Modal (包含详细 FCNPanel 报告) === */}
-            {showResultModal && currentResult && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in p-4">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col relative overflow-hidden">
-                        
-                        {/* Modal Header */}
-                        <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50 flex-shrink-0">
-                            <div>
-                                <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                                    <CheckCircle className="text-green-500" size={24} />
-                                    计算完成 - FCN 估值报告
-                                </h3>
-                                <p className="text-sm text-gray-500 mt-1">请确认下方测算结果与状态后，再进行保存入库。</p>
-                            </div>
-                            <button onClick={() => setShowResultModal(false)} className="text-gray-400 hover:text-gray-600 bg-white p-1 rounded-full shadow-sm border"><X size={24}/></button>
-                        </div>
-
-                        {/* Modal Body (Scrollable Detailed Result from FCNPanel) */}
-                        <div className="p-6 overflow-y-auto flex-1 bg-white space-y-6">
+            {showResultModal && currentResult && (() => {
+                const res = currentResult;
+                return (
+                    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in p-4">
+                        <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col relative overflow-hidden">
                             
-                            {/* 报告头部与状态 */}
-                            <div className="border-b border-gray-200 pb-4">
-                                <div className="flex justify-between items-start">
-                                    <div>
-                                        <h2 className="text-lg font-bold text-gray-900">{currentResult.product_name_display}</h2>
-                                    </div>
-                                    <button onClick={() => setIsHKDView(!isHKDView)} className={`px-3 py-1 text-xs font-medium rounded border transition-colors ${isHKDView ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>
-                                        {isHKDView ? '已转为 HKD' : 'HKD 转换'}
-                                    </button>
-                                </div>
-                                <div className="mt-2 flex items-center space-x-2">
-                                    <span className={`px-2 py-1 rounded text-xs font-semibold ${getStatusDisplay(currentResult.status).color}`}>
-                                        {getStatusDisplay(currentResult.status).text}
-                                    </span>
-                                </div>
-                                {currentResult.status === 'Active' && (
-                                    <div className="mt-2 text-sm text-gray-600">预期收息期数: <span className="font-semibold">{calcExpectedCouponPeriods(currentResult).toFixed(2)} 期</span></div>
-                                )}
-                            </div>
-
-                            {/* 结算提示 (如有) */}
-                            {currentResult.status !== 'Active' && currentResult.settlement_info && (
-                                <div className="bg-orange-50 border-l-4 border-orange-400 p-4 mb-4">
-                                    <p className="text-sm text-orange-700">{currentResult.settlement_info.desc}</p>
-                                </div>
-                            )}
-
-                            {/* 单价估值 & 持仓损益 */}
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div className="bg-gray-50 p-4 rounded-lg">
-                                    <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">单价估值 (Par={basicParams.denomination})</h3>
-                                    <div className="space-y-2 text-sm text-gray-700">
-                                        <div className="flex justify-between"><span>全价</span><span className="font-semibold">{(currentResult.dirty_price + currentResult.hist_coupons_paid).toFixed(2)}</span></div>
-                                        <div className="flex justify-between"><span>现值 (Dirty)</span><span className="font-bold text-blue-600">{currentResult.dirty_price.toFixed(2)}</span></div>
-                                        <div className="text-xs text-right text-gray-400">本金 {(currentResult.principal_pv).toFixed(2)} + 待付/未来票息 {(currentResult.pending_coupons_pv + currentResult.future_coupons_pv).toFixed(2)}</div>
-                                    </div>
-                                </div>
-
-                                <div className="bg-gray-50 p-4 rounded-lg">
-                                    <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">持仓损益 ({getDisplayCurrency()})</h3>
-                                    <div className="space-y-2 text-sm text-gray-700">
-                                        <div className="flex justify-between"><span>总名义本金</span><span>{fmtMoney(Number(basicParams.total_notional))}</span></div>
-                                        <div className="flex justify-between"><span>当前市值</span><span className="font-semibold">{fmtMoney(getDisplayValue(currentResult.dirty_price * (Number(basicParams.total_notional) / Number(basicParams.denomination))))}</span></div>
-                                        <div className="flex justify-between text-gray-600"><span>已实现票息</span><span>{fmtMoney(getDisplayValue(currentResult.hist_coupons_paid * (Number(basicParams.total_notional) / Number(basicParams.denomination))))}</span></div>
-                                        <div className="flex justify-between text-gray-600"><span>未实现损益</span><span>{fmtMoney(getDisplayValue(((currentResult.pending_coupons_pv + currentResult.future_coupons_pv) - currentResult.implied_loss_pv) * (Number(basicParams.total_notional) / Number(basicParams.denomination))))}</span></div>
-                                        {shouldShowTotalPL(currentResult.status) && (
-                                            <div className="border-t border-gray-200 my-2 pt-2 flex justify-between font-bold"><span>累计总损益</span><span className={(currentResult.dirty_price + currentResult.hist_coupons_paid - Number(basicParams.denomination)) >= 0 ? 'text-green-600' : 'text-red-600'}>{fmtMoney(getDisplayValue((currentResult.dirty_price + currentResult.hist_coupons_paid - Number(basicParams.denomination)) * (Number(basicParams.total_notional) / Number(basicParams.denomination))))}</span></div>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* 风险概率 */}
-                            <div>
-                                <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">风险概率</h3>
-                                <div className="grid grid-cols-2 gap-4 text-center">
-                                    <div className="p-3 border rounded-md">
-                                        <div className="text-xs text-gray-500">提前赎回概率</div>
-                                        <div className="text-lg font-bold text-gray-800">{fmtPct(currentResult.early_redemption_prob)}</div>
-                                    </div>
-                                    <div className="p-3 border rounded-md">
-                                        <div className="text-xs text-gray-500">敲入接货概率</div>
-                                        <div className="text-lg font-bold text-red-600">{fmtPct(currentResult.loss_prob)}</div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* 提前敲出分佈 */}
-                            {currentResult.early_redemption_prob > 0 && (
+                            {/* Modal Header */}
+                            <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50 flex-shrink-0">
                                 <div>
-                                    <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">提前敲出分布</h3>
-                                    <div className="overflow-x-auto">
-                                        <table className="min-w-full divide-y divide-gray-200 text-sm">
-                                            <thead><tr><th className="px-3 py-2 text-left font-medium text-gray-500">期数</th><th className="px-3 py-2 text-left font-medium text-gray-500">观察日</th><th className="px-3 py-2 text-right font-medium text-gray-500">概率</th></tr></thead>
-                                            <tbody className="divide-y divide-gray-200">
-                                                {currentResult.autocall_attribution.map((prob, idx) => { 
-                                                    if (prob <= 0.0001) return null; 
-                                                    const today = new Date(); today.setHours(0, 0, 0, 0); 
-                                                    const futureDates = currentResult.status === 'Active' ? dateRows.map(r => r.obsDate).filter(d => new Date(d) > today) : []; 
-                                                    const dateStr = futureDates[idx] || `Future Obs ${idx + 1}`; 
-                                                    return (
-                                                        <tr key={idx}><td className="px-3 py-2 text-gray-900">未来第 {idx + 1} 个观察日</td><td className="px-3 py-2 text-gray-500">{dateStr}</td><td className="px-3 py-2 text-right">{fmtPct(prob)}</td></tr>
-                                                    ); 
-                                                })}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* 接货风险归因 */}
-                            {shouldShowRiskAttribution(currentResult) && (
-                                <div>
-                                    <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">
-                                        {currentResult.status === 'Settling_Delivery' ? '接货详情 (已确定)' : '接货风险归因 (预期)'}
+                                    <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                                        <CheckCircle className="text-green-500" size={24} />
+                                        计算完成 - FCN 估值报告
                                     </h3>
-                                    <div className="overflow-x-auto">
-                                        <table className="min-w-full divide-y divide-gray-200 text-sm">
-                                            <thead>
-                                                <tr>
-                                                    <th className="px-3 py-2 text-left font-medium text-gray-500">标的</th>
-                                                    <th className="px-3 py-2 text-right font-medium text-gray-500">归因概率</th>
-                                                    <th className="px-3 py-2 text-right font-medium text-gray-500">暴露成本价</th>
-                                                    <th className="px-3 py-2 text-right font-medium text-gray-500">现价</th>
-                                                    <th className="px-3 py-2 text-right font-medium text-gray-500">暴露股数</th>
-                                                    <th className="px-3 py-2 text-right font-medium text-gray-500">暴露成本</th>
-                                                    <th className="px-3 py-2 text-right font-medium text-gray-500">暴露市值</th>
-                                                    <th className="px-3 py-2 text-right font-medium text-gray-500">暴露盈亏比</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-gray-200">
-                                                {getUniqueTickersForDisplay().map((row, idx) => {
-                                                    const initialP = parseFloat(row.initialPrice) || 0;
-                                                    const currentP = parseFloat(row.currentPrice) || initialP;
-                                                    const strikePct = Number(basicParams.strike_pct) || 0;
-                                                    const strikePrice = initialP * strikePct;
-                                                    const attributionProb = currentResult.loss_attribution[idx] || 0;
-                                                    const factor = Number(basicParams.total_notional) / Number(basicParams.denomination);
-                                                    const exposureShares = (currentResult.exposure_shares_avg[idx] || 0) * factor;
-                                                    const exposureCost = strikePrice * exposureShares;
-                                                    const exposureMktVal = currentP * exposureShares;
-                                                    let pnlDisplay = "-";
-                                                    let pnlClass = "text-gray-500";
-                                                    if (exposureCost > 0.0001) {
-                                                        const pnlPct = (exposureMktVal / exposureCost) - 1;
-                                                        pnlDisplay = fmtPct(pnlPct);
-                                                        pnlClass = pnlPct >= 0 ? 'text-green-600' : 'text-red-600';
-                                                    }
-                                                    return (
-                                                        <tr key={row.ticker} className={attributionProb === 1 ? "bg-red-50" : ""}>
-                                                            <td className="px-3 py-2 text-gray-900">{row.name || row.ticker}<span className="block text-xs text-gray-400">{row.ticker}</span></td>
-                                                            <td className="px-3 py-2 text-right">{fmtPct(attributionProb)}</td>
-                                                            <td className="px-3 py-2 text-right text-gray-600">{strikePrice.toFixed(2)}</td>
-                                                            <td className="px-3 py-2 text-right text-gray-600">{currentP.toFixed(2)}</td>
-                                                            <td className="px-3 py-2 text-right">{exposureShares.toFixed(0)}</td>
-                                                            <td className="px-3 py-2 text-right">{fmtMoney(getDisplayValue(exposureCost))}</td>
-                                                            <td className="px-3 py-2 text-right">{fmtMoney(getDisplayValue(exposureMktVal))}</td>
-                                                            <td className={`px-3 py-2 text-right font-medium ${pnlClass}`}>{pnlDisplay}</td>
-                                                        </tr>
-                                                    );
-                                                })}
-                                            </tbody>
-                                        </table>
+                                    <p className="text-sm text-gray-500 mt-1">请确认下方测算结果与状态后，再进行保存入库。</p>
+                                </div>
+                                <button onClick={() => setShowResultModal(false)} className="text-gray-400 hover:text-gray-600 bg-white p-1 rounded-full shadow-sm border"><X size={24}/></button>
+                            </div>
+
+                            {/* Modal Body (Scrollable Detailed Result from FCNPanel) */}
+                            <div className="p-6 overflow-y-auto flex-1 bg-white space-y-6">
+                                
+                                {/* 报告头部与状态 */}
+                                <div className="border-b border-gray-200 pb-4">
+                                    <div className="flex justify-between items-start">
+                                        <div>
+                                            <h2 className="text-lg font-bold text-gray-900">{res.product_name_display}</h2>
+                                        </div>
+                                        <button onClick={() => setIsHKDView(!isHKDView)} className={`px-3 py-1 text-xs font-medium rounded border transition-colors ${isHKDView ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>
+                                            {isHKDView ? '已转为 HKD' : 'HKD 转换'}
+                                        </button>
+                                    </div>
+                                    <div className="mt-2 flex items-center space-x-2">
+                                        <span className={`px-2 py-1 rounded text-xs font-semibold ${getStatusDisplay(res.status).color}`}>
+                                            {getStatusDisplay(res.status).text}
+                                        </span>
+                                    </div>
+                                    {res.status === 'Active' && (
+                                        <div className="mt-2 text-sm text-gray-600">预期收息期数: <span className="font-semibold">{calcExpectedCouponPeriods(res).toFixed(2)} 期</span></div>
+                                    )}
+                                </div>
+
+                                {/* 结算提示 (如有) */}
+                                {res.status !== 'Active' && res.settlement_info && (
+                                    <div className="bg-orange-50 border-l-4 border-orange-400 p-4 mb-4">
+                                        <p className="text-sm text-orange-700">{res.settlement_info.desc}</p>
+                                    </div>
+                                )}
+
+                                {/* 单价估值 & 持仓损益 */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div className="bg-gray-50 p-4 rounded-lg">
+                                        <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">单价估值 (Par={basicParams.denomination})</h3>
+                                        <div className="space-y-2 text-sm text-gray-700">
+                                            <div className="flex justify-between"><span>全价</span><span className="font-semibold">{(res.dirty_price + res.hist_coupons_paid).toFixed(2)}</span></div>
+                                            <div className="flex justify-between"><span>现值 (Dirty)</span><span className="font-bold text-blue-600">{res.dirty_price.toFixed(2)}</span></div>
+                                            <div className="text-xs text-right text-gray-400">本金 {(res.principal_pv).toFixed(2)} + 待付/未来票息 {(res.pending_coupons_pv + res.future_coupons_pv).toFixed(2)}</div>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-gray-50 p-4 rounded-lg">
+                                        <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">持仓损益 ({getDisplayCurrency()})</h3>
+                                        <div className="space-y-2 text-sm text-gray-700">
+                                            <div className="flex justify-between"><span>总名义本金</span><span>{fmtMoney(Number(basicParams.total_notional))}</span></div>
+                                            <div className="flex justify-between"><span>当前市值</span><span className="font-semibold">{fmtMoney(getDisplayValue(res.dirty_price * (Number(basicParams.total_notional) / Number(basicParams.denomination))))}</span></div>
+                                            <div className="flex justify-between text-gray-600"><span>已实现票息</span><span>{fmtMoney(getDisplayValue(res.hist_coupons_paid * (Number(basicParams.total_notional) / Number(basicParams.denomination))))}</span></div>
+                                            <div className="flex justify-between text-gray-600"><span>未实现损益</span><span>{fmtMoney(getDisplayValue(((res.pending_coupons_pv + res.future_coupons_pv) - res.implied_loss_pv) * (Number(basicParams.total_notional) / Number(basicParams.denomination))))}</span></div>
+                                            {shouldShowTotalPL(res.status) && (
+                                                <div className="border-t border-gray-200 my-2 pt-2 flex justify-between font-bold"><span>累计总损益</span><span className={(res.dirty_price + res.hist_coupons_paid - Number(basicParams.denomination)) >= 0 ? 'text-green-600' : 'text-red-600'}>{fmtMoney(getDisplayValue((res.dirty_price + res.hist_coupons_paid - Number(basicParams.denomination)) * (Number(basicParams.total_notional) / Number(basicParams.denomination))))}</span></div>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
-                            )}
 
-                            {/* 股价点位图 */}
-                            {(currentResult.status === 'Active' || currentResult.status === 'Settling_Delivery' || currentResult.status === 'Settling_NoDelivery') && (
+                                {/* 风险概率 */}
                                 <div>
-                                    <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">股价点位图</h3>
-                                    <div className="space-y-6">
-                                        {getUniqueTickersForDisplay().map((row, idx) => {
-                                            const initial = parseFloat(row.initialPrice);
-                                            const current = parseFloat(row.currentPrice) || initial;
-                                            const strike = initial * (Number(basicParams.strike_pct) || 0);
-                                            const ko = initial * (Number(basicParams.trigger_pct) || 0);
-
-                                            const leftPct = (strike / current) - 1;
-                                            const rightPct = (ko / current) - 1;
-
-                                            const values = [strike, current, ko];
-                                            const minVal = Math.min(...values) * 0.85;
-                                            const maxVal = Math.max(...values) * 1.15;
-                                            const range = maxVal - minVal;
-
-                                            const getPos = (val: number) => ((val - minVal) / range) * 100;
-
-                                            return (
-                                                <div key={row.ticker} className="bg-white p-5 rounded-lg border border-gray-200 shadow-sm">
-                                                    <div className="flex justify-between items-end mb-4">
-                                                        <div>
-                                                            <span className="text-lg font-bold text-gray-800 mr-2">{row.name || row.ticker}</span>
-                                                            <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{row.ticker}</span>
-                                                        </div>
-                                                        <div className="text-right">
-                                                            <span className="text-xs text-gray-500 mr-1">现价</span>
-                                                            <span className="text-base font-semibold text-gray-900">{current.toFixed(2)}</span>
-                                                        </div>
-                                                    </div>
-
-                                                    <div className="flex items-center gap-4">
-                                                        <div className={`flex flex-col items-center justify-center w-24 h-16 rounded-lg border-2 transition-colors ${leftPct > 0 ? 'bg-red-50 border-red-500 text-red-700' : 'bg-white border-gray-100 text-gray-400'}`}>
-                                                            <span className="text-[10px] font-semibold uppercase tracking-wider">距敲入</span>
-                                                            <span className="text-lg font-bold">{fmtPct(leftPct)}</span>
-                                                        </div>
-
-                                                        <div className="flex-1 relative h-16 mx-4 select-none">
-                                                            <div className="absolute top-1/2 left-0 right-0 h-1.5 bg-gray-100 rounded-full transform -translate-y-1/2"></div>
-                                                            <div className="absolute top-1/2 h-1.5 bg-blue-50 transform -translate-y-1/2" style={{ left: `${getPos(strike)}%`, width: `${getPos(ko) - getPos(strike)}%` }}></div>
-                                                            <div className="absolute top-1/2" style={{ left: `${getPos(strike)}%` }}>
-                                                                <div className="absolute transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-red-500 border-2 border-white rounded-full shadow z-10"></div>
-                                                                <div className="absolute transform -translate-x-1/2 translate-y-3 flex flex-col items-center w-max">
-                                                                    <span className="text-[10px] text-red-600 font-bold">Strike</span>
-                                                                    <span className="text-[9px] text-gray-400">{strike.toFixed(2)}</span>
-                                                                </div>
-                                                            </div>
-                                                            <div className="absolute top-1/2" style={{ left: `${getPos(ko)}%` }}>
-                                                                <div className="absolute transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-green-500 border-2 border-white rounded-full shadow z-10"></div>
-                                                                <div className="absolute transform -translate-x-1/2 translate-y-3 flex flex-col items-center w-max">
-                                                                    <span className="text-[10px] text-green-600 font-bold">KO</span>
-                                                                    <span className="text-[9px] text-gray-400">{ko.toFixed(2)}</span>
-                                                                </div>
-                                                            </div>
-                                                            <div className="absolute top-1/2" style={{ left: `${getPos(current)}%` }}>
-                                                                <div className="absolute transform -translate-x-1/2 -translate-y-1/2 w-4 h-4 bg-purple-600 border-2 border-white rounded-full shadow-lg z-20 ring-4 ring-purple-100"></div>
-                                                                <div className="absolute transform -translate-x-1/2 -translate-y-full -top-3 flex flex-col items-center w-max">
-                                                                    <span className="bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded shadow-sm font-bold">Now</span>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-
-                                                        <div className={`flex flex-col items-center justify-center w-24 h-16 rounded-lg border-2 transition-colors ${rightPct < 0 ? 'bg-yellow-50 border-yellow-400 text-yellow-700' : 'bg-white border-gray-100 text-gray-400'}`}>
-                                                            <span className="text-[10px] font-semibold uppercase tracking-wider">距敲出</span>
-                                                            <span className="text-lg font-bold">{fmtPct(rightPct)}</span>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
+                                    <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">风险概率</h3>
+                                    <div className="grid grid-cols-2 gap-4 text-center">
+                                        <div className="p-3 border rounded-md">
+                                            <div className="text-xs text-gray-500">提前赎回概率</div>
+                                            <div className="text-lg font-bold text-gray-800">{fmtPct(res.early_redemption_prob)}</div>
+                                        </div>
+                                        <div className="p-3 border rounded-md">
+                                            <div className="text-xs text-gray-500">敲入接货概率</div>
+                                            <div className="text-lg font-bold text-red-600">{fmtPct(res.loss_prob)}</div>
+                                        </div>
                                     </div>
                                 </div>
-                            )}
+
+                                {/* 提前敲出分佈 */}
+                                {res.early_redemption_prob > 0 && (
+                                    <div>
+                                        <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">提前敲出分布</h3>
+                                        <div className="overflow-x-auto">
+                                            <table className="min-w-full divide-y divide-gray-200 text-sm">
+                                                <thead><tr><th className="px-3 py-2 text-left font-medium text-gray-500">期数</th><th className="px-3 py-2 text-left font-medium text-gray-500">观察日</th><th className="px-3 py-2 text-right font-medium text-gray-500">概率</th></tr></thead>
+                                                <tbody className="divide-y divide-gray-200">
+                                                    {res.autocall_attribution.map((prob, idx) => { 
+                                                        if (prob <= 0.0001) return null; 
+                                                        const today = new Date(); today.setHours(0, 0, 0, 0); 
+                                                        const futureDates = res.status === 'Active' ? dateRows.map(r => r.obsDate).filter(d => new Date(d) > today) : []; 
+                                                        const dateStr = futureDates[idx] || `Future Obs ${idx + 1}`; 
+                                                        return (
+                                                            <tr key={idx}><td className="px-3 py-2 text-gray-900">未来第 {idx + 1} 个观察日</td><td className="px-3 py-2 text-gray-500">{dateStr}</td><td className="px-3 py-2 text-right">{fmtPct(prob)}</td></tr>
+                                                        ); 
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* 接货风险归因 */}
+                                {shouldShowRiskAttribution(res) && (
+                                    <div>
+                                        <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">
+                                            {res.status === 'Settling_Delivery' ? '接货详情 (已确定)' : '接货风险归因 (预期)'}
+                                        </h3>
+                                        <div className="overflow-x-auto">
+                                            <table className="min-w-full divide-y divide-gray-200 text-sm">
+                                                <thead>
+                                                    <tr>
+                                                        <th className="px-3 py-2 text-left font-medium text-gray-500">标的</th>
+                                                        <th className="px-3 py-2 text-right font-medium text-gray-500">归因概率</th>
+                                                        <th className="px-3 py-2 text-right font-medium text-gray-500">暴露成本价</th>
+                                                        <th className="px-3 py-2 text-right font-medium text-gray-500">现价</th>
+                                                        <th className="px-3 py-2 text-right font-medium text-gray-500">暴露股数</th>
+                                                        <th className="px-3 py-2 text-right font-medium text-gray-500">暴露成本</th>
+                                                        <th className="px-3 py-2 text-right font-medium text-gray-500">暴露市值</th>
+                                                        <th className="px-3 py-2 text-right font-medium text-gray-500">暴露盈亏比</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-200">
+                                                    {getUniqueTickersForDisplay().map((row, idx) => {
+                                                        const initialP = parseFloat(row.initialPrice) || 0;
+                                                        const currentP = parseFloat(row.currentPrice) || initialP;
+                                                        const strikePct = Number(basicParams.strike_pct) || 0;
+                                                        const strikePrice = initialP * strikePct;
+                                                        const attributionProb = res.loss_attribution[idx] || 0;
+                                                        const factor = Number(basicParams.total_notional) / Number(basicParams.denomination);
+                                                        const exposureShares = (res.exposure_shares_avg[idx] || 0) * factor;
+                                                        const exposureCost = strikePrice * exposureShares;
+                                                        const exposureMktVal = currentP * exposureShares;
+                                                        let pnlDisplay = "-";
+                                                        let pnlClass = "text-gray-500";
+                                                        if (exposureCost > 0.0001) {
+                                                            const pnlPct = (exposureMktVal / exposureCost) - 1;
+                                                            pnlDisplay = fmtPct(pnlPct);
+                                                            pnlClass = pnlPct >= 0 ? 'text-green-600' : 'text-red-600';
+                                                        }
+                                                        return (
+                                                            <tr key={row.ticker} className={attributionProb === 1 ? "bg-red-50" : ""}>
+                                                                <td className="px-3 py-2 text-gray-900">{row.name || row.ticker}<span className="block text-xs text-gray-400">{row.ticker}</span></td>
+                                                                <td className="px-3 py-2 text-right">{fmtPct(attributionProb)}</td>
+                                                                <td className="px-3 py-2 text-right text-gray-600">{strikePrice.toFixed(2)}</td>
+                                                                <td className="px-3 py-2 text-right text-gray-600">{currentP.toFixed(2)}</td>
+                                                                <td className="px-3 py-2 text-right">{exposureShares.toFixed(0)}</td>
+                                                                <td className="px-3 py-2 text-right">{fmtMoney(getDisplayValue(exposureCost))}</td>
+                                                                <td className="px-3 py-2 text-right">{fmtMoney(getDisplayValue(exposureMktVal))}</td>
+                                                                <td className={`px-3 py-2 text-right font-medium ${pnlClass}`}>{pnlDisplay}</td>
+                                                            </tr>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                )}
+
+                            </div>
+
+                            {/* Modal Footer (Action Buttons) */}
+                            <div className="px-6 py-4 border-t bg-gray-50 flex justify-between items-center flex-shrink-0">
+                                <div className="text-sm">
+                                    <span className="text-gray-600 mr-2">系统判定录入路径: </span>
+                                    {['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(res.status) ? (
+                                        <span className="font-bold text-green-600 flex items-center gap-1 inline-flex"><CheckCircle size={16}/> Living (存续库)</span>
+                                    ) : (
+                                        <span className="font-bold text-orange-600 flex items-center gap-1 inline-flex"><AlertCircle size={16}/> Died (已结束库)</span>
+                                    )}
+                                </div>
+                                
+                                <div className="flex gap-3 w-[40%]">
+                                    {['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(res.status) ? (
+                                        <button onClick={handleSaveToDB} disabled={loading} className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-md flex items-center justify-center gap-2 shadow-md transition-colors">
+                                            {loading ? <Loader2 className="animate-spin" size={18}/> : <Save size={18}/>}
+                                            保存结果入库 (Living)
+                                        </button>
+                                    ) : (
+                                        <button onClick={handleSaveToDB} disabled={loading} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 rounded-md flex items-center justify-center gap-2 shadow-md transition-colors">
+                                            {loading ? <Loader2 className="animate-spin" size={18}/> : <Save size={18}/>}
+                                            保存结果入库 (Died)
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
 
                         </div>
-
-                        {/* Modal Footer (Action Buttons) */}
-                        <div className="px-6 py-4 border-t bg-gray-50 flex justify-between items-center flex-shrink-0">
-                            <div className="text-sm">
-                                <span className="text-gray-600 mr-2">系统判定录入路径: </span>
-                                {['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(currentResult.status) ? (
-                                    <span className="font-bold text-green-600 flex items-center gap-1 inline-flex"><CheckCircle size={16}/> Living (存续库)</span>
-                                ) : (
-                                    <span className="font-bold text-orange-600 flex items-center gap-1 inline-flex"><AlertCircle size={16}/> Died (已结束库)</span>
-                                )}
-                            </div>
-                            
-                            <div className="flex gap-3 w-[40%]">
-                                {['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(currentResult.status) ? (
-                                    <button onClick={handleSaveToDB} disabled={loading} className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-md flex items-center justify-center gap-2 shadow-md transition-colors">
-                                        {loading ? <Loader2 className="animate-spin" size={18}/> : <Save size={18}/>}
-                                        保存结果入库 (Living)
-                                    </button>
-                                ) : (
-                                    <button onClick={handleSaveToDB} disabled={loading} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 rounded-md flex items-center justify-center gap-2 shadow-md transition-colors">
-                                        {loading ? <Loader2 className="animate-spin" size={18}/> : <Save size={18}/>}
-                                        保存结果入库 (Died)
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-
                     </div>
-                </div>
-            )}
+                );
+            })()}
 
             {/* === 模块 2：接货展示模块 === */}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
@@ -976,7 +929,10 @@ export default function FCNTradePage() {
                         <Database size={20} className="text-orange-600"/>
                         【接货展示模块】
                     </h2>
-                    <span className="text-sm text-gray-500">待入库接货记录: {deliveryRecords.length} 笔</span>
+                    <div className="flex items-center gap-4">
+                        <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">当前绑定 TradeID: <span className="font-mono font-bold text-gray-700">{currentTradeId || '暂无'}</span></span>
+                        <span className="text-sm text-gray-500">待入库接货记录: {deliveryRecords.length} 笔</span>
+                    </div>
                 </div>
 
                 {deliveryRecords.length === 0 ? (
@@ -993,14 +949,16 @@ export default function FCNTradePage() {
                                     <th className="px-3 py-2">日期/账户</th>
                                     <th className="px-3 py-2">标的代码/名称</th>
                                     <th className="px-3 py-2 text-right">接货数量</th>
-                                    <th className="px-3 py-2 text-right">接货单价(不含费)</th>
+                                    <th className="px-3 py-2 text-right">接货单价(原币)</th>
                                     <th className="px-3 py-2 text-right">手续费</th>
-                                    <th className="px-3 py-2 text-right">接货总额(含费)</th>
+                                    <th className="px-3 py-2 text-right">接货总额(含费,原币)</th>
                                     <th className="px-3 py-2 text-center">操作</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100 bg-white">
-                                {deliveryRecords.map((t, idx) => (
+                                {deliveryRecords.map((t, idx) => {
+                                    const ccy = getRecCurrency(t.market);
+                                    return (
                                     <tr key={idx} className="hover:bg-blue-50/50 transition-colors">
                                         {editingDeliveryIdx === idx && editFormData ? (
                                             // 编辑状态
@@ -1016,7 +974,7 @@ export default function FCNTradePage() {
                                                 <td className="px-3 py-2 text-right"><input type="number" name="quantity" value={editFormData.quantity} onChange={handleEditFormChange} className="border p-1 text-xs w-24 text-right rounded"/></td>
                                                 <td className="px-3 py-2 text-right"><input type="number" step="0.0001" name="priceNoFee" value={editFormData.priceNoFee} onChange={handleEditFormChange} className="border p-1 text-xs w-24 text-right rounded"/></td>
                                                 <td className="px-3 py-2 text-right"><input type="number" step="0.01" name="fee" value={editFormData.fee} onChange={handleEditFormChange} className="border p-1 text-xs w-20 text-right rounded"/></td>
-                                                <td className="px-3 py-2 text-right font-mono font-medium text-blue-700 bg-blue-50">{fmtMoney(editFormData.amountWithFee)}</td>
+                                                <td className="px-3 py-2 text-right font-mono font-medium text-blue-700 bg-blue-50">{fmtMoney(editFormData.amountWithFee, ccy)}</td>
                                                 <td className="px-3 py-2 text-center">
                                                     <button onClick={handleSaveDeliveryEdit} className="text-white bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs font-bold">保存修改</button>
                                                 </td>
@@ -1027,16 +985,17 @@ export default function FCNTradePage() {
                                                 <td className="px-3 py-2 text-gray-600"><div>{t.date}</div><div className="text-xs">{t.account}</div></td>
                                                 <td className="px-3 py-2 font-medium"><div>{t.stockCode}</div><div className="text-xs text-gray-500">{t.stockName}</div></td>
                                                 <td className="px-3 py-2 text-right font-mono">{t.quantity.toLocaleString()}</td>
-                                                <td className="px-3 py-2 text-right font-mono">{fmtMoney(t.priceNoFee)}</td>
-                                                <td className="px-3 py-2 text-right font-mono">{fmtMoney(t.fee)}</td>
-                                                <td className="px-3 py-2 text-right font-mono font-bold text-gray-900">{fmtMoney(t.amountWithFee)}</td>
+                                                <td className="px-3 py-2 text-right font-mono">{fmtMoney(t.priceNoFee, ccy)}</td>
+                                                <td className="px-3 py-2 text-right font-mono">{fmtMoney(t.fee, ccy)}</td>
+                                                <td className="px-3 py-2 text-right font-mono font-bold text-gray-900">{fmtMoney(t.amountWithFee, ccy)}</td>
                                                 <td className="px-3 py-2 text-center">
                                                     <button onClick={() => handleEditDelivery(idx)} className="text-blue-500 hover:text-blue-700 p-1 bg-blue-50 rounded" title="修改"><Edit2 size={16}/></button>
                                                 </td>
                                             </>
                                         )}
                                     </tr>
-                                ))}
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>
@@ -1096,20 +1055,24 @@ export default function FCNTradePage() {
                             <thead className="bg-gray-50 text-gray-500">
                                 <tr>
                                     <th className="px-3 py-2 whitespace-nowrap">ID / 创建时间</th>
-                                    <th className="px-3 py-2">内容摘要 (Raw JSON Preview)</th>
+                                    <th className="px-3 py-2">绑定 TradeID</th>
+                                    <th className="px-3 py-2">内容摘要 / 产品名称</th>
                                     <th className="px-3 py-2 text-center whitespace-nowrap">操作</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
                                 {dbRecords.map(r => (
-                                    <tr key={r.id} className="hover:bg-gray-50">
+                                    <tr key={r.id} className="hover:bg-gray-50 transition-colors">
                                         <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap font-mono">
                                             <div className="font-bold text-gray-700">{r.id.substring(0,8)}...</div>
-                                            <div>{r.createdAt?.toDate ? r.createdAt.toDate().toLocaleString() : 'N/A'}</div>
+                                            <div>{r.updatedAt?.toDate ? r.updatedAt.toDate().toLocaleString() : (r.createdAt?.toDate ? r.createdAt.toDate().toLocaleString() : 'N/A')}</div>
+                                        </td>
+                                        <td className="px-3 py-2 text-xs font-mono text-blue-600">
+                                            {r.tradeId || 'None'}
                                         </td>
                                         <td className="px-3 py-2 text-xs">
-                                            <div className="max-w-md xl:max-w-2xl truncate text-gray-600 font-mono bg-gray-100 px-2 py-1 rounded">
-                                                {JSON.stringify(r).substring(0, 150)}...
+                                            <div className="max-w-md xl:max-w-2xl truncate text-gray-700 bg-blue-50/50 px-2 py-1.5 rounded border border-blue-100 font-medium">
+                                                {getRecordSummary(r, activeDbTab)}
                                             </div>
                                         </td>
                                         <td className="px-3 py-2 text-center whitespace-nowrap">
@@ -1140,10 +1103,10 @@ export default function FCNTradePage() {
             {editRecordModal && (
                 <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
                     <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-5xl flex flex-col h-[85vh] max-h-[90vh]">
-                        <div className="flex justify-between items-center mb-4">
+                        <div className="flex justify-between items-center mb-4 border-b pb-4">
                             <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700">
                                 <FileJson size={20}/> 
-                                进阶修改记录 - {editRecordModal.record.id}
+                                进阶修改记录 - {editRecordModal?.record?.id}
                             </h3>
                             <button onClick={() => setEditRecordModal(null)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
                         </div>
@@ -1153,8 +1116,8 @@ export default function FCNTradePage() {
                         
                         <textarea 
                             className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none" 
-                            value={editRecordModal.rawJson}
-                            onChange={(e) => setEditRecordModal({...editRecordModal, rawJson: e.target.value})}
+                            value={editRecordModal?.rawJson || ''}
+                            onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)}
                         />
                         
                         <div className="flex justify-end gap-3 pt-2 border-t">

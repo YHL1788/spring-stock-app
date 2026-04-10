@@ -481,6 +481,31 @@ export default function DQAQHoldingPage() {
         }
     };
 
+    // --- 动态展示记录摘要 Helper ---
+    const getRecordSummary = (r: any, tab: string) => {
+        try {
+            if (tab.includes('input')) {
+                const b = r.basic || r.basic_info;
+                const u = r.underlying || r.underlying_info;
+                if (!b || !u) return 'DQ-AQ Input 参数';
+                return `[${b.contract_type}] ${b.broker || '未知'} | ${b.trade_date || ''} | ${u.stock_name || u.ticker || ''}`;
+            }
+            if (tab.includes('output_living') || tab.includes('output_died')) {
+                if (r.status_msg) return `DQ-AQ 结果 | ${r.status_msg} | 期望总股数: ${r.expected_shares?.toFixed(2) || 0}`;
+                return 'DQ-AQ 测算结果';
+            }
+            if (tab.includes('get-stock') || tab.includes('pending_delivery')) {
+                return `【交收】${r.account || ''} | ${r.direction || ''} ${r.quantity || 0}股 ${r.stockName || r.stockCode || ''}`;
+            }
+            if (tab.includes('sum')) {
+                return `全局大盘统计快照 (更新于: ${r.updatedAt?.toDate ? r.updatedAt.toDate().toLocaleString() : 'N/A'})`;
+            }
+            return JSON.stringify(r).substring(0, 100) + '...';
+        } catch (e) {
+            return '解析失败...';
+        }
+    };
+
     // --- 數據展平與表頭邏輯 ---
     const useTableData = (data: any[], sortConfig: any, filterConfig: any) => {
         return useMemo(() => {
@@ -787,7 +812,7 @@ export default function DQAQHoldingPage() {
                                 <tr>
                                     <th className="px-3 py-2 whitespace-nowrap">ID / 創建時間</th>
                                     <th className="px-3 py-2">綁定 TradeID</th>
-                                    <th className="px-3 py-2">內容摘要 (Raw JSON Preview)</th>
+                                    <th className="px-3 py-2">內容摘要 / 產品名稱</th>
                                     <th className="px-3 py-2 text-center whitespace-nowrap">操作</th>
                                 </tr>
                             </thead>
@@ -800,8 +825,8 @@ export default function DQAQHoldingPage() {
                                         </td>
                                         <td className="px-3 py-2 text-xs font-mono text-blue-600">{r.tradeId || 'None'}</td>
                                         <td className="px-3 py-2 text-xs">
-                                            <div className="max-w-xs xl:max-w-2xl truncate text-gray-600 font-mono bg-gray-100 px-2 py-1 rounded">
-                                                {JSON.stringify(r).substring(0, 150)}...
+                                            <div className="max-w-xs xl:max-w-2xl truncate text-gray-700 bg-blue-50/50 px-2 py-1.5 rounded border border-blue-100 font-medium">
+                                                {getRecordSummary(r, activeDbTab)}
                                             </div>
                                         </td>
                                         <td className="px-3 py-2 text-center whitespace-nowrap">
