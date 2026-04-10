@@ -53,6 +53,31 @@ const INITIAL_BASIC = {
     fx_rate: '' as number | string, history_start_date: '', n_sims: '' as number | string, seed: '' as number | string
 };
 
+// --- 精準過期時間推算 (HKT UTC+8) ---
+const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
+    if (!expDateStr) return Infinity;
+    try {
+        if (currency === 'USD') {
+            const [y, m, d] = expDateStr.split('-').map(Number);
+            const nextDay = new Date(y, m - 1, d + 1);
+            const nextY = nextDay.getFullYear();
+            const nextM = String(nextDay.getMonth() + 1).padStart(2, '0');
+            const nextD = String(nextDay.getDate()).padStart(2, '0');
+            return new Date(`${nextY}-${nextM}-${nextD}T04:00:00+08:00`).getTime();
+        } else if (currency === 'JPY') {
+            return new Date(`${expDateStr}T14:00:00+08:00`).getTime();
+        } else if (currency === 'CNY') {
+            return new Date(`${expDateStr}T15:00:00+08:00`).getTime();
+        } else {
+            return new Date(`${expDateStr}T16:00:00+08:00`).getTime();
+        }
+    } catch (e) {
+        console.error("日期解析錯誤", e);
+        const todayStr = new Date().toISOString().split('T')[0];
+        return todayStr >= expDateStr ? 0 : Infinity;
+    }
+};
+
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) {
         return null;
@@ -267,6 +292,11 @@ export default function FCNTradePage() {
                 throw new Error("历史数据起始日必须早于交易日");
             }
 
+            // --- 鐵血邏輯：精準判定最後觀察日是否過期 ---
+            const last_obs_date = obs_dates[obs_dates.length - 1];
+            const expireTimeMs = getExpirationTimeMs(last_obs_date, basicParams.market);
+            const isExpired = Date.now() >= expireTimeMs;
+
             const calcParams: FCNParams = {
                 ...basicParams, tickers, ticker_name: ticker_names, initial_spots, current_spots: [],
                 hist_prices: {}, discrete_dividends, obs_dates, pay_dates,
@@ -280,13 +310,27 @@ export default function FCNTradePage() {
                 coupon_rate: Number(basicParams.coupon_rate),
             } as FCNParams;
 
-            setFetchStatus('获取最新价...');
+            setFetchStatus('获取相关价格...');
             const fetchedSpots = await Promise.all(tickers.map(async (t, i) => {
                 const manual = current_spots_manual[i];
                 if (manual !== null) return manual;
-                setFetchStatus(`正在获取 ${t} 最新价格...`);
-                const p = await fetchQuotePrice(t); 
-                return p !== null ? p : initial_spots[i];
+
+                if (isExpired) {
+                    setFetchStatus(`获取 ${t} 历史收盘价...`);
+                    const d = new Date(last_obs_date); d.setDate(d.getDate() - 7);
+                    const startStr = d.toISOString().split('T')[0];
+                    const histPrices = await fetchHistoricalPrices(t, startStr, last_obs_date);
+                    const validPrices = histPrices.filter((p:any) => p.date <= last_obs_date);
+                    if (validPrices.length > 0) {
+                        validPrices.sort((a:any,b:any) => a.date.localeCompare(b.date));
+                        return validPrices[validPrices.length - 1].close;
+                    }
+                    throw new Error(`无法获取 ${t} 于到期日 ${last_obs_date} 之前的有效历史收盘价，拒绝结算！`);
+                } else {
+                    setFetchStatus(`正在获取 ${t} 最新价格...`);
+                    const p = await fetchQuotePrice(t); 
+                    return p !== null ? p : initial_spots[i];
+                }
             }));
             calcParams.current_spots = fetchedSpots;
 
@@ -305,11 +349,14 @@ export default function FCNTradePage() {
             today.setHours(0, 0, 0, 0);
             const hasPastObservation = obs_dates.some(d => new Date(d) <= today);
 
+            // 確保歷史 K 線的抓取也同樣遵守截斷日期的鐵血邏輯
+            const cutoffDate = isExpired ? last_obs_date : new Date().toISOString().split('T')[0];
+
             if (hasPastObservation && histStart) {
                 setFetchStatus('正在拉取历史K线数据...');
                 const histDataMap: { [t: string]: any[] } = {};
                 await Promise.all(tickers.map(async (t) => { 
-                    histDataMap[t] = await fetchHistoricalPrices(t, histStart); 
+                    histDataMap[t] = await fetchHistoricalPrices(t, histStart, cutoffDate); 
                 }));
                 calcParams.hist_prices = histDataMap;
             }
@@ -658,7 +705,7 @@ export default function FCNTradePage() {
                                         </div>
                                         <div className="grid grid-cols-2 gap-2 mb-2">
                                             <input type="number" placeholder="初始价" value={row.initialPrice} onChange={(e) => updateUnderlyingRow(row.id, 'initialPrice', e.target.value)} className="border-gray-300 rounded p-1" />
-                                            <input type="number" placeholder="当前价" value={row.currentPrice} onChange={(e) => updateUnderlyingRow(row.id, 'currentPrice', e.target.value)} className="border-gray-300 rounded p-1 bg-blue-50" />
+                                            <input type="number" placeholder="过期无视手填" value={row.currentPrice} onChange={(e) => updateUnderlyingRow(row.id, 'currentPrice', e.target.value)} className="border-gray-300 rounded p-1 bg-blue-50" />
                                         </div>
                                         <div className="grid grid-cols-5 gap-2 items-center">
                                             <div className="col-span-2"><input type="date" placeholder="分红日" value={row.dividendDate} onChange={(e) => updateUnderlyingRow(row.id, 'dividendDate', e.target.value)} className="w-full border-gray-300 rounded p-1" /></div>

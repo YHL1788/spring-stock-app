@@ -41,6 +41,31 @@ interface TransactionRecord {
     stockCode: string; stockName: string; quantity: number; priceNoFee: number; fee: number; amountNoFee: number; hkdAmount: number;
 }
 
+// --- 精準過期時間推算 (HKT UTC+8) ---
+const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
+    if (!expDateStr) return Infinity;
+    try {
+        if (currency === 'USD') {
+            const [y, m, d] = expDateStr.split('-').map(Number);
+            const nextDay = new Date(y, m - 1, d + 1);
+            const nextY = nextDay.getFullYear();
+            const nextM = String(nextDay.getMonth() + 1).padStart(2, '0');
+            const nextD = String(nextDay.getDate()).padStart(2, '0');
+            return new Date(`${nextY}-${nextM}-${nextD}T04:00:00+08:00`).getTime();
+        } else if (currency === 'JPY') {
+            return new Date(`${expDateStr}T14:00:00+08:00`).getTime();
+        } else if (currency === 'CNY') {
+            return new Date(`${expDateStr}T15:00:00+08:00`).getTime();
+        } else {
+            return new Date(`${expDateStr}T16:00:00+08:00`).getTime();
+        }
+    } catch (e) {
+        console.error("日期解析錯誤", e);
+        const todayStr = new Date().toISOString().split('T')[0];
+        return todayStr >= expDateStr ? 0 : Infinity;
+    }
+};
+
 // 辅助函数：替换 undefined 为 null 以保证 JSON 安全存入 Firebase
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) return null;
@@ -212,6 +237,24 @@ export default function DQAQTradePage() {
         } catch { return null; }
     };
 
+    const fetchHistoricalPrices = async (symbol: string, startDate: string, endDate?: string): Promise<{ date: string, close: number }[]> => {
+        try {
+            const apiUrl = `/api/history?symbol=${symbol}&start=${startDate}${endDate ? `&end=${endDate}` : ''}`;
+            const res = await fetch(apiUrl);
+            if (!res.ok) return [];
+            const data = await res.json();
+            let list = Array.isArray(data) ? data : (data.historical || data.data || []);
+            return list.map((item: any) => {
+                const rawDate = item.date || item.timestamp;
+                const d = new Date(rawDate);
+                return {
+                    date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+                    close: Number(item.close || item.adjClose || item.price)
+                };
+            }).filter((item: any) => !isNaN(item.close));
+        } catch { return []; }
+    };
+
     // ==========================================
     // 核心计算引擎触发
     // ==========================================
@@ -256,21 +299,59 @@ export default function DQAQTradePage() {
                 setHistoryStartInput(hStart);
             }
 
-            setFetchStatus('抓取历史数据...');
+            // --- 精準過期時間判定與取價鐵血邏輯 ---
+            const contract_end = periods[periods.length - 1].obs_end;
+            const expireTimeMs = getExpirationTimeMs(contract_end, currency);
+            const isExpired = Date.now() >= expireTimeMs;
+            
+            let finalMktPrice = Number(spotPrice);
+
+            if (isExpired) {
+                setFetchStatus(`獲取 ${contract_end} 歷史收盤價...`);
+                const d = new Date(contract_end); d.setDate(d.getDate() - 7);
+                const startStr = d.toISOString().split('T')[0];
+                const histRes = await fetchHistoricalPrices(ticker, startStr, contract_end);
+                const validPrices = histRes.filter((p:any) => p.date <= contract_end);
+                
+                if (validPrices.length > 0) {
+                    validPrices.sort((a:any, b:any) => a.date.localeCompare(b.date));
+                    finalMktPrice = validPrices[validPrices.length - 1].close;
+                    setCurrentMktPrice(String(finalMktPrice)); // 強制回填歷史價
+                } else {
+                    throw new Error(`無法獲取 ${ticker} 於到期日 ${contract_end} 之前的有效歷史收盤價，拒絕結算！`);
+                }
+            } else {
+                if (currentMktPrice !== "") {
+                    finalMktPrice = parseFloat(currentMktPrice);
+                } else {
+                    setFetchStatus('抓取实时市价...');
+                    const p = await fetchQuotePrice(ticker);
+                    if (p !== null) { finalMktPrice = p; setCurrentMktPrice(p.toString()); }
+                }
+            }
+
+            setFetchStatus('抓取歷史價格序列...');
             let historyPrices: number[] = []; let historyDates: string[] = [];
             try {
-                const histRes = await fetch(`/api/history?symbol=${ticker}&from=${hStart}`);
-                if (histRes.ok) {
-                    const histData = await histRes.json();
-                    let rawList: any[] = Array.isArray(histData.data) ? histData.data : (Array.isArray(histData) ? histData : []);
-                    rawList.forEach((item: any) => {
-                        const p = item.close || item.adjClose || item.price;
-                        if (typeof p === 'number' && !isNaN(p) && item.date) { historyPrices.push(p); historyDates.push(item.date); }
-                    });
-                }
+                // 如果是已過期，為了保持 DQ-AQ 引擎在內部判定的穩定，統一過濾掉未來的日期
+                const cutoffDate = isExpired ? contract_end : new Date().toISOString().split('T')[0];
+                const histRes = await fetchHistoricalPrices(ticker, hStart, cutoffDate);
+                histRes.forEach((item: any) => {
+                    const p = item.close;
+                    if (typeof p === 'number' && !isNaN(p) && item.date) { historyPrices.push(p); historyDates.push(item.date); }
+                });
             } catch (e) { console.warn(e); }
 
-            const valDtStr = new Date().toISOString().split('T')[0];
+            // --- 偏移 valDtStr 以適配 DQ-AQ 引擎的週期判定 ---
+            let valDtStr = new Date().toISOString().split('T')[0];
+            if (isExpired && valDtStr < contract_end) {
+                valDtStr = contract_end; 
+            }
+            if (!isExpired && valDtStr >= contract_end) {
+                const d = new Date(contract_end); d.setDate(d.getDate() - 1);
+                valDtStr = d.toISOString().split('T')[0];
+            }
+
             for (const p of periods) {
                 if (p.obs_end < valDtStr) {
                     const days_in_history = historyDates.filter(d => d >= p.obs_start && d <= p.obs_end).length;
@@ -279,16 +360,6 @@ export default function DQAQTradePage() {
             }
 
             const sigma = calculateVolatility(historyPrices);
-
-            let finalMktPrice = Number(spotPrice);
-            if (currentMktPrice !== "") finalMktPrice = parseFloat(currentMktPrice);
-            else {
-                setFetchStatus('抓取实时市价...');
-                const p = await fetchQuotePrice(ticker);
-                if (p !== null) { finalMktPrice = p; setCurrentMktPrice(p.toString()); } 
-                else if (historyPrices.length > 0) { finalMktPrice = historyPrices[historyPrices.length - 1]; setCurrentMktPrice(finalMktPrice.toString()); } 
-                else { setCurrentMktPrice(finalMktPrice.toString()); }
-            }
 
             const basic: BasicInfo = {
                 contract_type: contractType, broker, account, executor, currency, trade_date: tradeDate,
@@ -588,7 +659,7 @@ export default function DQAQTradePage() {
                                     </div>
                                     <div className="col-span-2">
                                         <label className="block text-gray-600 mb-1">当前市价 (MTM Price)</label>
-                                        <input type="number" placeholder="留白自动获取" className={getInputClass() + " bg-blue-50"} value={currentMktPrice} onChange={e => setCurrentMktPrice(e.target.value)} />
+                                        <input type="number" placeholder="过期无视手填" className={getInputClass() + " bg-blue-50"} value={currentMktPrice} onChange={e => setCurrentMktPrice(e.target.value)} />
                                     </div>
                                 </div>
                             </div>

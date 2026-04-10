@@ -20,6 +20,31 @@ interface MergedRecord {
     createdAt: any;
 }
 
+// --- 精準過期時間推算 (HKT UTC+8) ---
+const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
+    if (!expDateStr) return Infinity;
+    try {
+        if (currency === 'USD') {
+            const [y, m, d] = expDateStr.split('-').map(Number);
+            const nextDay = new Date(y, m - 1, d + 1);
+            const nextY = nextDay.getFullYear();
+            const nextM = String(nextDay.getMonth() + 1).padStart(2, '0');
+            const nextD = String(nextDay.getDate()).padStart(2, '0');
+            return new Date(`${nextY}-${nextM}-${nextD}T04:00:00+08:00`).getTime();
+        } else if (currency === 'JPY') {
+            return new Date(`${expDateStr}T14:00:00+08:00`).getTime();
+        } else if (currency === 'CNY') {
+            return new Date(`${expDateStr}T15:00:00+08:00`).getTime();
+        } else {
+            return new Date(`${expDateStr}T16:00:00+08:00`).getTime();
+        }
+    } catch (e) {
+        console.error("日期解析錯誤", e);
+        const todayStr = new Date().toISOString().split('T')[0];
+        return todayStr >= expDateStr ? 0 : Infinity; 
+    }
+};
+
 // --- 輔助函數：序列化處理 ---
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) return null;
@@ -240,9 +265,10 @@ export default function DQAQHoldingPage() {
             return data.regularMarketPrice || data.price || data.close || null;
         } catch { return null; }
     };
-    const fetchHistoricalPrices = async (symbol: string, start: string) => {
+    const fetchHistoricalPrices = async (symbol: string, start: string, end?: string) => {
         try {
-            const res = await fetch(`/api/history?symbol=${symbol}&start=${start}`);
+            const apiUrl = `/api/history?symbol=${symbol}&start=${start}${end ? `&end=${end}` : ''}`;
+            const res = await fetch(apiUrl);
             const data = res.ok ? await res.json() : [];
             let list = Array.isArray(data) ? data : (data.historical || data.data || []);
             return list.map((item: any) => ({
@@ -298,18 +324,47 @@ export default function DQAQHoldingPage() {
                 const inputData = replaceNullWithUndefined(record.inputData);
                 const { basic, underlying, sim, periods, sigma } = inputData;
                 
-                // 強制獲取實時最新價並覆寫到 inputData
-                const currentPrice = await fetchQuotePrice(underlying.ticker) ?? underlying.current_price ?? underlying.spot_price;
+                // 【鐵血邏輯】：引入時間戳推算過期時間
+                const contract_end = periods[periods.length - 1].obs_end;
+                const expireTimeMs = getExpirationTimeMs(contract_end, basic.currency);
+                const isExpired = Date.now() >= expireTimeMs;
+
+                let currentPrice = underlying.spot_price;
                 
-                const histRes = await fetchHistoricalPrices(underlying.ticker, sim.history_start_date);
-                const historyPrices = histRes.map((h:any) => h.close);
-                const historyDates = histRes.map((h:any) => h.date);
+                // 過期強制抓取歷史價，存續強制抓取現價
+                if (isExpired) {
+                    const d = new Date(contract_end); d.setDate(d.getDate() - 7);
+                    const startStr = d.toISOString().split('T')[0];
+                    const histRes = await fetchHistoricalPrices(underlying.ticker, startStr, contract_end);
+                    const validPrices = histRes.filter((p:any) => p.date <= contract_end);
+                    if (validPrices.length > 0) {
+                        validPrices.sort((a:any, b:any) => a.date.localeCompare(b.date));
+                        currentPrice = validPrices[validPrices.length - 1].close;
+                    } else {
+                        throw new Error(`無法獲取 ${underlying.ticker} 於到期日 ${contract_end} 之前的有效歷史收盤價，拒絕結算！`);
+                    }
+                } else {
+                    const p = await fetchQuotePrice(underlying.ticker);
+                    if (p !== null) currentPrice = p;
+                }
+
+                const cutoffDate = isExpired ? contract_end : new Date().toISOString().split('T')[0];
+                const histResFull = await fetchHistoricalPrices(underlying.ticker, sim.history_start_date, cutoffDate);
+                const historyPrices = histResFull.map((h:any) => h.close);
+                const historyDates = histResFull.map((h:any) => h.date);
 
                 let fx = sim.sim_fx_rate || 1.0;
                 if (basic.currency !== 'HKD') fx = await fetchRealTimeFxRate(basic.currency) ?? fx;
 
+                // 偏移 valDtStr 以適配 DQ-AQ 引擎的週期判定
+                let valDtStr = new Date().toISOString().split('T')[0];
+                if (isExpired && valDtStr < contract_end) valDtStr = contract_end; 
+                if (!isExpired && valDtStr >= contract_end) {
+                    const d = new Date(contract_end); d.setDate(d.getDate() - 1);
+                    valDtStr = d.toISOString().split('T')[0];
+                }
+
                 const valuator = new DQAQValuator(basic, underlying, sim, periods, sigma);
-                const valDtStr = new Date().toISOString().split('T')[0];
                 const res = valuator.generate_report(currentPrice, historyPrices, historyDates, valDtStr, fx);
 
                 const cleanInput = replaceUndefinedWithNull({
@@ -415,16 +470,45 @@ export default function DQAQHoldingPage() {
                 const inputData = replaceNullWithUndefined(record.inputData);
                 const { basic, underlying, sim, periods, sigma } = inputData;
                 
-                const currentPrice = await fetchQuotePrice(underlying.ticker) ?? underlying.current_price ?? underlying.spot_price;
-                const histRes = await fetchHistoricalPrices(underlying.ticker, sim.history_start_date);
-                const historyPrices = histRes.map((h:any) => h.close);
-                const historyDates = histRes.map((h:any) => h.date);
+                // 【鐵血邏輯】：使用精準到小時的市場過期時間判定
+                const contract_end = periods[periods.length - 1].obs_end;
+                const expireTimeMs = getExpirationTimeMs(contract_end, basic.currency);
+                const isExpired = Date.now() >= expireTimeMs;
+
+                let currentPrice = underlying.spot_price;
+                if (isExpired) {
+                    const d = new Date(contract_end); d.setDate(d.getDate() - 7);
+                    const startStr = d.toISOString().split('T')[0];
+                    const histRes = await fetchHistoricalPrices(underlying.ticker, startStr, contract_end);
+                    const validPrices = histRes.filter((p:any) => p.date <= contract_end);
+                    if (validPrices.length > 0) {
+                        validPrices.sort((a:any, b:any) => a.date.localeCompare(b.date));
+                        currentPrice = validPrices[validPrices.length - 1].close;
+                    } else {
+                        throw new Error(`無法獲取 ${underlying.ticker} 於到期日 ${contract_end} 的有效歷史收盤價，拒絕結算！`);
+                    }
+                } else {
+                    const p = await fetchQuotePrice(underlying.ticker);
+                    if (p !== null) currentPrice = p;
+                }
+
+                const cutoffDate = isExpired ? contract_end : new Date().toISOString().split('T')[0];
+                const histResFull = await fetchHistoricalPrices(underlying.ticker, sim.history_start_date, cutoffDate);
+                const historyPrices = histResFull.map((h:any) => h.close);
+                const historyDates = histResFull.map((h:any) => h.date);
 
                 let fx = sim.sim_fx_rate || 1.0;
                 if (basic.currency !== 'HKD') fx = await fetchRealTimeFxRate(basic.currency) ?? fx;
 
+                // 偏移 valDtStr
+                let valDtStr = new Date().toISOString().split('T')[0];
+                if (isExpired && valDtStr < contract_end) valDtStr = contract_end; 
+                if (!isExpired && valDtStr >= contract_end) {
+                    const d = new Date(contract_end); d.setDate(d.getDate() - 1);
+                    valDtStr = d.toISOString().split('T')[0];
+                }
+
                 const valuator = new DQAQValuator(basic, underlying, sim, periods, sigma);
-                const valDtStr = new Date().toISOString().split('T')[0];
                 const res = valuator.generate_report(currentPrice, historyPrices, historyDates, valDtStr, fx);
                 
                 const cleanInput = replaceUndefinedWithNull({
@@ -451,7 +535,7 @@ export default function DQAQHoldingPage() {
             if (activeDbTab.includes('died')) fetchDbRecords(activeDbTab);
 
             if (errCount > 0) alert(`出錯！有 ${errCount} 筆數據重新計算後發現仍在存續！請重新檢查 died 庫內容！`);
-            else alert('歷史持倉刷新校驗完畢！');
+            else alert('歷史持倉刷新校驗完畢！數據已基於歷史收盤價精準覆寫。');
         } catch(e:any) { alert("刷新失敗: " + e.message); } finally { setLoadingDied(false); }
     };
 
@@ -592,7 +676,6 @@ export default function DQAQHoldingPage() {
             status: res.status_msg, currency: basic.currency, dir: basic.contract_type, leverage: basic.leverage,
             koInPrice: strikePrice.toFixed(4), koOutPrice: koPrice.toFixed(4),
             koInPct: fmtPct(basic.strike_pct), koOutPct: fmtPct(basic.ko_barrier_pct),
-            // 【修復】歷史庫的最終結算股數讀取引擎期望總股數（對於已結束合約，期望即為最終事實）
             settled: res.expected_shares || 0, 
             expRate: res.exp_completion_rate || 0,
             fullPrice: res.val_full_usd || 0
@@ -831,7 +914,7 @@ export default function DQAQHoldingPage() {
                                         </td>
                                         <td className="px-3 py-2 text-center whitespace-nowrap">
                                             <button onClick={() => setEditRecordModal({show: true, record: r, rawJson: JSON.stringify(r, null, 4)})} className="text-blue-600 hover:text-blue-800 mx-1 p-1 hover:bg-blue-50 rounded transition-colors" title="修改 JSON"><FileJson size={16}/></button>
-                                            <button onClick={() => handleDeleteRecord(r.id)} className="text-red-500 hover:text-red-700 mx-1 p-1 hover:bg-red-50 rounded transition-colors" title="永久刪除"><Trash2 size={16}/></button>
+                                            <button onClick={() => handleDeleteRecord(r.id)} className="text-red-500 hover:text-red-700 mx-1 p-1 hover:bg-red-50 rounded transition-colors" title="永久删除"><Trash2 size={16}/></button>
                                         </td>
                                     </tr>
                                 ))}

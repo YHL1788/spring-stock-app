@@ -33,6 +33,35 @@ const replaceUndefinedWithNull = (obj: any): any => {
     return newObj;
 };
 
+// --- 精準過期時間推算 (HKT UTC+8) ---
+const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
+    if (!expDateStr) return Infinity;
+    try {
+        if (currency === 'USD') {
+            // 美股：到期日次日 04:00 HKT (嚴格處理月份/年份進位)
+            const [y, m, d] = expDateStr.split('-').map(Number);
+            const nextDay = new Date(y, m - 1, d + 1);
+            const nextY = nextDay.getFullYear();
+            const nextM = String(nextDay.getMonth() + 1).padStart(2, '0');
+            const nextD = String(nextDay.getDate()).padStart(2, '0');
+            return new Date(`${nextY}-${nextM}-${nextD}T04:00:00+08:00`).getTime();
+        } else if (currency === 'JPY') {
+            // 日股：到期日當天 14:00 HKT (即東京 15:00)
+            return new Date(`${expDateStr}T14:00:00+08:00`).getTime();
+        } else if (currency === 'CNY') {
+            // A股：到期日當天 15:00 HKT
+            return new Date(`${expDateStr}T15:00:00+08:00`).getTime();
+        } else {
+            // 港股 (HKD/預設)：到期日當天 16:00 HKT
+            return new Date(`${expDateStr}T16:00:00+08:00`).getTime();
+        }
+    } catch (e) {
+        console.error("日期解析錯誤", e);
+        const todayStr = new Date().toISOString().split('T')[0];
+        return todayStr >= expDateStr ? 0 : Infinity; // 容錯降級
+    }
+};
+
 // --- 可排序篩選表頭組件 ---
 const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onFilter, align='left' }: any) => {
     const justifyClass = align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start';
@@ -286,33 +315,44 @@ export default function OptionHoldingPage() {
     };
 
     // --- 核心計算與狀態判斷邏輯 ---
-    const evaluateOption = async (mergedRecord: MergedRecord, isHistoricalMode: boolean) => {
+    const evaluateOption = async (mergedRecord: MergedRecord) => {
         const { inputData, outputData } = mergedRecord;
         const { basic, underlying, dates } = inputData;
         
-        const todayStr = new Date().toISOString().split('T')[0];
-        const isExpired = todayStr >= dates.expiryDate;
+        // 【鐵血邏輯】：使用精準到小時的市場過期時間判定
+        const expireTimeMs = getExpirationTimeMs(dates.expiryDate, basic.currency);
+        const isExpired = Date.now() >= expireTimeMs;
         const status = isExpired ? 'Expired (已失效)' : 'Living (存續中)';
 
         let spot = Number(underlying.spotPrice);
 
-        // 如果是過期的期權，或者我們在跑歷史校驗(isHistoricalMode)，必須強制抓取到期日的歷史價格
         if (isExpired) {
             const d = new Date(dates.expiryDate);
-            d.setDate(d.getDate() - 7); // 往前推7天防節假日
+            d.setDate(d.getDate() - 7); // 往前推7天防節假日無數據
             const startStr = d.toISOString().split('T')[0];
+            
             const histPrices = await fetchHistoricalPrices(underlying.ticker, startStr, dates.expiryDate);
+            
             if (histPrices && histPrices.length > 0) {
-                spot = histPrices[histPrices.length - 1].close;
+                // 嚴格過濾掉大於到期日的數據
+                const validPrices = histPrices.filter((p: {date: string, close: number}) => p.date <= dates.expiryDate);
+                
+                if (validPrices.length > 0) {
+                    // 按日期排序後取最後一天
+                    validPrices.sort((a: {date: string}, b: {date: string}) => a.date.localeCompare(b.date));
+                    spot = validPrices[validPrices.length - 1].close;
+                } else {
+                    throw new Error(`無法獲取 ${underlying.ticker} 於到期日 ${dates.expiryDate} 之前的有效歷史收盤價，為保證復盤準確性，拒絕結算！`);
+                }
             } else {
-                // 容錯降級：如果抓不到歷史價格，嘗試抓取最新現價
-                const p = await fetchQuotePrice(underlying.ticker);
-                if (p !== null) spot = p;
+                throw new Error(`無法獲取 ${underlying.ticker} 於到期日 ${dates.expiryDate} 的歷史收盤價，為保證復盤準確性，拒絕結算！`);
             }
         } else {
             // 未過期，抓取最新現價
             const p = await fetchQuotePrice(underlying.ticker);
-            if (p !== null) spot = p;
+            if (p !== null) {
+                spot = p;
+            }
         }
 
         // 金融計算
@@ -392,7 +432,7 @@ export default function OptionHoldingPage() {
             }
 
             for (const mergedRecord of currentLiving) {
-                const res = await evaluateOption(mergedRecord, false);
+                const res = await evaluateOption(mergedRecord);
                 delete res.cleanInput.id; delete res.cleanOutput.id;
 
                 if (!res.isExpired) {
@@ -436,7 +476,7 @@ export default function OptionHoldingPage() {
             }
 
             for (const mergedRecord of currentDied) {
-                const res = await evaluateOption(mergedRecord, true);
+                const res = await evaluateOption(mergedRecord);
                 delete res.cleanInput.id; delete res.cleanOutput.id;
 
                 if (!res.isExpired) {
@@ -532,7 +572,7 @@ export default function OptionHoldingPage() {
     const processedRisk = useMemo(() => {
         const rows: any[] = [];
         livingRecords.forEach(r => {
-            const out = r.outputData || {}; // FIX: Retrieve out from outputData
+            const out = r.outputData || {}; 
             const basic = r.inputData?.basic || {};
             const und = r.inputData?.underlying || {};
             const qty = Number(basic.qty) || 0;

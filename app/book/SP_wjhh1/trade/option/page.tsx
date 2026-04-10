@@ -36,6 +36,35 @@ function uuidv4() {
 // 格式化數字
 const fmtMoney = (val: number, c: string = "") => new Intl.NumberFormat('en-US', { style: 'currency', currency: c || 'USD' }).format(val);
 
+// --- 精準過期時間推算 (HKT UTC+8) ---
+const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
+    if (!expDateStr) return Infinity;
+    try {
+        if (currency === 'USD') {
+            // 美股：到期日次日 04:00 HKT (嚴格處理月份/年份進位)
+            const [y, m, d] = expDateStr.split('-').map(Number);
+            const nextDay = new Date(y, m - 1, d + 1);
+            const nextY = nextDay.getFullYear();
+            const nextM = String(nextDay.getMonth() + 1).padStart(2, '0');
+            const nextD = String(nextDay.getDate()).padStart(2, '0');
+            return new Date(`${nextY}-${nextM}-${nextD}T04:00:00+08:00`).getTime();
+        } else if (currency === 'JPY') {
+            // 日股：到期日當天 14:00 HKT (即東京 15:00)
+            return new Date(`${expDateStr}T14:00:00+08:00`).getTime();
+        } else if (currency === 'CNY') {
+            // A股：到期日當天 15:00 HKT
+            return new Date(`${expDateStr}T15:00:00+08:00`).getTime();
+        } else {
+            // 港股 (HKD/預設)：到期日當天 16:00 HKT
+            return new Date(`${expDateStr}T16:00:00+08:00`).getTime();
+        }
+    } catch (e) {
+        console.error("日期解析錯誤", e);
+        const todayStr = new Date().toISOString().split('T')[0];
+        return todayStr >= expDateStr ? 0 : Infinity; // 容錯降級
+    }
+};
+
 interface TransactionRecord {
     id: string;
     tradeId?: string;
@@ -182,38 +211,49 @@ export default function OptionTradePage() {
             const newTradeId = uuidv4();
             setCurrentTradeId(newTradeId);
 
-            // 1. 狀態流轉判斷
-            const todayStr = new Date().toISOString().split('T')[0];
-            const isExpired = todayStr >= dates.expiryDate;
+            // 1. 狀態流轉判斷 (使用精準過期時間)
+            const expireTimeMs = getExpirationTimeMs(dates.expiryDate, basic.currency);
+            const isExpired = Date.now() >= expireTimeMs;
             const status = isExpired ? 'Expired (已失效)' : 'Living (存續中)';
 
-            // 2. 自動補全空缺參數 (修正類型推斷，統一轉為數值後再回填字串)
-            let finalSpotNum = Number(underlying.spotPrice);
-            if (underlying.spotPrice === '') {
-                // 【核心修正】：如果已經嚴格過期（到期日 < 今天），則抓取歷史收盤價，否則抓最新現價
-                if (dates.expiryDate < todayStr) {
-                    setFetchStatus(`獲取 ${dates.expiryDate} 歷史收盤價...`);
-                    // 往前推 7 天以防止週末或國定假日導致抓不到數據
-                    const d = new Date(dates.expiryDate);
-                    d.setDate(d.getDate() - 7);
-                    const startStr = d.toISOString().split('T')[0];
-                    
-                    const histPrices = await fetchHistoricalPrices(underlying.ticker, startStr, dates.expiryDate);
-                    if (histPrices && histPrices.length > 0) {
-                        finalSpotNum = histPrices[histPrices.length - 1].close;
+            // 2. 自動補全空缺參數
+            let finalSpotNum = 0;
+
+            // 【鐵血邏輯】：只要過期，無視前端是否留白或手填，強制抓取歷史價格！拒絕現價兜底！
+            if (isExpired) {
+                setFetchStatus(`獲取 ${dates.expiryDate} 歷史收盤價...`);
+                // 往前推 7 天以防止週末或國定假日導致抓不到數據
+                const d = new Date(dates.expiryDate);
+                d.setDate(d.getDate() - 7);
+                const startStr = d.toISOString().split('T')[0];
+                
+                const histPrices = await fetchHistoricalPrices(underlying.ticker, startStr, dates.expiryDate);
+                if (histPrices && histPrices.length > 0) {
+                    // 嚴格過濾，只取不大於到期日的數據
+                    const validPrices = histPrices.filter((p: {date: string, close: number}) => p.date <= dates.expiryDate);
+                    if (validPrices.length > 0) {
+                        validPrices.sort((a: {date: string}, b: {date: string}) => a.date.localeCompare(b.date));
+                        finalSpotNum = validPrices[validPrices.length - 1].close;
+                        // 強制覆寫前端的 spotPrice，保證後續入庫與計算使用真實歷史價
+                        setUnderlying(p => ({...p, spotPrice: String(finalSpotNum)}));
                     } else {
-                        // 降級處理：如果歷史數據接口異常，回退到抓取現價
-                        const fetchedSpot = await fetchQuotePrice(underlying.ticker);
-                        if (!fetchedSpot) throw new Error("無法獲取歷史收盤價或現價，請手動輸入");
-                        finalSpotNum = fetchedSpot;
+                        // 絕對拒絕降級兜底，直接阻斷報錯
+                        throw new Error(`無法獲取 ${underlying.ticker} 於到期日 ${dates.expiryDate} 之前的有效歷史收盤價，為保證結算與復盤的絕對準確性，已拒絕本次結算！`);
                     }
                 } else {
+                    throw new Error(`無法獲取 ${underlying.ticker} 於到期日 ${dates.expiryDate} 的歷史收盤價，為保證結算與復盤的絕對準確性，已拒絕本次結算！`);
+                }
+            } else {
+                // 未過期：如果前端留白，則抓取最新現價；如果前端有填，尊重前端手填（用於壓力測試）
+                if (underlying.spotPrice === '') {
                     setFetchStatus('獲取最新現價...');
                     const fetchedSpot = await fetchQuotePrice(underlying.ticker);
-                    if (!fetchedSpot) throw new Error("無法自動獲取現價，請手動輸入");
+                    if (fetchedSpot === null) throw new Error("無法自動獲取現價，請手動輸入");
                     finalSpotNum = fetchedSpot;
+                    setUnderlying(p => ({...p, spotPrice: String(finalSpotNum)}));
+                } else {
+                    finalSpotNum = Number(underlying.spotPrice);
                 }
-                setUnderlying(p => ({...p, spotPrice: String(finalSpotNum)}));
             }
 
             let finalFxNum = Number(basic.fxRate);
@@ -559,7 +599,7 @@ export default function OptionTradePage() {
                                 <div><label className="block text-xs font-medium text-gray-600 mb-1">執行價 (Strike)</label><input type="number" step="0.01" name="strike" value={underlying.strike} onChange={handleUnderlyingChange} className="w-full border rounded p-2 text-sm font-mono font-bold text-blue-700 focus:ring-2 focus:ring-blue-500 outline-none" /></div>
                                 <div>
                                     <label className="block text-xs font-medium text-gray-600 mb-1 flex justify-between">
-                                        <span>當前價 (Spot)</span><span className="text-[10px] text-gray-400">留白自動抓取</span>
+                                        <span>當前價 (Spot)</span><span className="text-[10px] text-gray-400">過期無視手填</span>
                                     </label>
                                     <input type="number" step="0.01" name="spotPrice" value={underlying.spotPrice} onChange={handleUnderlyingChange} placeholder="Auto Fetch" className="w-full border rounded p-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" />
                                 </div>
@@ -588,6 +628,115 @@ export default function OptionTradePage() {
                     </button>
                 </div>
             </div>
+
+            {/* === 子操作框 Modal (包含測算報告與入庫按鈕) === */}
+            {simResult && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in p-4">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col relative overflow-hidden">
+                        
+                        <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50 flex-shrink-0">
+                            <div>
+                                <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                                    <CheckCircle2 className="text-green-500" size={24} />
+                                    計算完成 - 期權定價報告
+                                </h3>
+                                <p className="text-sm text-gray-500 mt-1">請確認下方測算結果與狀態後，再進行保存入庫。</p>
+                            </div>
+                            <button onClick={() => setSimResult(null)} className="text-gray-400 hover:text-gray-600 bg-white p-1 rounded-full shadow-sm border"><X size={24}/></button>
+                        </div>
+
+                        <div className="p-6 overflow-y-auto flex-1 bg-white space-y-6">
+                            
+                            <div className="border-b border-gray-200 pb-4">
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <h2 className="text-lg font-bold text-gray-900">{simResult.name}</h2>
+                                    </div>
+                                    <div className={`px-3 py-1 rounded text-sm font-bold ${simResult.isExpired ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'}`}>
+                                        {simResult.status}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* 核心數據面板 */}
+                            <div className="grid grid-cols-2 gap-6">
+                                <div className="bg-gray-50 p-4 rounded-lg">
+                                    <p className="text-sm text-gray-500 mb-1">名義本金 (Notional)</p>
+                                    <p className={`text-xl font-bold font-mono ${simResult.notional > 0 ? 'text-blue-600' : 'text-orange-600'}`}>
+                                        {fmtMoney(simResult.notional, basic.currency)}
+                                    </p>
+                                </div>
+                                <div className="bg-gray-50 p-4 rounded-lg">
+                                    <p className="text-sm text-gray-500 mb-1">結算標的價 (Spot)</p>
+                                    <p className="text-xl font-bold font-mono text-indigo-700">
+                                        {simResult.spotPrice.toFixed(2)}
+                                        {simResult.isExpired && <span className="text-xs text-orange-500 ml-2">(到期日真實歷史價)</span>}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* 收益分解面板 */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                <div className="bg-gray-50 p-4 rounded-lg border">
+                                    <h3 className="text-sm font-medium text-gray-500 mb-2">期權金 (已實現)</h3>
+                                    <p className={`text-xl font-bold font-mono ${simResult.realizedPremium >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {simResult.realizedPremium > 0 ? '+' : ''}{fmtMoney(simResult.realizedPremium, basic.currency)}
+                                    </p>
+                                </div>
+                                <div className="bg-gray-50 p-4 rounded-lg border">
+                                    <h3 className="text-sm font-medium text-gray-500 mb-2">預期收益 (未實現)</h3>
+                                    <p className={`text-xl font-bold font-mono ${simResult.unrealizedPnl > 0 ? 'text-green-600' : simResult.unrealizedPnl < 0 ? 'text-red-600' : 'text-gray-800'}`}>
+                                        {simResult.unrealizedPnl > 0 ? '+' : ''}{fmtMoney(simResult.unrealizedPnl, basic.currency)}
+                                    </p>
+                                </div>
+                                <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                                    <h3 className="text-sm font-bold text-blue-800 mb-2">{simResult.isExpired ? '歷史總收益 (復盤)' : '當前總收益'}</h3>
+                                    <p className={`text-xl font-bold font-mono ${simResult.totalPnl > 0 ? 'text-green-600' : simResult.totalPnl < 0 ? 'text-red-600' : 'text-gray-800'}`}>
+                                        {simResult.totalPnl > 0 ? '+' : ''}{fmtMoney(simResult.totalPnl, basic.currency)}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* 接貨判定 */}
+                            {simResult.isExpired && (
+                                <div className="mt-6 border-t pt-4">
+                                    <h4 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
+                                        {simResult.hasDelivery ? <AlertCircle className="text-orange-500"/> : <CheckCircle2 className="text-gray-400"/>}
+                                        到期結算判定
+                                    </h4>
+                                    {!simResult.hasDelivery ? (
+                                        <div className="bg-gray-50 border border-dashed rounded-lg p-6 text-center text-gray-500">
+                                            期權處於價外 (OTM)，未觸發行權，<strong className="text-gray-700">無交收接貨流水產生</strong>。
+                                        </div>
+                                    ) : (
+                                        <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 text-orange-800 text-sm">
+                                            ⚠️ <strong>已觸發實盤交收。</strong> 具體的交收接貨流水已自動生成並加載至頁面下方的 <strong>【接貨展示模塊】</strong>。請在完成本彈窗保存後，前往下方模塊核對並點擊覆寫入庫。
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="px-6 py-4 border-t bg-gray-50 flex justify-between items-center flex-shrink-0">
+                            <div className="text-sm">
+                                <span className="text-gray-600 mr-2">系統判定錄入路徑: </span>
+                                {!simResult.isExpired ? (
+                                    <span className="font-bold text-green-600 flex items-center gap-1 inline-flex"><CheckCircle2 size={16}/> Living (存續庫)</span>
+                                ) : (
+                                    <span className="font-bold text-orange-600 flex items-center gap-1 inline-flex"><AlertCircle size={16}/> Died (已結束庫)</span>
+                                )}
+                            </div>
+                            <div className="flex gap-3">
+                                <button onClick={() => setSimResult(null)} className="px-5 py-2 rounded-md text-gray-600 font-bold bg-white border hover:bg-gray-100 transition-colors">取消</button>
+                                <button onClick={handleConfirmSave} disabled={isSaving} className={`px-6 py-2 rounded-md text-white font-bold flex items-center gap-2 transition-all shadow-md ${!simResult.isExpired ? 'bg-green-600 hover:bg-green-700' : 'bg-orange-600 hover:bg-orange-700'}`}>
+                                    {isSaving ? <Loader2 className="animate-spin" size={18}/> : <Save size={18}/>} 確認入庫 ({!simResult.isExpired ? 'Living' : 'Died'})
+                                </button>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            )}
 
             {/* === 模塊 2：接貨展示模塊 (獨立模塊) === */}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
@@ -721,110 +870,18 @@ export default function OptionTradePage() {
                 )}
             </div>
 
-            {/* --- Modals --- */}
-            {/* 測算與分發確認 Modal (精簡版) */}
-            {simResult && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-xl shadow-2xl p-0 w-full max-w-3xl flex flex-col overflow-hidden max-h-[90vh]">
-                        <div className="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
-                            <h3 className="font-bold text-xl flex items-center gap-2 text-gray-800">
-                                <CheckCircle2 className="text-green-600"/> 期權測算與入庫預覽
-                            </h3>
-                            <button onClick={() => setSimResult(null)} className="text-gray-400 hover:text-gray-600"><X size={24}/></button>
-                        </div>
-                        
-                        <div className="p-6 overflow-y-auto space-y-6 bg-white">
-                            <div>
-                                <div className="flex items-center justify-between mb-4 border-l-4 border-blue-500 pl-3">
-                                    <div>
-                                        <h4 className="text-lg font-bold text-gray-800">{simResult.name}</h4>
-                                        <p className="text-sm text-gray-500">
-                                            將分發至 <span className="font-mono font-bold text-blue-600 mx-1">{simResult.isExpired ? 'Died (歷史庫)' : 'Living (存續庫)'}</span> ({simResult.rawData.basic.currency})
-                                        </p>
-                                    </div>
-                                    <div className={`px-4 py-1.5 rounded-full text-sm font-bold ${simResult.isExpired ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'}`}>
-                                        {simResult.status}
-                                    </div>
-                                </div>
-                                
-                                <div className="grid grid-cols-2 gap-4 mb-4">
-                                    <div className="bg-gray-50 p-4 rounded-lg border">
-                                        <p className="text-xs text-gray-500 mb-1">底層股數 (Qty)</p>
-                                        <p className={`text-lg font-bold font-mono ${simResult.rawData.basic.qty > 0 ? 'text-green-600' : 'text-red-600'}`}>{simResult.rawData.basic.qty}</p>
-                                    </div>
-                                    <div className="bg-gray-50 p-4 rounded-lg border">
-                                        <p className="text-xs text-gray-500 mb-1">名義金額 (Notional)</p>
-                                        <p className={`text-lg font-bold font-mono ${simResult.notional > 0 ? 'text-blue-600' : 'text-orange-600'}`}>
-                                            {fmtMoney(simResult.notional)}
-                                        </p>
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-3 gap-4">
-                                    <div className="bg-gray-50 p-4 rounded-lg border">
-                                        <p className="text-xs text-gray-500 mb-1">期權金 (已實現)</p>
-                                        <p className={`text-lg font-bold font-mono ${simResult.realizedPremium > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                            {simResult.realizedPremium > 0 ? '+' : ''}{fmtMoney(simResult.realizedPremium)}
-                                        </p>
-                                    </div>
-                                    <div className="bg-gray-50 p-4 rounded-lg border">
-                                        <p className="text-xs text-gray-500 mb-1">預期收益 (未實現)</p>
-                                        <p className={`text-lg font-bold font-mono ${simResult.unrealizedPnl > 0 ? 'text-green-600' : simResult.unrealizedPnl < 0 ? 'text-red-600' : 'text-gray-800'}`}>
-                                            {simResult.unrealizedPnl > 0 ? '+' : ''}{fmtMoney(simResult.unrealizedPnl)}
-                                        </p>
-                                    </div>
-                                    <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                                        <p className="text-xs text-blue-700 mb-1 font-bold">{simResult.isExpired ? '歷史總收益 (復盤)' : '當前總收益'}</p>
-                                        <p className={`text-lg font-bold font-mono ${simResult.totalPnl > 0 ? 'text-green-600' : simResult.totalPnl < 0 ? 'text-red-600' : 'text-gray-800'}`}>
-                                            {simResult.totalPnl > 0 ? '+' : ''}{fmtMoney(simResult.totalPnl)}
-                                        </p>
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* 提示交收狀態，但不顯示表格 */}
-                            {simResult.isExpired && (
-                                <div className="mt-6 border-t pt-4">
-                                    <h4 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
-                                        {simResult.hasDelivery ? <AlertCircle className="text-orange-500"/> : <CheckCircle2 className="text-gray-400"/>}
-                                        到期結算判定
-                                    </h4>
-                                    
-                                    {!simResult.hasDelivery ? (
-                                        <div className="bg-gray-50 border border-dashed rounded-lg p-6 text-center text-gray-500">
-                                            期權處於價外 (OTM)，未觸發行權，<strong className="text-gray-700">無交收接貨流水產生</strong>。
-                                        </div>
-                                    ) : (
-                                        <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 text-orange-800 text-sm">
-                                            ⚠️ <strong>已觸發實盤交收。</strong> 具體的交收接貨流水已自動生成並加載至頁面下方的 <strong>【接貨展示模塊】</strong>。請在完成本彈窗保存後，前往下方模塊核對並點擊覆寫入庫。
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-
-                        <div className="px-6 py-4 border-t bg-gray-50 flex justify-end gap-4">
-                            <button onClick={() => setSimResult(null)} className="px-6 py-2 rounded-lg text-gray-600 font-bold bg-white border hover:bg-gray-100 transition-colors">取消返回</button>
-                            <button onClick={handleConfirmSave} disabled={isSaving} className="px-6 py-2 rounded-lg text-white font-bold bg-blue-600 hover:bg-blue-700 flex items-center gap-2 transition-all shadow-md">
-                                {isSaving ? <Loader2 className="animate-spin" size={18}/> : <Save size={18}/>} 確認保存輸入與計算結果
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
             {/* 修改 Raw JSON 彈窗 */}
             {editRecordModal && (
                 <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
                     <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-5xl flex flex-col h-[85vh]">
                         <div className="flex justify-between items-center mb-4 border-b pb-4">
-                            <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700"><FileJson size={20}/> 進階修改記錄 - {editRecordModal?.record?.id}</h3>
+                            <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700"><FileJson size={20}/> 進階修改記錄 - {editRecordModal.record?.id}</h3>
                             <button onClick={() => setEditRecordModal(null)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
                         </div>
                         <p className="text-xs text-gray-500 mb-2 border-l-2 border-orange-400 pl-2">
                             警告：直接修改 Raw JSON 屬於高階操作，請確保 JSON 格式合法且結構正確，否則可能會導致頁面崩潰或邏輯錯誤。
                         </p>
-                        <textarea className="flex-1 w-full border rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none" value={editRecordModal?.rawJson || ''} onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)} />
+                        <textarea className="flex-1 w-full border rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none" value={editRecordModal.rawJson} onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)} />
                         <div className="flex justify-end gap-3 pt-2 border-t">
                             <button onClick={() => setEditRecordModal(null)} className="px-5 py-2 bg-gray-100 text-gray-700 rounded-md text-sm font-medium">取消</button>
                             <button onClick={handleSaveRecordEdit} className="px-5 py-2 bg-purple-600 text-white rounded-md text-sm font-bold flex gap-2"><Save size={16}/> 保存覆蓋</button>

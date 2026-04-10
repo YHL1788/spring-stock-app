@@ -20,6 +20,31 @@ import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'fi
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { FCNPricer, FCNParams, FCNResult } from '@/app/lib/fcnPricer';
 
+// --- 精準過期時間推算 (HKT UTC+8) ---
+const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
+    if (!expDateStr) return Infinity;
+    try {
+        if (currency === 'USD') {
+            const [y, m, d] = expDateStr.split('-').map(Number);
+            const nextDay = new Date(y, m - 1, d + 1);
+            const nextY = nextDay.getFullYear();
+            const nextM = String(nextDay.getMonth() + 1).padStart(2, '0');
+            const nextD = String(nextDay.getDate()).padStart(2, '0');
+            return new Date(`${nextY}-${nextM}-${nextD}T04:00:00+08:00`).getTime();
+        } else if (currency === 'JPY') {
+            return new Date(`${expDateStr}T14:00:00+08:00`).getTime();
+        } else if (currency === 'CNY') {
+            return new Date(`${expDateStr}T15:00:00+08:00`).getTime();
+        } else {
+            return new Date(`${expDateStr}T16:00:00+08:00`).getTime();
+        }
+    } catch (e) {
+        console.error("日期解析錯誤", e);
+        const todayStr = new Date().toISOString().split('T')[0];
+        return todayStr >= expDateStr ? 0 : Infinity;
+    }
+};
+
 // --- 辅助函数：序列化处理 ---
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) return null;
@@ -336,110 +361,127 @@ export default function FCNHoldingPage() {
         setIsHKDView(!isHKDView);
     };
 
+    // --- 核心評估邏輯 (封裝復用) ---
+    const evaluateFCN = async (mergedRecord: MergedRecord) => {
+        const inputData = replaceNullWithUndefined(mergedRecord.inputData);
+        const outputData = replaceNullWithUndefined(mergedRecord.outputData);
+        const pricerParams = inputData.pricerParams as FCNParams;
+        if (!pricerParams) throw new Error("Missing pricerParams");
+
+        // 【鐵血邏輯】：使用精準到小時的市場過期時間判定
+        const last_obs_date = pricerParams.obs_dates[pricerParams.obs_dates.length - 1];
+        const expireTimeMs = getExpirationTimeMs(last_obs_date, pricerParams.market || 'HKD');
+        const isExpired = Date.now() >= expireTimeMs;
+
+        const fetchedSpots = await Promise.all(pricerParams.tickers.map(async (t, i) => {
+            if (isExpired) {
+                const d = new Date(last_obs_date); d.setDate(d.getDate() - 7);
+                const startStr = d.toISOString().split('T')[0];
+                const histPrices = await fetchHistoricalPrices(t, startStr, last_obs_date);
+                
+                // 嚴格過濾掉大於到期日的數據
+                const validPrices = histPrices.filter((p:any) => p.date <= last_obs_date);
+                if (validPrices.length > 0) {
+                    validPrices.sort((a:any, b:any) => a.date.localeCompare(b.date));
+                    return validPrices[validPrices.length - 1].close;
+                }
+                throw new Error(`無法獲取 ${t} 於最後觀察日 ${last_obs_date} 之前的有效歷史收盤價，拒絕結算！`);
+            } else {
+                const p = await fetchQuotePrice(t);
+                return p !== null ? p : pricerParams.initial_spots[i];
+            }
+        }));
+        pricerParams.current_spots = fetchedSpots;
+
+        const today = new Date(); today.setHours(0,0,0,0);
+        const hasPastObservation = pricerParams.obs_dates.some(d => new Date(d) <= today);
+        const cutoffDate = isExpired ? last_obs_date : new Date().toISOString().split('T')[0];
+
+        if (hasPastObservation && pricerParams.history_start_date) {
+            const histMap: any = {};
+            await Promise.all(pricerParams.tickers.map(async (t) => {
+                histMap[t] = await fetchHistoricalPrices(t, pricerParams.history_start_date!, cutoffDate);
+            }));
+            pricerParams.hist_prices = histMap;
+        }
+
+        if (pricerParams.market !== 'HKD') {
+            const res = await fetch(`/api/quote?currency=${pricerParams.market}`);
+            const data = res.ok ? await res.json() : null;
+            pricerParams.fx_rate = data?.rate || pricerParams.fx_rate || 1.0;
+        } else {
+            pricerParams.fx_rate = 1.0;
+        }
+        
+        const pricer = new FCNPricer(pricerParams);
+        const newResult = pricer.simulate_price();
+
+        let deliveryRecord = null;
+        if (newResult.status === 'Terminated_Delivery') {
+            const worstIdx = newResult.loss_attribution.findIndex((val: number) => val === 1.0);
+            if (worstIdx !== -1) {
+                const ticker = pricerParams.tickers[worstIdx];
+                const strikePrice = pricerParams.initial_spots[worstIdx] * pricerParams.strike_pct;
+                const quantity = pricerParams.total_notional / strikePrice;
+                const amountNoFee = strikePrice * quantity;
+                
+                deliveryRecord = {
+                    tradeId: mergedRecord.tradeId,
+                    date: pricerParams.pay_dates[pricerParams.pay_dates.length - 1],
+                    account: pricerParams.account_name || inputData.inputParams?.account_name || '',
+                    market: pricerParams.market === 'USD' ? 'US' : pricerParams.market === 'JPY' ? 'JP' : pricerParams.market === 'CNY' ? 'CH' : 'HK',
+                    executor: pricerParams.executor || inputData.inputParams?.executor || '',
+                    type: "FCN接货",
+                    stockCode: ticker,
+                    stockName: pricerParams.ticker_name?.[worstIdx] || ticker,
+                    direction: "BUY",
+                    quantity: Math.round(quantity),
+                    priceNoFee: strikePrice,
+                    amountNoFee: amountNoFee,
+                    fee: 0,
+                    amountWithFee: amountNoFee,
+                    priceWithFee: amountNoFee / quantity,
+                    hkdAmount: amountNoFee * (pricerParams.fx_rate || 1.0)
+                };
+            }
+        }
+
+        const cleanInput = replaceUndefinedWithNull({ ...inputData, pricerParams });
+        delete cleanInput.id; delete cleanInput.inputId; delete cleanInput.outputId;
+
+        const cleanOutput = replaceUndefinedWithNull({ ...outputData, result: newResult });
+        delete cleanOutput.id; delete cleanOutput.inputId; delete cleanOutput.outputId;
+
+        return { newResult, deliveryRecord, cleanInput, cleanOutput };
+    };
+
     // --- 刷新当前持仓 (Living) ---
     const handleRefreshLiving = async () => {
         setLoadingLiving(true);
         let deliveredCount = 0;
         try {
             const currentLiving = await fetchMergedRecords('living');
-            
-            if (currentLiving.length === 0) {
-                setLivingRecords([]);
-                setLoadingLiving(false);
-                return;
-            }
+            if (currentLiving.length === 0) { setLoadingLiving(false); return; }
 
             for (const mergedRecord of currentLiving) {
-                const inputData = replaceNullWithUndefined(mergedRecord.inputData);
-                const outputData = replaceNullWithUndefined(mergedRecord.outputData);
-                const pricerParams = inputData.pricerParams as FCNParams;
-                if (!pricerParams) continue;
+                const { newResult, deliveryRecord, cleanInput, cleanOutput } = await evaluateFCN(mergedRecord);
                 
-                const fetchedSpots = await Promise.all(pricerParams.tickers.map(async (t, i) => {
-                    const p = await fetchQuotePrice(t);
-                    return p !== null ? p : pricerParams.initial_spots[i];
-                }));
-                pricerParams.current_spots = fetchedSpots;
-                
-                const today = new Date(); today.setHours(0,0,0,0);
-                const hasPastObservation = pricerParams.obs_dates.some(d => new Date(d) <= today);
-                if (hasPastObservation && pricerParams.history_start_date) {
-                    const histMap: any = {};
-                    await Promise.all(pricerParams.tickers.map(async (t) => {
-                        histMap[t] = await fetchHistoricalPrices(t, pricerParams.history_start_date!);
-                    }));
-                    pricerParams.hist_prices = histMap;
-                }
-
-                if (pricerParams.market !== 'HKD') {
-                    const res = await fetch(`/api/quote?currency=${pricerParams.market}`);
-                    const data = res.ok ? await res.json() : null;
-                    pricerParams.fx_rate = data?.rate || pricerParams.fx_rate || 1.0;
-                } else {
-                    pricerParams.fx_rate = 1.0;
-                }
-                
-                const pricer = new FCNPricer(pricerParams);
-                const newResult = pricer.simulate_price();
-                
-                // 保存入库前，务必剔除可能带有旧主键的 id 字段
-                const cleanInputData = replaceUndefinedWithNull({ ...inputData, pricerParams });
-                delete cleanInputData.id; 
-                delete cleanInputData.inputId; 
-                delete cleanInputData.outputId;
-
-                const cleanOutputData = replaceUndefinedWithNull({ ...outputData, result: newResult });
-                delete cleanOutputData.id; 
-                delete cleanOutputData.inputId; 
-                delete cleanOutputData.outputId;
-
                 const status = newResult.status;
-
-                // 【核心修复】：全部使用 setDoc 替代 updateDoc，实现无报错的 Upsert
                 if (['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(status)) {
-                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId), cleanInputData);
-                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_living', mergedRecord.outputId), cleanOutputData);
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId), cleanInput);
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_living', mergedRecord.outputId), cleanOutput);
                 } else {
-                    // 转生入历史库：使用 setDoc 保持相同的 ID
-                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_died', mergedRecord.inputId), cleanInputData);
-                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_died', mergedRecord.outputId), cleanOutputData);
-                    
-                    // 彻底删除原 Living 库文件
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_died', mergedRecord.inputId), cleanInput);
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_died', mergedRecord.outputId), cleanOutput);
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId));
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_living', mergedRecord.outputId));
                     
-                    if (status === 'Terminated_Delivery') {
+                    if (deliveryRecord) {
                         deliveredCount++;
-                        const worstIdx = newResult.loss_attribution.findIndex((val: number) => val === 1.0);
-                        if (worstIdx !== -1) {
-                            const ticker = pricerParams.tickers[worstIdx];
-                            const strikePrice = pricerParams.initial_spots[worstIdx] * pricerParams.strike_pct;
-                            const quantity = pricerParams.total_notional / strikePrice;
-                            const amountNoFee = strikePrice * quantity;
-                            
-                            const newDelivery = {
-                                tradeId: mergedRecord.tradeId,
-                                date: pricerParams.pay_dates[pricerParams.pay_dates.length - 1],
-                                account: pricerParams.account_name || inputData.inputParams?.account_name || '',
-                                market: pricerParams.market === 'USD' ? 'US' : pricerParams.market === 'JPY' ? 'JP' : pricerParams.market === 'CNY' ? 'CH' : 'HK',
-                                executor: pricerParams.executor || inputData.inputParams?.executor || '',
-                                type: "FCN接货",
-                                stockCode: ticker,
-                                stockName: pricerParams.ticker_name?.[worstIdx] || ticker,
-                                direction: "BUY",
-                                quantity: Math.round(quantity),
-                                priceNoFee: strikePrice,
-                                amountNoFee: amountNoFee,
-                                fee: 0,
-                                amountWithFee: amountNoFee,
-                                priceWithFee: amountNoFee / quantity,
-                                hkdAmount: amountNoFee * (pricerParams.fx_rate || 1.0)
-                            };
-                            const cleanDelivery = replaceUndefinedWithNull(newDelivery);
-                            await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'), {
-                                ...cleanDelivery, createdAt: serverTimestamp()
-                            });
-                        }
+                        const cleanDelivery = replaceUndefinedWithNull(deliveryRecord);
+                        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'), {
+                            ...cleanDelivery, createdAt: serverTimestamp()
+                        });
                     }
                 }
             }
@@ -467,73 +509,21 @@ export default function FCNHoldingPage() {
         let errorCount = 0;
         try {
             const currentDied = await fetchMergedRecords('died');
-            
-            if (currentDied.length === 0) {
-                setDiedRecords([]);
-                setLoadingDied(false);
-                return;
-            }
+            if (currentDied.length === 0) { setLoadingDied(false); return; }
 
             for (const mergedRecord of currentDied) {
-                const inputData = replaceNullWithUndefined(mergedRecord.inputData);
-                const outputData = replaceNullWithUndefined(mergedRecord.outputData);
-                const pricerParams = inputData.pricerParams as FCNParams;
-                if (!pricerParams) continue;
-                
-                const fetchedSpots = await Promise.all(pricerParams.tickers.map(async (t, i) => {
-                    const p = await fetchQuotePrice(t);
-                    return p !== null ? p : pricerParams.initial_spots[i];
-                }));
-                pricerParams.current_spots = fetchedSpots;
-                
-                const today = new Date(); today.setHours(0,0,0,0);
-                const hasPastObservation = pricerParams.obs_dates.some(d => new Date(d) <= today);
-                if (hasPastObservation && pricerParams.history_start_date) {
-                    const histMap: any = {};
-                    await Promise.all(pricerParams.tickers.map(async (t) => {
-                        histMap[t] = await fetchHistoricalPrices(t, pricerParams.history_start_date!);
-                    }));
-                    pricerParams.hist_prices = histMap;
-                }
-
-                if (pricerParams.market !== 'HKD') {
-                    const res = await fetch(`/api/quote?currency=${pricerParams.market}`);
-                    const data = res.ok ? await res.json() : null;
-                    pricerParams.fx_rate = data?.rate || pricerParams.fx_rate || 1.0;
-                } else {
-                    pricerParams.fx_rate = 1.0;
-                }
-                
-                const pricer = new FCNPricer(pricerParams);
-                const newResult = pricer.simulate_price();
+                const { newResult, cleanInput, cleanOutput } = await evaluateFCN(mergedRecord);
                 
                 const status = newResult.status;
-                
-                // 保存入库前剔除 ID，防止污染
-                const cleanInputData = replaceUndefinedWithNull({ ...inputData, pricerParams });
-                delete cleanInputData.id;
-                delete cleanInputData.inputId;
-                delete cleanInputData.outputId;
-
-                const cleanOutputData = replaceUndefinedWithNull({ ...outputData, result: newResult });
-                delete cleanOutputData.id;
-                delete cleanOutputData.inputId;
-                delete cleanOutputData.outputId;
-
-                // 【核心修复】：使用 setDoc，并增加智能纠错 (Self-Healing) 回流至 Living
                 if (['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(status)) {
-                    // 发现应该存活，转生回存续库 (智能修复)
-                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId), cleanInputData);
-                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_living', mergedRecord.outputId), cleanOutputData);
-                    
-                    // 彻底删除 died 库中的错误记录
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId), cleanInput);
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_living', mergedRecord.outputId), cleanOutput);
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_died', mergedRecord.inputId));
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_died', mergedRecord.outputId));
                     errorCount++;
                 } else {
-                    // 依然已死，使用 setDoc 无脑覆写（永远不会报 No document to update）
-                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_died', mergedRecord.inputId), cleanInputData);
-                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_died', mergedRecord.outputId), cleanOutputData);
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_died', mergedRecord.inputId), cleanInput);
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_died', mergedRecord.outputId), cleanOutput);
                 }
             }
             
