@@ -10,6 +10,9 @@ const tradeItems = [
   { path: 'option', label: 'Option 交易' },
   { path: 'dq-aq', label: 'DQ-AQ 交易' },
   { path: 'spot', label: 'Spot 交易' },
+  { path: 'pe', label: '私募基金 交易' },
+  { path: 'cbbc-futures', label: '牛熊证-期货 交易' },
+
 ];
 
 export default function TradeLayout({ children }: { children: React.ReactNode }) {
