@@ -5,13 +5,28 @@ import {
   Play, Save, Loader2, AlertCircle, CheckCircle, X, Database, Trash2, RefreshCw, FileJson, Edit2 
 } from 'lucide-react';
 import { 
-  collection, addDoc, serverTimestamp, getDocs, deleteDoc, doc, updateDoc, query, where 
+  collection, addDoc, getDocs, deleteDoc, doc, updateDoc, query, where 
 } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 // 引入 Firebase 配置與 DQ-AQ 引擎
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { DQAQValuator, Period, BasicInfo, UnderlyingInfo, SimulationParams, ValuationResult, calculateVolatility, PlotData } from '@/app/lib/DQ-AQPricer';
+
+// --- 時間解析輔助函數 ---
+const getTime = (val: any) => {
+    if (!val) return 0;
+    if (val.toMillis && typeof val.toMillis === 'function') return val.toMillis();
+    if (val.seconds) return val.seconds * 1000;
+    return new Date(val).getTime() || 0;
+};
+
+const formatTime = (val: any) => {
+    if (!val) return null;
+    if (val.toDate && typeof val.toDate === 'function') return val.toDate().toLocaleString();
+    if (val.seconds) return new Date(val.seconds * 1000).toLocaleString();
+    return new Date(val).toLocaleString();
+};
 
 // 默认观察期配置
 const DEFAULT_PERIODS: Period[] = [
@@ -70,6 +85,11 @@ const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) return null;
     if (obj === null || typeof obj !== 'object') return obj;
+    // 【核心修復】：嚴格放行原生 Date 物件與 Firestore Timestamp
+    if (obj instanceof Date) return obj; 
+    if (obj.toDate && typeof obj.toDate === 'function') return obj; 
+    if (obj._methodName) return obj; 
+
     if (Array.isArray(obj)) return obj.map(replaceUndefinedWithNull);
     const newObj: any = {};
     for (const key in obj) {
@@ -163,7 +183,6 @@ export default function DQAQTradePage() {
     const [currentCalcParams, setCurrentCalcParams] = useState<any>(null);
     const [currentTradeId, setCurrentTradeId] = useState<string>("");
     const [isHKDView, setIsHKDView] = useState(false);
-    const [calcTime, setCalcTime] = useState<string>(""); // 修复水合报错：存储客户端计算时间
 
     // --- State: 3.交易展示模块 ---
     const [txRecords, setTxRecords] = useState<TransactionRecord[]>([]);
@@ -197,7 +216,11 @@ export default function DQAQTradePage() {
             const querySnapshot = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', collectionName));
             let records: any[] = [];
             querySnapshot.forEach((docSnap) => records.push({ id: docSnap.id, ...docSnap.data() }));
-            records.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+            records.sort((a, b) => {
+                const timeA = getTime(a.updatedAt) || getTime(a.createdAt);
+                const timeB = getTime(b.updatedAt) || getTime(b.createdAt);
+                return timeB - timeA;
+            });
             setDbRecords(records);
         } catch(e) { console.error(e); } 
         finally { setLoadingDb(false); }
@@ -377,7 +400,6 @@ export default function DQAQTradePage() {
                     
                     setCurrentResult(res);
                     setCurrentCalcParams({ basic, underlying, sim, periods, sigma }); // 供入库用
-                    setCalcTime(new Date().toLocaleString()); // 获取并在客户端固化当前时间
                     
                     // 覆写交易展示模块的数据 (清空并仅展示本次)
                     const newTxRecords: TransactionRecord[] = [];
@@ -429,13 +451,26 @@ export default function DQAQTradePage() {
 
         try {
             setLoading(true); setFetchStatus('入库中...');
+            const exactNow = new Date(); // 使用精確絕對時間
+            
             // 剥离交易记录和图表数据，避免结果文档过于臃肿及触发 Firestore 嵌套数组报错
             const { history_records, plot_data, ...cleanResultBody } = currentResult;
-            const safeCalc = replaceUndefinedWithNull({ ...currentCalcParams, tradeId: currentTradeId });
-            const safeRes = replaceUndefinedWithNull({ ...cleanResultBody, tradeId: currentTradeId });
+            
+            const safeCalc = replaceUndefinedWithNull({ 
+                ...currentCalcParams, 
+                tradeId: currentTradeId,
+                createdAt: exactNow,
+                updatedAt: exactNow
+            });
+            const safeRes = replaceUndefinedWithNull({ 
+                ...cleanResultBody, 
+                tradeId: currentTradeId,
+                createdAt: exactNow,
+                updatedAt: exactNow 
+            });
 
-            await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_dqaq_input_${lifeCycle}`), { ...safeCalc, createdAt: serverTimestamp() });
-            await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_holding_dqaq_output_${lifeCycle}`), { ...safeRes, createdAt: serverTimestamp() });
+            await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_dqaq_input_${lifeCycle}`), safeCalc);
+            await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_holding_dqaq_output_${lifeCycle}`), safeRes);
 
             alert(`参数与结果已成功保存至 [${lifeCycle}] 库！(TradeID: ${currentTradeId.substring(0,8)})`);
             setShowResultModal(false);
@@ -504,10 +539,15 @@ export default function DQAQTradePage() {
             for (const record of txRecords) {
                 const cleanRecord = replaceUndefinedWithNull(record);
                 delete cleanRecord.id; // 清除前端自用临时id
-                await addDoc(getStockRef, { ...cleanRecord, createdAt: serverTimestamp() });
+                await addDoc(getStockRef, { ...cleanRecord, createdAt: new Date() });
             }
             
             alert("交易数据已成功精准覆写至 get-stock 库！");
+            
+            // 清空接货展示模块与绑定的 ID
+            setTxRecords([]);
+            setCurrentTradeId("");
+
             if (activeDbTab === 'sip_holding_dqaq_output_get-stock') fetchDbRecords(activeDbTab);
         } catch(e:any) { alert("录入交易库失败: " + e.message); } 
         finally { setLoading(false); setFetchStatus(""); }
@@ -530,7 +570,7 @@ export default function DQAQTradePage() {
                 return `【交收】${r.account || ''} | ${r.direction || ''} ${r.quantity || 0}股 ${r.stockName || r.stockCode || ''}`;
             }
             if (tab.includes('sum')) {
-                return `全局大盘统计快照 (更新于: ${r.updatedAt?.toDate ? r.updatedAt.toDate().toLocaleString() : 'N/A'})`;
+                return `全局大盘统计快照 (更新于: ${formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A'})`;
             }
             return JSON.stringify(r).substring(0, 100) + '...';
         } catch (e) {
@@ -779,7 +819,6 @@ export default function DQAQTradePage() {
                                     <span className={`px-2 py-1 rounded text-xs font-semibold ${currentResult.status_msg.includes('提前敲出') || currentResult.status_msg.includes('Expired') ? 'bg-red-100 text-red-700' : currentResult.status_msg.includes('尚未订约') ? 'bg-orange-100 text-orange-800' : 'bg-green-100 text-green-700'}`}>
                                         {currentResult.status_msg}
                                     </span>
-                                    <span className="text-xs text-gray-400">{calcTime}</span>
                                 </div>
                             </div>
 
@@ -937,6 +976,7 @@ export default function DQAQTradePage() {
                     </button>
                 </div>
 
+                {/* 资料库 Tab 切换 */}
                 <div className="flex gap-2 mb-4 border-b pb-2 overflow-x-auto">
                     {['sip_trade_dqaq_input_living', 'sip_trade_dqaq_input_died', 'sip_holding_dqaq_output_living', 'sip_holding_dqaq_output_died', 'sip_holding_dqaq_output_get-stock'].map(tab => (
                         <button 
@@ -948,6 +988,7 @@ export default function DQAQTradePage() {
                     ))}
                 </div>
 
+                {/* 资料库表格 */}
                 {loadingDb ? (
                     <div className="py-10 text-center"><Loader2 className="animate-spin mx-auto text-purple-600 mb-2" size={30}/><p className="text-gray-400 text-sm">拉取中...</p></div>
                 ) : dbRecords.length === 0 ? (
@@ -957,7 +998,7 @@ export default function DQAQTradePage() {
                         <table className="min-w-full text-sm text-left divide-y divide-gray-200">
                             <thead className="bg-gray-50 text-gray-500">
                                 <tr>
-                                    <th className="px-3 py-2 whitespace-nowrap">ID / 創建時間</th>
+                                    <th className="px-3 py-2 whitespace-nowrap">ID / 確切修改時間</th>
                                     <th className="px-3 py-2">綁定 TradeID</th>
                                     <th className="px-3 py-2">內容摘要 / 產品名稱</th>
                                     <th className="px-3 py-2 text-center whitespace-nowrap">操作</th>
@@ -968,7 +1009,9 @@ export default function DQAQTradePage() {
                                     <tr key={r.id} className="hover:bg-gray-50 transition-colors">
                                         <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap font-mono">
                                             <div className="font-bold text-gray-700">{r.id.substring(0,8)}...</div>
-                                            <div>{r.createdAt?.toDate ? r.createdAt.toDate().toLocaleString() : 'N/A'}</div>
+                                            <div className="text-blue-600">
+                                                {formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A'}
+                                            </div>
                                         </td>
                                         <td className="px-3 py-2 text-xs font-mono text-blue-600">{r.tradeId || 'None'}</td>
                                         <td className="px-3 py-2 text-xs">
@@ -1006,6 +1049,7 @@ export default function DQAQTradePage() {
                                 try {
                                     const parsedData = JSON.parse(editRecordModal.rawJson);
                                     const docId = parsedData.id || editRecordModal.record.id; delete parsedData.id; 
+                                    parsedData.updatedAt = new Date();
                                     await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
                                     alert("数据修改成功！"); setEditRecordModal(null); fetchDbRecords(activeDbTab); 
                                 } catch(e:any) { alert("修改失败: \n" + e.message); }

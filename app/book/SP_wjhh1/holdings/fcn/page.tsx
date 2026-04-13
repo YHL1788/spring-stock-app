@@ -14,11 +14,26 @@ import {
   LineChart,
   PieChart
 } from 'lucide-react';
-import { collection, getDocs, doc, updateDoc, addDoc, deleteDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, addDoc, deleteDoc, setDoc } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { FCNPricer, FCNParams, FCNResult } from '@/app/lib/fcnPricer';
+
+// --- 時間解析輔助函數 ---
+const getTime = (val: any) => {
+    if (!val) return 0;
+    if (val.toMillis && typeof val.toMillis === 'function') return val.toMillis();
+    if (val.seconds) return val.seconds * 1000;
+    return new Date(val).getTime() || 0;
+};
+
+const formatTime = (val: any) => {
+    if (!val) return null;
+    if (val.toDate && typeof val.toDate === 'function') return val.toDate().toLocaleString();
+    if (val.seconds) return new Date(val.seconds * 1000).toLocaleString();
+    return new Date(val).toLocaleString();
+};
 
 // --- 精準過期時間推算 (HKT UTC+8) ---
 const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
@@ -49,7 +64,9 @@ const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) return null;
     if (obj === null || typeof obj !== 'object') return obj;
-    if (obj.toDate && typeof obj.toDate === 'function') return obj; // 跳过 Firestore Timestamp
+    if (obj instanceof Date) return obj; 
+    if (obj.toDate && typeof obj.toDate === 'function') return obj; 
+    if (obj._methodName) return obj; 
     if (Array.isArray(obj)) return obj.map(replaceUndefinedWithNull);
     const newObj: any = {};
     for (const key in obj) {
@@ -63,7 +80,9 @@ const replaceUndefinedWithNull = (obj: any): any => {
 const replaceNullWithUndefined = (obj: any): any => {
     if (obj === null) return undefined;
     if (typeof obj !== 'object') return obj;
-    if (obj.toDate && typeof obj.toDate === 'function') return obj; // 跳过 Firestore Timestamp
+    if (obj instanceof Date) return obj; 
+    if (obj.toDate && typeof obj.toDate === 'function') return obj; 
+    if (obj._methodName) return obj; 
     if (Array.isArray(obj)) return obj.map(replaceNullWithUndefined);
     const newObj: any = {};
     for (const key in obj) {
@@ -87,7 +106,17 @@ interface MergedRecord {
     outputId: string;
     inputData: any;
     outputData: any;
+    updatedAt: any;
     createdAt: any;
+}
+
+// 點位圖資料結構
+interface FCNChartData {
+    name: string;
+    ticker: string;
+    current: number;
+    strike: number;
+    ko: number;
 }
 
 // --- 可排序筛选表头组件 ---
@@ -149,8 +178,8 @@ export default function FCNHoldingPage() {
     const [loadingDb, setLoadingDb] = useState(false);
     const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
 
-    // --- 股价点位图 Modal 状态 ---
-    const [chartModalData, setChartModalData] = useState<{ pricerParams: FCNParams, result: FCNResult } | null>(null);
+    // --- 股价点位图 Modal 状态 (安全重構) ---
+    const [chartModalData, setChartModalData] = useState<{ title: string, charts: FCNChartData[] } | null>(null);
 
     // --- 排序与筛选 State ---
     const [livingSort, setLivingSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: '', dir: null});
@@ -227,11 +256,16 @@ export default function FCNHoldingPage() {
                     outputId: out.id,
                     inputData: inp,
                     outputData: out,
+                    updatedAt: inp.updatedAt || out.updatedAt,
                     createdAt: inp.createdAt
                 };
             }).filter(Boolean) as MergedRecord[];
             
-            merged.sort((a,b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+            merged.sort((a,b) => {
+                const timeA = getTime(a.updatedAt) || getTime(a.createdAt);
+                const timeB = getTime(b.updatedAt) || getTime(b.createdAt);
+                return timeB - timeA;
+            });
             return merged;
         } catch (error) {
             console.warn(`[Graceful Fallback] Fetch ${lifeCycle} records failed, possibly empty:`, error);
@@ -262,8 +296,8 @@ export default function FCNHoldingPage() {
                 records.push({ ...data, id: docSnap.id });
             });
             records.sort((a, b) => {
-               const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
-               const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+               const timeA = getTime(a.updatedAt) || getTime(a.createdAt);
+               const timeB = getTime(b.updatedAt) || getTime(b.createdAt);
                return timeB - timeA;
             });
             setDbRecords(records);
@@ -281,7 +315,6 @@ export default function FCNHoldingPage() {
     useEffect(() => {
         if (user) {
             loadRecords();
-            fetchDbRecords(activeDbTab);
         }
     }, [user]);
 
@@ -312,6 +345,15 @@ export default function FCNHoldingPage() {
                 };
             }).filter((item: any) => !isNaN(item.close));
         } catch { return []; }
+    };
+
+    const fetchRealTimeFxRate = async (currency: string) => {
+        if (currency === 'HKD') return 1.0;
+        try {
+            const res = await fetch(`/api/quote?currency=${currency}`);
+            const data = res.ok ? await res.json() : {};
+            return data.rate || null;
+        } catch { return null; }
     };
 
     const fetchLatestFxRates = async () => {
@@ -368,7 +410,6 @@ export default function FCNHoldingPage() {
         const pricerParams = inputData.pricerParams as FCNParams;
         if (!pricerParams) throw new Error("Missing pricerParams");
 
-        // 【鐵血邏輯】：使用精準到小時的市場過期時間判定
         const last_obs_date = pricerParams.obs_dates[pricerParams.obs_dates.length - 1];
         const expireTimeMs = getExpirationTimeMs(last_obs_date, pricerParams.market || 'HKD');
         const isExpired = Date.now() >= expireTimeMs;
@@ -379,7 +420,6 @@ export default function FCNHoldingPage() {
                 const startStr = d.toISOString().split('T')[0];
                 const histPrices = await fetchHistoricalPrices(t, startStr, last_obs_date);
                 
-                // 嚴格過濾掉大於到期日的數據
                 const validPrices = histPrices.filter((p:any) => p.date <= last_obs_date);
                 if (validPrices.length > 0) {
                     validPrices.sort((a:any, b:any) => a.date.localeCompare(b.date));
@@ -446,13 +486,23 @@ export default function FCNHoldingPage() {
             }
         }
 
-        const cleanInput = replaceUndefinedWithNull({ ...inputData, pricerParams });
+        const exactNow = new Date();
+
+        const cleanInput = replaceUndefinedWithNull({ 
+            ...inputData, 
+            pricerParams,
+            updatedAt: exactNow 
+        });
         delete cleanInput.id; delete cleanInput.inputId; delete cleanInput.outputId;
 
-        const cleanOutput = replaceUndefinedWithNull({ ...outputData, result: newResult });
+        const cleanOutput = replaceUndefinedWithNull({ 
+            ...outputData, 
+            result: newResult,
+            updatedAt: exactNow 
+        });
         delete cleanOutput.id; delete cleanOutput.inputId; delete cleanOutput.outputId;
 
-        return { newResult, deliveryRecord, cleanInput, cleanOutput };
+        return { newResult, deliveryRecord, cleanInput, cleanOutput, exactNow };
     };
 
     // --- 刷新当前持仓 (Living) ---
@@ -463,8 +513,10 @@ export default function FCNHoldingPage() {
             const currentLiving = await fetchMergedRecords('living');
             if (currentLiving.length === 0) { setLoadingLiving(false); return; }
 
+            const allNewDeliveries: any[] = [];
+
             for (const mergedRecord of currentLiving) {
-                const { newResult, deliveryRecord, cleanInput, cleanOutput } = await evaluateFCN(mergedRecord);
+                const { newResult, deliveryRecord, cleanInput, cleanOutput, exactNow } = await evaluateFCN(mergedRecord);
                 
                 const status = newResult.status;
                 if (['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(status)) {
@@ -478,10 +530,12 @@ export default function FCNHoldingPage() {
                     
                     if (deliveryRecord) {
                         deliveredCount++;
-                        const cleanDelivery = replaceUndefinedWithNull(deliveryRecord);
-                        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'), {
-                            ...cleanDelivery, createdAt: serverTimestamp()
+                        const cleanDelivery = replaceUndefinedWithNull({
+                            ...deliveryRecord,
+                            createdAt: exactNow
                         });
+                        allNewDeliveries.push(cleanDelivery);
+                        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'), cleanDelivery);
                     }
                 }
             }
@@ -559,6 +613,7 @@ export default function FCNHoldingPage() {
             const parsedData = JSON.parse(editRecordModal.rawJson);
             const docId = parsedData.id || editRecordModal.record.id;
             delete parsedData.id; 
+            parsedData.updatedAt = new Date();
             await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
             alert("数据修改成功！");
             setEditRecordModal(null);
@@ -586,7 +641,8 @@ export default function FCNHoldingPage() {
                 return `【交收】${r.account || ''} | ${r.direction || ''} ${r.quantity || 0}股 ${r.stockName || r.stockCode || ''}`;
             }
             if (tab.includes('sum')) {
-                return `全局大盘统计快照 (更新于: ${r.updatedAt?.toDate ? r.updatedAt.toDate().toLocaleString() : 'N/A'})`;
+                const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
+                return `全局大盘统计快照 (更新于: ${time})`;
             }
             return JSON.stringify(r).substring(0, 100) + '...';
         } catch (e) {
@@ -690,25 +746,21 @@ export default function FCNHoldingPage() {
                     if (isHKDView && isMonetary) {
                         const rateA = globalFx[a.market] || a.fx_rate || 1;
                         const rateB = globalFx[b.market] || b.fx_rate || 1;
-                        // 强制转为数字进行倍乘，防止 undefined * 汇率 变成 NaN
                         aVal = (typeof aVal === 'number' ? aVal : parseFloat(aVal) || 0) * rateA;
                         bVal = (typeof bVal === 'number' ? bVal : parseFloat(bVal) || 0) * rateB;
                     }
                     
-                    // 1. 空值与脏数据兜底防线 (把 NaN, null, undefined, 空字符串 沉底)
                     const isAEmpty = aVal === null || aVal === undefined || aVal === '' || (typeof aVal === 'number' && Number.isNaN(aVal));
                     const isBEmpty = bVal === null || bVal === undefined || bVal === '' || (typeof bVal === 'number' && Number.isNaN(bVal));
                     
                     if (isAEmpty && isBEmpty) return 0;
-                    if (isAEmpty) return 1; // A是空值，永远放后面
-                    if (isBEmpty) return -1; // B是空值，永远放后面
+                    if (isAEmpty) return 1; 
+                    if (isBEmpty) return -1; 
 
-                    // 2. 字符串安全对比 (支持中文和日期)
                     if (typeof aVal === 'string' && typeof bVal === 'string') {
                         return sortConfig.dir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
                     }
 
-                    // 3. 正常数字对比
                     if (aVal < bVal) return sortConfig.dir === 'asc' ? -1 : 1;
                     if (aVal > bVal) return sortConfig.dir === 'asc' ? 1 : -1;
                     return 0;
@@ -952,7 +1004,7 @@ export default function FCNHoldingPage() {
             const payload = replaceUndefinedWithNull({
                 marketStats: globalStats.marketList,
                 hkdSum: globalStats.hkdSum,
-                updatedAt: serverTimestamp()
+                updatedAt: new Date() // 使用絕對時間
             });
 
             await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_sum', 'latest_summary'), payload);
@@ -1049,7 +1101,31 @@ export default function FCNHoldingPage() {
                                     <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.nextObs}</td>
                                     <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.maturity}</td>
                                     <td className="px-3 py-2 text-center">
-                                        <button onClick={() => setChartModalData({ pricerParams: item.p, result: item.res })} className="text-blue-500 hover:text-blue-700 bg-blue-50 p-1 rounded transition-colors" title="查看点位图">
+                                        <button onClick={() => {
+                                            const p = item.p as FCNParams;
+                                            // 【安全校驗】：防止舊數據或髒數據導致 Modal 崩潰
+                                            if (!p || !p.tickers || !p.initial_spots) {
+                                                alert("數據格式不完整或為舊版數據，無法繪製點位圖。");
+                                                return;
+                                            }
+                                            const charts = p.tickers.map((ticker: string, idx: number) => {
+                                                const initial = p.initial_spots[idx] || 0;
+                                                const current = p.current_spots?.[idx] || initial;
+                                                const strike = initial * (Number(p.strike_pct) || 0);
+                                                const ko = initial * (Number(p.trigger_pct) || 0);
+                                                return {
+                                                    name: p.ticker_name?.[idx] || ticker,
+                                                    ticker,
+                                                    current,
+                                                    strike,
+                                                    ko
+                                                };
+                                            });
+                                            setChartModalData({
+                                                title: item.name,
+                                                charts
+                                            });
+                                        }} className="text-blue-500 hover:text-blue-700 bg-blue-50 p-1 rounded transition-colors" title="查看点位图">
                                             <LineChart size={16}/>
                                         </button>
                                     </td>
@@ -1355,7 +1431,7 @@ export default function FCNHoldingPage() {
                         <table className="min-w-full text-sm text-left divide-y divide-gray-200">
                             <thead className="bg-gray-50 text-gray-500">
                                 <tr>
-                                    <th className="px-3 py-2 whitespace-nowrap">ID / 创建时间</th>
+                                    <th className="px-3 py-2 whitespace-nowrap">ID / 确切修改时间</th>
                                     <th className="px-3 py-2">绑定 TradeID</th>
                                     <th className="px-3 py-2">内容摘要 / 产品名称</th>
                                     <th className="px-3 py-2 text-center whitespace-nowrap">操作</th>
@@ -1366,7 +1442,9 @@ export default function FCNHoldingPage() {
                                     <tr key={r.id} className="hover:bg-gray-50 transition-colors">
                                         <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap font-mono">
                                             <div className="font-bold text-gray-700">{r.id.substring(0,8)}...</div>
-                                            <div>{r.updatedAt?.toDate ? r.updatedAt.toDate().toLocaleString() : (r.createdAt?.toDate ? r.createdAt.toDate().toLocaleString() : 'N/A')}</div>
+                                            <div className="text-blue-600">
+                                                {formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A'}
+                                            </div>
                                         </td>
                                         <td className="px-3 py-2 text-xs font-mono text-blue-600">
                                             {r.tradeId || 'None'}
@@ -1407,28 +1485,26 @@ export default function FCNHoldingPage() {
                     <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col relative overflow-hidden">
                         <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50 flex-shrink-0">
                             <div>
-                                <h3 className="text-xl font-bold text-gray-900">股价点位图</h3>
-                                <p className="text-xs text-gray-500 mt-1">{renderName(chartModalData.pricerParams)}</p>
+                                <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                                    <LineChart className="text-blue-500" size={24} />
+                                    股價點位圖
+                                </h3>
+                                <p className="text-xs text-gray-500 mt-1">{chartModalData.title}</p>
                             </div>
-                            <button onClick={() => setChartModalData(null)} className="text-gray-400 hover:text-gray-600 bg-white p-1 rounded-full shadow-sm border"><X size={24}/></button>
+                            <button onClick={() => setChartModalData(null)} className="text-gray-400 hover:text-gray-600 bg-white p-1 rounded-full shadow-sm border transition-colors"><X size={24}/></button>
                         </div>
                         <div className="p-6 overflow-y-auto flex-1 bg-white space-y-6">
-                            {chartModalData.pricerParams.tickers.map((ticker, idx) => {
-                                const initial = chartModalData.pricerParams.initial_spots[idx];
-                                const current = chartModalData.pricerParams.current_spots?.[idx] || initial;
-                                const strike = initial * chartModalData.pricerParams.strike_pct;
-                                const ko = initial * chartModalData.pricerParams.trigger_pct;
-
-                                const leftPct = (strike / current) - 1;
-                                const rightPct = (ko / current) - 1;
+                            {chartModalData.charts.map((data, idx) => {
+                                const { current, strike, ko, ticker, name } = data;
+                                const leftPct = current > 0 ? (strike / current) - 1 : 0;
+                                const rightPct = current > 0 ? (ko / current) - 1 : 0;
 
                                 const values = [strike, current, ko];
                                 const minVal = Math.min(...values) * 0.85;
                                 const maxVal = Math.max(...values) * 1.15;
                                 const range = maxVal - minVal;
 
-                                const getPos = (val: number) => ((val - minVal) / range) * 100;
-                                const name = chartModalData.pricerParams.ticker_name?.[idx] || ticker;
+                                const getPos = (val: number) => range === 0 ? 50 : ((val - minVal) / range) * 100;
 
                                 return (
                                     <div key={ticker} className="bg-white p-5 rounded-lg border border-gray-200 shadow-sm">
@@ -1451,7 +1527,9 @@ export default function FCNHoldingPage() {
 
                                             <div className="flex-1 relative h-16 mx-4 select-none">
                                                 <div className="absolute top-1/2 left-0 right-0 h-1.5 bg-gray-100 rounded-full transform -translate-y-1/2"></div>
-                                                <div className="absolute top-1/2 h-1.5 bg-blue-50 transform -translate-y-1/2" style={{ left: `${getPos(strike)}%`, width: `${getPos(ko) - getPos(strike)}%` }}></div>
+                                                {/* 標記 Strike 到 KO 之間的區間 */}
+                                                <div className="absolute top-1/2 h-1.5 bg-blue-50 transform -translate-y-1/2" style={{ left: `${getPos(Math.min(strike, ko))}%`, width: `${Math.abs(getPos(ko) - getPos(strike))}%` }}></div>
+                                                
                                                 <div className="absolute top-1/2" style={{ left: `${getPos(strike)}%` }}>
                                                     <div className="absolute transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-red-500 border-2 border-white rounded-full shadow z-10"></div>
                                                     <div className="absolute transform -translate-x-1/2 translate-y-3 flex flex-col items-center w-max">
@@ -1494,7 +1572,7 @@ export default function FCNHoldingPage() {
                         <div className="flex justify-between items-center mb-4 border-b pb-4">
                             <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700">
                                 <FileJson size={20}/> 
-                                进阶修改记录 - {editRecordModal.record.id}
+                                进阶修改记录 - {editRecordModal?.record?.id}
                             </h3>
                             <button onClick={() => setEditRecordModal(null)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
                         </div>
@@ -1504,8 +1582,8 @@ export default function FCNHoldingPage() {
                         
                         <textarea 
                             className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none" 
-                            value={editRecordModal.rawJson}
-                            onChange={(e) => setEditRecordModal({...editRecordModal, rawJson: e.target.value})}
+                            value={editRecordModal?.rawJson || ''}
+                            onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)}
                         />
                         
                         <div className="flex justify-end gap-3 pt-2 border-t">

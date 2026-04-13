@@ -15,13 +15,47 @@ import {
   Edit2
 } from 'lucide-react';
 
-import { collection, addDoc, serverTimestamp, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { FCNPricer, FCNParams, FCNResult } from '@/app/lib/fcnPricer';
 
-// --- 类型定义 ---
+// --- 時間解析輔助函數 ---
+const getTime = (val: any) => {
+    if (!val) return 0;
+    if (val.toMillis && typeof val.toMillis === 'function') return val.toMillis();
+    if (val.seconds) return val.seconds * 1000;
+    return new Date(val).getTime() || 0;
+};
+
+const formatTime = (val: any) => {
+    if (!val) return null;
+    if (val.toDate && typeof val.toDate === 'function') return val.toDate().toLocaleString();
+    if (val.seconds) return new Date(val.seconds * 1000).toLocaleString();
+    return new Date(val).toLocaleString();
+};
+
+// --- 輔助函數：序列化處理 ---
+const replaceUndefinedWithNull = (obj: any): any => {
+    if (obj === undefined) return null;
+    if (obj === null || typeof obj !== 'object') return obj;
+    // 【核心修復】：嚴格放行原生 Date 物件與 Firestore Timestamp，拒絕將其展平為普通字典
+    if (obj instanceof Date) return obj; 
+    if (obj.toDate && typeof obj.toDate === 'function') return obj; 
+    if (obj._methodName) return obj; 
+    
+    if (Array.isArray(obj)) return obj.map(replaceUndefinedWithNull);
+    const newObj: any = {};
+    for (const key in obj) {
+        if (Object.prototype.hasOwnProperty.call(obj, key)) {
+            newObj[key] = replaceUndefinedWithNull(obj[key]);
+        }
+    }
+    return newObj;
+};
+
+// --- 類型定義 ---
 interface UnderlyingRow {
     id: string; ticker: string; name: string; initialPrice: string; currentPrice: string; dividendDate: string; dividendAmount: string;
 }
@@ -76,25 +110,6 @@ const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
         const todayStr = new Date().toISOString().split('T')[0];
         return todayStr >= expDateStr ? 0 : Infinity;
     }
-};
-
-const replaceUndefinedWithNull = (obj: any): any => {
-    if (obj === undefined) {
-        return null;
-    }
-    if (obj === null || typeof obj !== 'object') {
-        return obj;
-    }
-    if (Array.isArray(obj)) {
-        return obj.map(replaceUndefinedWithNull);
-    }
-    const newObj: any = {};
-    for (const key in obj) {
-        if (Object.prototype.hasOwnProperty.call(obj, key)) {
-            newObj[key] = replaceUndefinedWithNull(obj[key]);
-        }
-    }
-    return newObj;
 };
 
 // 工具：推算接货的原始货币
@@ -152,7 +167,11 @@ export default function FCNTradePage() {
         try {
             const snap = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'));
             const records = snap.docs.map(doc => ({ firebaseId: doc.id, ...doc.data() })) as any[];
-            records.sort((a,b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+            records.sort((a,b) => {
+                const timeA = getTime(a.updatedAt) || getTime(a.createdAt);
+                const timeB = getTime(b.updatedAt) || getTime(b.createdAt);
+                return timeB - timeA;
+            });
             setDeliveryRecords(records);
         } catch(e) {
             console.error("读取接货缓冲库失败:", e);
@@ -169,8 +188,8 @@ export default function FCNTradePage() {
                 records.push({ id: docSnap.id, ...docSnap.data() });
             });
             records.sort((a, b) => {
-               const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
-               const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+               const timeA = getTime(a.updatedAt) || getTime(a.createdAt);
+               const timeB = getTime(b.updatedAt) || getTime(b.createdAt);
                return timeB - timeA;
             });
             setDbRecords(records);
@@ -320,12 +339,12 @@ export default function FCNTradePage() {
                     const d = new Date(last_obs_date); d.setDate(d.getDate() - 7);
                     const startStr = d.toISOString().split('T')[0];
                     const histPrices = await fetchHistoricalPrices(t, startStr, last_obs_date);
-                    const validPrices = histPrices.filter((p:any) => p.date <= last_obs_date);
+                    const validPrices = histPrices.filter(p => p.date <= last_obs_date);
                     if (validPrices.length > 0) {
-                        validPrices.sort((a:any,b:any) => a.date.localeCompare(b.date));
+                        validPrices.sort((a,b) => a.date.localeCompare(b.date));
                         return validPrices[validPrices.length - 1].close;
                     }
-                    throw new Error(`无法获取 ${t} 于到期日 ${last_obs_date} 之前的有效历史收盘价，拒绝结算！`);
+                    throw new Error(`无法获取 ${t} 于到期日 ${last_obs_date} 的历史收盘价，拒绝结算！`);
                 } else {
                     setFetchStatus(`正在获取 ${t} 最新价格...`);
                     const p = await fetchQuotePrice(t); 
@@ -398,23 +417,31 @@ export default function FCNTradePage() {
         const lifeCycle = isLiving ? 'living' : 'died';
 
         const tradeId = currentTradeId || crypto.randomUUID();
+        const exactNow = new Date();
 
         try {
             setLoading(true); setFetchStatus('写入资料库中...');
 
-            // 【核心修复】：严格剔除 id 字段，防止污染后续搬家流程
-            const cleanCalcParams = replaceUndefinedWithNull({ ...currentCalcParams, tradeId });
+            // 【核心修复】：严格剔除 id 字段，并注入精确的时间戳
+            const cleanCalcParams = replaceUndefinedWithNull({ 
+                ...currentCalcParams, 
+                tradeId, 
+                createdAt: exactNow,
+                updatedAt: exactNow 
+            });
             delete cleanCalcParams.id;
-            const cleanResult = replaceUndefinedWithNull(currentResult);
+            
+            const cleanResult = replaceUndefinedWithNull({
+                result: currentResult,
+                tradeId,
+                createdAt: exactNow,
+                updatedAt: exactNow
+            });
             delete cleanResult.id;
             
-            await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_fcn_input_${lifeCycle}`), {
-                ...cleanCalcParams, createdAt: serverTimestamp()
-            });
+            await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_fcn_input_${lifeCycle}`), cleanCalcParams);
             
-            await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_holding_fcn_output_${lifeCycle}`), {
-                result: cleanResult, tradeId, createdAt: serverTimestamp()
-            });
+            await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_holding_fcn_output_${lifeCycle}`), cleanResult);
 
             if (status === 'Terminated_Delivery') {
                 const worstIdx = currentResult.loss_attribution.findIndex(val => val === 1.0);
@@ -445,11 +472,12 @@ export default function FCNTradePage() {
                         hkdAmount: amountWithFee * (pricerParams.fx_rate || 1.0)
                     };
                     
-                    const cleanDelivery = replaceUndefinedWithNull(newDelivery);
-                    delete cleanDelivery.id;
-                    await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'), {
-                        ...cleanDelivery, createdAt: serverTimestamp()
+                    const cleanDelivery = replaceUndefinedWithNull({
+                        ...newDelivery,
+                        createdAt: exactNow
                     });
+                    delete cleanDelivery.id;
+                    await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'), cleanDelivery);
                     fetchPendingDeliveries(); 
 
                     alert(`参数与结果已保存至 [${lifeCycle}] 库，并已自动生成接货纪录至下方展示模块(缓冲库)！`);
@@ -524,7 +552,7 @@ export default function FCNTradePage() {
                 
                 await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_get-stock'), {
                     ...recordData,
-                    createdAt: serverTimestamp()
+                    createdAt: new Date()
                 });
 
                 if (firebaseId) {
@@ -557,6 +585,7 @@ export default function FCNTradePage() {
             const parsedData = JSON.parse(editRecordModal.rawJson);
             const docId = parsedData.id || editRecordModal.record?.id;
             delete parsedData.id; 
+            parsedData.updatedAt = new Date();
             
             await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
             alert("数据修改成功！");
@@ -1101,7 +1130,7 @@ export default function FCNTradePage() {
                         <table className="min-w-full text-sm text-left divide-y divide-gray-200">
                             <thead className="bg-gray-50 text-gray-500">
                                 <tr>
-                                    <th className="px-3 py-2 whitespace-nowrap">ID / 创建时间</th>
+                                    <th className="px-3 py-2 whitespace-nowrap">ID / 确切修改时间</th>
                                     <th className="px-3 py-2">绑定 TradeID</th>
                                     <th className="px-3 py-2">内容摘要 / 产品名称</th>
                                     <th className="px-3 py-2 text-center whitespace-nowrap">操作</th>
@@ -1112,7 +1141,9 @@ export default function FCNTradePage() {
                                     <tr key={r.id} className="hover:bg-gray-50 transition-colors">
                                         <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap font-mono">
                                             <div className="font-bold text-gray-700">{r.id.substring(0,8)}...</div>
-                                            <div>{r.updatedAt?.toDate ? r.updatedAt.toDate().toLocaleString() : (r.createdAt?.toDate ? r.createdAt.toDate().toLocaleString() : 'N/A')}</div>
+                                            <div className="text-blue-600">
+                                                {formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A'}
+                                            </div>
                                         </td>
                                         <td className="px-3 py-2 text-xs font-mono text-blue-600">
                                             {r.tradeId || 'None'}

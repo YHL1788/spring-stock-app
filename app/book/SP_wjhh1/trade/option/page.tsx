@@ -5,16 +5,35 @@ import {
     Calculator, Save, Loader2, Database, Trash2, FileJson, 
     X, AlertCircle, Play, CheckCircle2, RefreshCw, Edit2
 } from 'lucide-react';
-import { collection, addDoc, getDocs, doc, deleteDoc, updateDoc, serverTimestamp, query, where } from 'firebase/firestore';
+import { collection, addDoc, getDocs, doc, deleteDoc, updateDoc, query, where } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
+
+// --- 時間解析輔助函數 ---
+const getTime = (val: any) => {
+    if (!val) return 0;
+    if (val.toMillis && typeof val.toMillis === 'function') return val.toMillis();
+    if (val.seconds) return val.seconds * 1000;
+    return new Date(val).getTime() || 0;
+};
+
+const formatTime = (val: any) => {
+    if (!val) return null;
+    if (val.toDate && typeof val.toDate === 'function') return val.toDate().toLocaleString();
+    if (val.seconds) return new Date(val.seconds * 1000).toLocaleString();
+    return new Date(val).toLocaleString();
+};
 
 // --- 輔助函數：序列化處理 ---
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) return null;
     if (obj === null || typeof obj !== 'object') return obj;
+    // 【核心修復】：嚴格放行原生 Date 物件與 Firestore Timestamp，拒絕將其展平為普通字典
+    if (obj instanceof Date) return obj; 
     if (obj.toDate && typeof obj.toDate === 'function') return obj; 
+    if (obj._methodName) return obj; 
+    
     if (Array.isArray(obj)) return obj.map(replaceUndefinedWithNull);
     const newObj: any = {};
     for (const key in obj) {
@@ -359,12 +378,14 @@ export default function OptionTradePage() {
         setIsSaving(true);
         try {
             const { rawData, isExpired, hasDelivery } = simResult;
+            const exactNow = new Date();
             
             // 構建 Input 和 Output 記錄
             const inputRecord = replaceUndefinedWithNull({
                 tradeId: currentTradeId,
                 ...rawData,
-                createdAt: serverTimestamp()
+                createdAt: exactNow,
+                updatedAt: exactNow
             });
 
             const outputRecord = replaceUndefinedWithNull({
@@ -382,8 +403,8 @@ export default function OptionTradePage() {
                 totalPnl: simResult.totalPnl,            // 存入复盘用的总收益
                 intrinsicValueAtExpiry: simResult.isExpired ? simResult.intrinsicValue : null,
                 hasDelivery: hasDelivery,
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp()
+                createdAt: exactNow,
+                updatedAt: exactNow
             });
 
             // 根據生命週期分發入庫
@@ -450,7 +471,7 @@ export default function OptionTradePage() {
             for (const record of txRecords) {
                 const cleanRecord = replaceUndefinedWithNull(record);
                 delete cleanRecord.id; // 清除前端自用臨時id
-                await addDoc(getStockRef, { ...cleanRecord, createdAt: serverTimestamp() });
+                await addDoc(getStockRef, { ...cleanRecord, createdAt: new Date() });
             }
             
             alert("交收數據已成功精準覆寫至 get-stock 庫！");
@@ -477,7 +498,11 @@ export default function OptionTradePage() {
             const snap = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', collectionName));
             let records: any[] = [];
             snap.forEach(d => records.push({ id: d.id, ...d.data() }));
-            records.sort((a,b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+            records.sort((a,b) => {
+                const timeA = getTime(a.updatedAt) || getTime(a.createdAt);
+                const timeB = getTime(b.updatedAt) || getTime(b.createdAt);
+                return timeB - timeA;
+            });
             setDbRecords(records);
         } catch(e) { console.error(e); } finally { setLoadingDb(false); }
     };
@@ -496,6 +521,7 @@ export default function OptionTradePage() {
             const parsedData = JSON.parse(editRecordModal.rawJson);
             const docId = parsedData.id || editRecordModal.record?.id;
             delete parsedData.id; 
+            parsedData.updatedAt = new Date();
             await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
             setEditRecordModal(null);
             fetchDbRecords(activeDbTab); 
@@ -837,7 +863,7 @@ export default function OptionTradePage() {
                         <table className="min-w-full text-sm text-left divide-y divide-gray-200">
                             <thead className="bg-gray-50 text-gray-500">
                                 <tr>
-                                    <th className="px-3 py-2 whitespace-nowrap">ID / 創建時間</th>
+                                    <th className="px-3 py-2 whitespace-nowrap">ID / 確切修改時間</th>
                                     <th className="px-3 py-2">綁定 TradeID</th>
                                     <th className="px-3 py-2">內容摘要 / 產品名稱</th>
                                     <th className="px-3 py-2 text-center whitespace-nowrap">操作</th>
@@ -848,11 +874,11 @@ export default function OptionTradePage() {
                                     <tr key={r.id} className="hover:bg-gray-50 transition-colors">
                                         <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap font-mono">
                                             <div className="font-bold text-gray-700">{r.id.substring(0,8)}...</div>
-                                            <div>{r.createdAt?.toDate ? r.createdAt.toDate().toLocaleString() : 'N/A'}</div>
+                                            <div className="text-blue-600">
+                                                {formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A'}
+                                            </div>
                                         </td>
-                                        <td className="px-3 py-2 text-xs font-mono text-blue-600">
-                                            {r.tradeId || 'None'}
-                                        </td>
+                                        <td className="px-3 py-2 text-xs font-mono text-blue-600">{r.tradeId || 'None'}</td>
                                         <td className="px-3 py-2 text-xs">
                                             <div className="max-w-md xl:max-w-2xl truncate text-gray-700 bg-blue-50/50 px-2 py-1.5 rounded border border-blue-100 font-medium">
                                                 {getRecordSummary(r, activeDbTab)}
