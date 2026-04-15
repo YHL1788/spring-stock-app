@@ -9,14 +9,14 @@ import {
   AlertCircle,
   Calculator,
   XCircle,
-  Edit2, // 新增图标
-  X      // 新增图标
+  Edit2,
+  X
 } from 'lucide-react';
 import { 
   collection, 
   addDoc, 
   deleteDoc,
-  updateDoc, // 新增 updateDoc
+  updateDoc,
   doc, 
   onSnapshot, 
   query, 
@@ -70,7 +70,8 @@ export default function SpotTradePage() {
   // --- State ---
   const { stocks } = useStockPool();
   const [transactions, setTransactions] = useState<SpotTrade[]>([]);
-  const [formData, setFormData] = useState<SpotTrade>(initialFormState);
+  // 修复：SSR 时初始给空日期，避免服务端和客户端 Hydration 差异报错
+  const [formData, setFormData] = useState<SpotTrade>({ ...initialFormState, date: '' });
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [user, setUser] = useState<any>(null);
@@ -82,6 +83,9 @@ export default function SpotTradePage() {
 
   // --- Auth & Data Subscription ---
   useEffect(() => {
+    // 修复：客户端组件挂载后，安全地填充今天的日期
+    setFormData(prev => ({ ...prev, date: new Date().toISOString().split('T')[0] }));
+
     let unsubscribeSnapshot: (() => void) | undefined;
 
     const initAuthAndData = async () => {
@@ -103,7 +107,6 @@ export default function SpotTradePage() {
           
           if (currentUser) {
             // 3. 用户登录后，开始监听数据
-            // 使用统一的 APP_ID 构建路径
             const q = query(
               collection(db, 'artifacts', APP_ID, 'public', 'data', 'spot_trades'),
               orderBy('date', 'desc')
@@ -205,7 +208,7 @@ export default function SpotTradePage() {
   const handleCancelEdit = () => {
     setIsEditing(false);
     setCurrentEditId(null);
-    setFormData(initialFormState);
+    setFormData({ ...initialFormState, date: new Date().toISOString().split('T')[0] });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
