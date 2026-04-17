@@ -99,6 +99,10 @@ const formatSumWithSign = (val: number) => {
     const sign = val > 0 ? '+' : '';
     return `${sign}${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
+const formatMoney = (val: number, isHkdContext = false) => {
+    const v = isHkdContext ? val : val; 
+    return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
 
 interface MergedRecord {
     tradeId: string;
@@ -996,6 +1000,63 @@ export default function FCNHoldingPage() {
     }, [finalRisk, globalFxRates]);
     const riskSumPnlRatio = riskSums.cost > 0 ? (riskSums.mktVal / riskSums.cost) - 1 : 0;
 
+    // --- 资金净买入统计数据 (存续名义本金 - 累计已实现票息) ---
+    const cashStats = useMemo(() => {
+        const accountsSet = new Set<string>();
+        const marketsSet = new Set<string>();
+
+        processedLiving.forEach(item => {
+            if (item.account) accountsSet.add(item.account);
+            if (item.market) marketsSet.add(item.market);
+        });
+        processedDied.forEach(item => {
+            if (item.account) accountsSet.add(item.account);
+            if (item.market) marketsSet.add(item.market);
+        });
+
+        const accounts = Array.from(accountsSet).sort();
+        const markets = Array.from(marketsSet).sort();
+
+        const rawMatrix: Record<string, Record<string, number>> = {};
+        markets.forEach(m => {
+            rawMatrix[m] = {};
+            accounts.forEach(a => rawMatrix[m][a] = 0);
+        });
+
+        // 加上：存续中的名义本金
+        processedLiving.forEach(item => {
+            if (item.market && item.account) {
+                rawMatrix[item.market][item.account] += (item.notional || 0);
+            }
+        });
+
+        // 减去：所有的累计已实现票息 (Living + Died)
+        processedLiving.forEach(item => {
+            if (item.market && item.account) {
+                rawMatrix[item.market][item.account] -= (item.realized || 0);
+            }
+        });
+        processedDied.forEach(item => {
+            if (item.market && item.account) {
+                rawMatrix[item.market][item.account] -= (item.realized || 0);
+            }
+        });
+
+        return { accounts, markets, rawMatrix };
+    }, [processedLiving, processedDied]);
+
+    // 计算用于底部展示的全局 HKD 总合
+    const totalCashNetBuyHKD = useMemo(() => {
+        let total = 0;
+        cashStats.markets.forEach(mkt => {
+            const rate = globalFxRates[mkt] || 1;
+            cashStats.accounts.forEach(acc => {
+                total += (cashStats.rawMatrix[mkt][acc] || 0) * rate;
+            });
+        });
+        return total;
+    }, [cashStats, globalFxRates]);
+
     // --- FCN 统计入库逻辑 ---
     const handleSaveSum = async (isAuto = false) => {
         if (!user) return;
@@ -1018,14 +1079,31 @@ export default function FCNHoldingPage() {
         }
     };
 
-    // 每分钟自动保存统计
+    // --- 资金净买入统计入库逻辑 ---
+    const handleSaveCashStats = async () => {
+        if (!user) return;
+        try {
+            const payload = {
+                accounts: cashStats.accounts,
+                markets: cashStats.markets,
+                rawMatrix: cashStats.rawMatrix,
+                updatedAt: new Date().toISOString()
+            };
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_fcn', 'latest_summary'), payload);
+        } catch (e) {
+            console.error("保存 FCN 资金净买入统计失败:", e);
+        }
+    };
+
+    // 每分钟自动保存统计与资金净买入
     useEffect(() => {
         if (!user) return;
         const intervalId = setInterval(() => {
             handleSaveSum(true);
+            handleSaveCashStats();
         }, 60000); 
         return () => clearInterval(intervalId);
-    }, [user, globalStats]); 
+    }, [user, globalStats, cashStats]); 
 
     return (
         <div className="space-y-8 pb-10">
@@ -1388,19 +1466,108 @@ export default function FCNHoldingPage() {
                 </div>
             </div>
 
-            {/* === 模块 5：后台库管理模块 === */}
+            {/* === 模块 5：资金净买入统计表 (資金浄買入統計表) === */}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200 mt-8">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                        <FileJson size={20} className="text-purple-600"/>
-                        【后台库管理模块】
+                        <Database size={20} className="text-teal-600"/>
+                        【资金净买入统计表】
+                        <span className="text-sm font-normal text-gray-500 ml-2">存续中名义本金 - 累计已实现票息</span>
+                    </h2>
+                    <div className="flex items-center gap-4">
+                        <span className="text-xs text-gray-400">数据每分钟自动存入 sip_holding_cash_fcn 库</span>
+                    </div>
+                </div>
+
+                <div className="bg-teal-50 border-t border-teal-100 p-5 rounded-lg">
+                    <div className="flex justify-between items-center mb-3">
+                        <h3 className="font-bold text-teal-800 text-sm">资金净买入矩阵</h3>
+                        <button 
+                            onClick={handleToggleHKDView}
+                            disabled={isFetchingFx}
+                            className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-teal-600 text-white border-teal-600 shadow-inner' : 'bg-white text-teal-700 border-teal-200 hover:bg-teal-100 shadow-sm'}`}
+                        >
+                            {isFetchingFx && <Loader2 size={12} className="animate-spin inline mr-1" />}
+                            {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
+                        </button>
+                    </div>
+                    <div className="overflow-x-auto rounded border border-teal-200 bg-white">
+                        <table className="min-w-full text-xs text-right">
+                            <thead className="bg-teal-100/50 text-teal-900 font-medium">
+                                <tr>
+                                    <th className="px-3 py-2 text-center border-b border-r border-teal-100 bg-teal-50/50">币种 \ 账户</th>
+                                    {cashStats.accounts.map(acc => (
+                                        <th key={acc} className="px-3 py-2 border-b border-teal-100">{acc}</th>
+                                    ))}
+                                    <th className="px-3 py-2 border-b border-l border-teal-100 bg-teal-50/50">SUM (HKD)</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-teal-50">
+                                {cashStats.markets.map(mkt => {
+                                    const rate = isHKDView ? (globalFxRates[mkt] || 1) : 1;
+                                    const actualRate = globalFxRates[mkt] || 1;
+                                    let rawRowSum = 0;
+                                    return (
+                                        <tr key={mkt} className="hover:bg-teal-50/30">
+                                            <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-teal-50 bg-teal-50/20">{mkt}</td>
+                                            {cashStats.accounts.map(acc => {
+                                                const rawVal = cashStats.rawMatrix[mkt][acc] || 0;
+                                                rawRowSum += rawVal;
+                                                const displayVal = rawVal * rate;
+                                                return (
+                                                    <td key={acc} className={`px-3 py-2 font-mono ${displayVal > 0 ? 'text-red-600' : displayVal < 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                                                        {displayVal > 0 ? '+' : ''}{displayVal === 0 ? '-' : formatMoney(displayVal, isHKDView)}
+                                                    </td>
+                                                );
+                                            })}
+                                            <td className={`px-3 py-2 font-mono font-bold border-l border-teal-50 bg-teal-50/20 ${rawRowSum * actualRate > 0 ? 'text-red-600' : rawRowSum * actualRate < 0 ? 'text-green-600' : 'text-gray-500'}`}>
+                                                {rawRowSum * actualRate > 0 ? '+' : ''}{rawRowSum === 0 ? '-' : formatMoney(rawRowSum * actualRate, true)}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                                {cashStats.markets.length === 0 && (
+                                    <tr><td colSpan={cashStats.accounts.length + 2} className="px-3 py-4 text-center text-gray-400">暂无数据</td></tr>
+                                )}
+                            </tbody>
+                            {cashStats.markets.length > 0 && (
+                                <tfoot className="bg-teal-100 text-teal-900 border-t-2 border-teal-200 shadow-inner">
+                                    <tr>
+                                        <td className="px-3 py-3 text-center font-bold border-r border-teal-200">SUM (HKD)</td>
+                                        {cashStats.accounts.map(acc => {
+                                            let colSumHKD = 0;
+                                            cashStats.markets.forEach(mkt => {
+                                                const rawVal = cashStats.rawMatrix[mkt][acc] || 0;
+                                                colSumHKD += rawVal * (globalFxRates[mkt] || 1);
+                                            });
+                                            return (
+                                                <td key={acc} className={`px-3 py-3 font-mono font-bold ${colSumHKD > 0 ? 'text-red-600' : colSumHKD < 0 ? 'text-green-600' : 'text-teal-900'}`}>
+                                                    {colSumHKD > 0 ? '+' : ''}{colSumHKD === 0 ? '-' : formatMoney(colSumHKD, true)}
+                                                </td>
+                                            );
+                                        })}
+                                        <td className={`px-3 py-3 font-mono font-bold text-sm border-l border-teal-200 ${totalCashNetBuyHKD > 0 ? 'text-red-600' : totalCashNetBuyHKD < 0 ? 'text-green-600' : 'text-teal-900'}`}>
+                                            {totalCashNetBuyHKD > 0 ? '+' : ''}{formatMoney(totalCashNetBuyHKD, true)} HKD
+                                        </td>
+                                    </tr>
+                                </tfoot>
+                            )}
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            {/* === 模块 6：后台库管理模块 === */}
+            <div className="bg-white shadow rounded-lg p-6 border border-gray-200 mt-8">
+                <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                        <FileJson size={20} className="text-purple-600"/> 【后台库管理模块】
                     </h2>
                     <button onClick={() => fetchDbRecords(activeDbTab)} className="text-sm text-purple-600 hover:text-purple-800 flex items-center gap-1">
                         <RefreshCw size={14}/> 刷新数据
                     </button>
                 </div>
 
-                {/* 资料库 Tab 切换 */}
                 <div className="flex gap-2 mb-4 border-b pb-2 overflow-x-auto">
                     {[
                         'sip_trade_fcn_input_living',

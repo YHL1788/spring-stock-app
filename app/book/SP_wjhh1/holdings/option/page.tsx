@@ -19,7 +19,7 @@ import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'fi
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 
-// --- 时间解析辅助函数 ---
+// --- 時間のパース補助関数 ---
 const getTime = (val: any) => {
     if (!val) return 0;
     if (val.toMillis && typeof val.toMillis === 'function') return val.toMillis();
@@ -43,11 +43,16 @@ const formatSumWithSign = (val: number) => {
     return `${sign}${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
-// --- 辅助函数：序列化处理 ---
+const formatMoney = (val: number, isHkdContext = false) => {
+    const v = isHkdContext ? val : val; 
+    return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+// --- 補助関数：シリアライズ処理 ---
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) return null;
     if (obj === null || typeof obj !== 'object') return obj;
-    // 【核心修复】：严格放行原生 Date 对象与 Firestore Timestamp
+    // 【コア修正】：ネイティブのDateオブジェクトとFirestoreのTimestampをそのまま通す
     if (obj instanceof Date) return obj; 
     if (obj.toDate && typeof obj.toDate === 'function') return obj; 
     if (obj._methodName) return obj; 
@@ -61,12 +66,12 @@ const replaceUndefinedWithNull = (obj: any): any => {
     return newObj;
 };
 
-// --- 精准过期时间推算 (HKT UTC+8) ---
+// --- 正確な有効期限の計算 (HKT UTC+8) ---
 const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
     if (!expDateStr) return Infinity;
     try {
         if (currency === 'USD') {
-            // 美股：到期日次日 04:00 HKT
+            // 米国株：満期日の翌日 04:00 HKT
             const [y, m, d] = expDateStr.split('-').map(Number);
             const nextDay = new Date(y, m - 1, d + 1);
             const nextY = nextDay.getFullYear();
@@ -74,23 +79,23 @@ const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
             const nextD = String(nextDay.getDate()).padStart(2, '0');
             return new Date(`${nextY}-${nextM}-${nextD}T04:00:00+08:00`).getTime();
         } else if (currency === 'JPY') {
-            // 日股：到期日当天 14:00 HKT (即东京 15:00)
+            // 日本株：満期日の当日 14:00 HKT (東京 15:00)
             return new Date(`${expDateStr}T14:00:00+08:00`).getTime();
         } else if (currency === 'CNY') {
-            // A股：到期日当天 15:00 HKT
+            // A株：満期日の当日 15:00 HKT
             return new Date(`${expDateStr}T15:00:00+08:00`).getTime();
         } else {
-            // 港股 (HKD/默认)：到期日当天 16:00 HKT
+            // 香港株 (HKD/デフォルト)：満期日の当日 16:00 HKT
             return new Date(`${expDateStr}T16:00:00+08:00`).getTime();
         }
     } catch (e) {
-        console.error("日期解析错误", e);
+        console.error("日付解析エラー", e);
         const todayStr = new Date().toISOString().split('T')[0];
-        return todayStr >= expDateStr ? 0 : Infinity; // 容错降级
+        return todayStr >= expDateStr ? 0 : Infinity; // フォールバック
     }
 };
 
-// --- 可排序筛选表头组件 ---
+// --- ソート・フィルタリング可能なテーブルヘッダーコンポーネント ---
 const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onFilter, align='left' }: any) => {
     const justifyClass = align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start';
     const textClass = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
@@ -127,8 +132,8 @@ const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onF
     );
 };
 
-// 格式化数字
-const fmtMoney = (val: number, c: string = "") => new Intl.NumberFormat('en-US', { style: 'currency', currency: c || 'USD' }).format(val);
+// 数値のフォーマット
+const fmtMoneyDisplay = (val: number, c: string = "") => new Intl.NumberFormat('en-US', { style: 'currency', currency: c || 'USD' }).format(val);
 
 interface MergedRecord {
     tradeId: string;
@@ -143,26 +148,26 @@ interface MergedRecord {
 export default function OptionHoldingPage() {
     const [user, setUser] = useState<any>(null);
     
-    // --- 核心持仓状态 ---
+    // --- コアとなる保有状態 ---
     const [livingRecords, setLivingRecords] = useState<MergedRecord[]>([]);
     const [diedRecords, setDiedRecords] = useState<MergedRecord[]>([]);
     const [loadingLiving, setLoadingLiving] = useState(false);
     const [loadingDied, setLoadingDied] = useState(false);
     const [loadingSum, setLoadingSum] = useState(false);
 
-    // --- 全局最新汇率与 HKD 视图状态 ---
+    // --- グローバルな最新為替レートとHKD表示のフラグ ---
     const [isHKDView, setIsHKDView] = useState(false);
     const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
     const [isFetchingFx, setIsFetchingFx] = useState(false);
     const hasFetchedInitialFxRates = useRef(false);
 
-    // --- DB管理模块状态 ---
+    // --- データベース管理モジュールの状態 ---
     const [activeDbTab, setActiveDbTab] = useState('sip_holding_option_output_living');
     const [dbRecords, setDbRecords] = useState<any[]>([]);
     const [loadingDb, setLoadingDb] = useState(false);
     const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
 
-    // --- 排序与筛选 State ---
+    // --- ソートとフィルターのState ---
     const [livingSort, setLivingSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: '', dir: null});
     const [livingFilters, setLivingFilters] = useState<Record<string, string>>({});
     const [riskSort, setRiskSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: '', dir: null});
@@ -190,7 +195,7 @@ export default function OptionHoldingPage() {
     const toggleDiedSort = toggleSort(setDiedSort);
     const updateDiedFilter = handleFilter(setDiedFilters);
 
-    // --- 初始化 Auth ---
+    // --- 認証の初期化 ---
     useEffect(() => {
         const initAuth = async () => {
             if (!auth.currentUser) {
@@ -203,7 +208,7 @@ export default function OptionHoldingPage() {
         initAuth();
     }, []);
 
-    // --- 核心：通过 tradeId 映射合并 Input 和 Output 库 ---
+    // --- コア処理：tradeIdを基にInputとOutputのコレクションをマージ ---
     const fetchMergedRecords = async (lifeCycle: 'living' | 'died'): Promise<MergedRecord[]> => {
         try {
             const inputSnap = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_option_input_${lifeCycle}`));
@@ -259,7 +264,7 @@ export default function OptionHoldingPage() {
         } catch(e) { console.error(e); }
     };
 
-    // --- 获取并刷新后台库数据 ---
+    // --- データベース管理のデータを取得 ---
     const fetchDbRecords = async (collectionName: string) => {
         if (!user) return;
         setLoadingDb(true);
@@ -284,7 +289,7 @@ export default function OptionHoldingPage() {
     useEffect(() => { if (user) fetchDbRecords(activeDbTab); }, [activeDbTab, user]);
     useEffect(() => { if (user) { loadRecords(); fetchDbRecords(activeDbTab); } }, [user]);
 
-    // --- API 调用 ---
+    // --- API呼び出し群 ---
     const fetchQuotePrice = async (symbol: string): Promise<number | null> => {
         try {
             const res = await fetch(`/api/quote?symbol=${symbol}`);
@@ -348,12 +353,12 @@ export default function OptionHoldingPage() {
         setIsHKDView(!isHKDView);
     };
 
-    // --- 核心计算与状态判断逻辑 ---
+    // --- コアの計算と状態判定ロジック ---
     const evaluateOption = async (mergedRecord: MergedRecord) => {
         const { inputData, outputData } = mergedRecord;
         const { basic, underlying, dates } = inputData;
         
-        // 【铁血逻辑】：使用精准到小时的市场过期时间判定
+        // 【厳格なロジック】：時間単位での市場期限判定を使用
         const expireTimeMs = getExpirationTimeMs(dates.expiryDate, basic.currency);
         const isExpired = Date.now() >= expireTimeMs;
         const status = isExpired ? 'Expired (已失效)' : 'Living (存续中)';
@@ -386,7 +391,7 @@ export default function OptionHoldingPage() {
             }
         }
 
-        // 金融计算
+        // 財務計算
         const qty = Number(basic.qty);
         const strike = Number(underlying.strike);
         const isCall = basic.optionType === 'Call';
@@ -401,7 +406,7 @@ export default function OptionHoldingPage() {
         const unrealizedPnl = isExpired ? 0 : intrinsicValue;
         const totalPnl = realizedPremium + intrinsicValue;
         
-        // 接货判断
+        // デリバリー（受渡）の判定
         const isITM = isCall ? spot > strike : spot < strike;
         let hasDelivery = false;
         let deliveryRecord: any = null;
@@ -430,7 +435,7 @@ export default function OptionHoldingPage() {
             };
         }
 
-        // 【时间戳铁血逻辑】：使用精确绝对时间
+        // 【タイムスタンプの厳格なロジック】：正確な絶対時間を使用
         const exactNow = new Date();
 
         return {
@@ -456,7 +461,7 @@ export default function OptionHoldingPage() {
         };
     };
 
-    // --- 刷新当前持仓 (Living) ---
+    // --- 現在の保有状況を更新 (Living) ---
     const handleRefreshLiving = async () => {
         setLoadingLiving(true);
         let expiredCount = 0;
@@ -474,18 +479,18 @@ export default function OptionHoldingPage() {
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_option_input_living', mergedRecord.inputId), res.cleanInput);
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_living', mergedRecord.outputId), res.cleanOutput);
                 } else {
-                    // 到期搬家 -> Died
+                    // 期限切れ -> Died へ移動
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_option_input_died', mergedRecord.inputId), res.cleanInput);
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_died', mergedRecord.outputId), res.cleanOutput);
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_option_input_living', mergedRecord.inputId));
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_living', mergedRecord.outputId));
                     expiredCount++;
 
-                    // 写入交收记录
+                    // 受渡記録の書き込み
                     if (res.hasDelivery && res.deliveryRecord) {
                         const cleanDelivery = replaceUndefinedWithNull(res.deliveryRecord);
                         await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_get-stock'), {
-                            ...cleanDelivery, createdAt: new Date() // 使用绝对时间
+                            ...cleanDelivery, createdAt: new Date() // 絶対時間を使用
                         });
                     }
                 }
@@ -500,7 +505,7 @@ export default function OptionHoldingPage() {
         finally { setLoadingLiving(false); }
     };
 
-    // --- 刷新历史持仓 (Died) ---
+    // --- 過去の保有状況を更新 (Died) ---
     const handleRefreshDied = async () => {
         setLoadingDied(true);
         let errorHealedCount = 0;
@@ -515,14 +520,14 @@ export default function OptionHoldingPage() {
                 delete res.cleanInput.id; delete res.cleanOutput.id;
 
                 if (!res.isExpired) {
-                    // 智能自愈 (Self-Healing)：发现没死，搬回 Living
+                    // 自動修復 (Self-Healing)：期限切れではないと判明した場合、Living へ戻す
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_option_input_living', mergedRecord.inputId), res.cleanInput);
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_living', mergedRecord.outputId), res.cleanOutput);
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_option_input_died', mergedRecord.inputId));
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_died', mergedRecord.outputId));
                     errorHealedCount++;
                 } else {
-                    // 依然已死，无脑覆盖校准
+                    // やはり期限切れの場合は上書き調整
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_option_input_died', mergedRecord.inputId), res.cleanInput);
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_died', mergedRecord.outputId), res.cleanOutput);
                 }
@@ -537,7 +542,7 @@ export default function OptionHoldingPage() {
         finally { setLoadingDied(false); }
     };
 
-    // --- 数据展平与表头逻辑 ---
+    // --- データの平坦化とテーブルヘッダーのロジック ---
     const useTableData = (data: any[], sortConfig: any, filterConfig: any, isHKDView: boolean, globalFx: Record<string, number>) => {
         return useMemo(() => {
             let result = [...data];
@@ -578,7 +583,7 @@ export default function OptionHoldingPage() {
         }, [data, sortConfig, filterConfig, isHKDView, globalFx]);
     };
 
-    // --- 准备展平字典 ---
+    // --- 平坦化辞書の準備 ---
     const processedLiving = useMemo(() => {
         return livingRecords.map((r) => {
             const out = r.outputData || {};
@@ -597,7 +602,7 @@ export default function OptionHoldingPage() {
                 strike: Number(und.strike) || 0,
                 spotPrice: Number(und.spotPrice) || 0,
                 realizedPremium: out.realizedPremium || 0,
-                unrealizedPnl: out.expectedPayoff || 0, // Option Trade 存的是 expectedPayoff
+                unrealizedPnl: out.expectedPayoff || 0, // Option Trade は expectedPayoff に保存
                 totalPnl: out.totalPnl || 0,
                 fx_rate: basic.fxRate || 1
             };
@@ -674,7 +679,7 @@ export default function OptionHoldingPage() {
     const finalRisk = useTableData(processedRisk, riskSort, riskFilters, isHKDView, globalFxRates);
     const finalDied = useTableData(processedDied, diedSort, diedFilters, isHKDView, globalFxRates);
 
-    // --- 计算全局 SUM 与统计 ---
+    // --- グローバルな SUM と統計の計算 ---
     const globalStats = useMemo(() => {
         const markets: Record<string, any> = {};
 
@@ -728,7 +733,56 @@ export default function OptionHoldingPage() {
         return { marketList, hkdSum };
     }, [finalLiving, finalDied, globalFxRates]);
 
-    // --- Option 统计入库逻辑 ---
+    // --- 【追加】資金純買付統計データ (資金浄買入 = -已実現期権金) ---
+    const cashStats = useMemo(() => {
+        const accountsSet = new Set<string>();
+        const marketsSet = new Set<string>();
+
+        processedLiving.forEach(item => {
+            if (item.account) accountsSet.add(item.account);
+            if (item.currency) marketsSet.add(item.currency); // Option は currency を使用
+        });
+        processedDied.forEach(item => {
+            if (item.account) accountsSet.add(item.account);
+            if (item.currency) marketsSet.add(item.currency);
+        });
+
+        const accounts = Array.from(accountsSet).sort();
+        const markets = Array.from(marketsSet).sort();
+
+        const rawMatrix: Record<string, Record<string, number>> = {};
+        markets.forEach(m => {
+            rawMatrix[m] = {};
+            accounts.forEach(a => rawMatrix[m][a] = 0);
+        });
+
+        // 資金純買付 = - 実現したオプションプレミアム (Living + Died)
+        const addPremium = (item: any) => {
+            if (item.currency && item.account) {
+                // premiumがマイナス(支払済)ならプラスに、プラス(受取済)ならマイナスにする
+                rawMatrix[item.currency][item.account] += -(item.realizedPremium || 0);
+            }
+        };
+
+        processedLiving.forEach(addPremium);
+        processedDied.forEach(addPremium);
+
+        return { accounts, markets, rawMatrix };
+    }, [processedLiving, processedDied]);
+
+    // UI表示用のHKD総合算（データベースには保存しない）
+    const totalCashNetBuyHKD = useMemo(() => {
+        let total = 0;
+        cashStats.markets.forEach(mkt => {
+            const rate = globalFxRates[mkt] || 1;
+            cashStats.accounts.forEach(acc => {
+                total += (cashStats.rawMatrix[mkt][acc] || 0) * rate;
+            });
+        });
+        return total;
+    }, [cashStats, globalFxRates]);
+
+    // --- Option 統計のデータベース保存ロジック ---
     const handleSaveSum = async (isAuto = false) => {
         if (!user) return;
         try {
@@ -736,7 +790,7 @@ export default function OptionHoldingPage() {
             const payload = replaceUndefinedWithNull({
                 marketStats: globalStats.marketList,
                 hkdSum: globalStats.hkdSum,
-                updatedAt: new Date() // 使用绝对时间
+                updatedAt: new Date() // 絶対時間を使用
             });
 
             await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_sum', 'latest_summary'), payload);
@@ -750,16 +804,33 @@ export default function OptionHoldingPage() {
         }
     };
 
-    // 每分钟自动保存统计
+    // --- 【追加】資金純買付データの保存ロジック ---
+    const handleSaveCashStats = async () => {
+        if (!user) return;
+        try {
+            const payload = {
+                accounts: cashStats.accounts,
+                markets: cashStats.markets,
+                rawMatrix: cashStats.rawMatrix,
+                updatedAt: new Date().toISOString()
+            };
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_option', 'latest_summary'), payload);
+        } catch (e) {
+            console.error("保存 Option 资金净买入统计失败:", e);
+        }
+    };
+
+    // 毎分自動で統計と資金純買付を保存
     useEffect(() => {
         if (!user) return;
         const intervalId = setInterval(() => {
             handleSaveSum(true);
+            handleSaveCashStats();
         }, 60000); 
         return () => clearInterval(intervalId);
-    }, [user, globalStats]);
+    }, [user, globalStats, cashStats]);
 
-    // --- 帮助函数 ---
+    // --- ヘルパー関数 ---
     const formatMoneyWithUnit = (val: number, ccy: string, fxRate: number = 1) => {
         const effectiveRate = globalFxRates[ccy] || fxRate || 1;
         const value = isHKDView ? val * effectiveRate : val;
@@ -825,7 +896,7 @@ export default function OptionHoldingPage() {
                 </button>
             </div>
 
-            {/* --- 模块 1：Option 持仓板块（存续中） --- */}
+            {/* --- モジュール 1：Option 持倉板块（存续中） --- */}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
@@ -881,7 +952,7 @@ export default function OptionHoldingPage() {
                 </button>
             </div>
 
-            {/* --- 模块 2：Option 风控模块 --- */}
+            {/* --- モジュール 2：Option 风控模块 --- */}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
@@ -928,7 +999,7 @@ export default function OptionHoldingPage() {
                 </div>
             </div>
 
-            {/* --- 模块 3：Option 持仓板块（历史） --- */}
+            {/* --- モジュール 3：Option 持倉板块（历史） --- */}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
@@ -982,7 +1053,7 @@ export default function OptionHoldingPage() {
                 </button>
             </div>
 
-            {/* === 模块 4：Option 统计 === */}
+            {/* --- モジュール 4：Option 统计 --- */}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200 mt-8">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
@@ -1054,7 +1125,97 @@ export default function OptionHoldingPage() {
                 </div>
             </div>
 
-            {/* --- 模块 5：后台库管理模块 --- */}
+            {/* === モジュール 5：资金净买入统计表 (資金浄買入統計表) === */}
+            <div className="bg-white shadow rounded-lg p-6 border border-gray-200 mt-8">
+                <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                        <Database size={20} className="text-teal-600"/>
+                        【资金净买入统计表】
+                        <span className="text-sm font-normal text-gray-500 ml-2">净买入 = - 已实现期权金 (含历史)</span>
+                    </h2>
+                    <div className="flex items-center gap-4">
+                        <span className="text-xs text-gray-400">数据每分钟自动存入 sip_holding_cash_option 库</span>
+                    </div>
+                </div>
+
+                <div className="bg-teal-50 border-t border-teal-100 p-5 rounded-lg">
+                    <div className="flex justify-between items-center mb-3">
+                        <h3 className="font-bold text-teal-800 text-sm">资金净买入矩阵</h3>
+                        <button 
+                            onClick={handleToggleHKDView}
+                            disabled={isFetchingFx}
+                            className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-teal-600 text-white border-teal-600 shadow-inner' : 'bg-white text-teal-700 border-teal-200 hover:bg-teal-100 shadow-sm'}`}
+                        >
+                            {isFetchingFx && <Loader2 size={12} className="animate-spin inline mr-1" />}
+                            {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
+                        </button>
+                    </div>
+                    <div className="overflow-x-auto rounded border border-teal-200 bg-white">
+                        <table className="min-w-full text-xs text-right">
+                            <thead className="bg-teal-100/50 text-teal-900 font-medium">
+                                <tr>
+                                    <th className="px-3 py-2 text-center border-b border-r border-teal-100 bg-teal-50/50">币种 \ 账户</th>
+                                    {cashStats.accounts.map(acc => (
+                                        <th key={acc} className="px-3 py-2 border-b border-teal-100">{acc}</th>
+                                    ))}
+                                    <th className="px-3 py-2 border-b border-l border-teal-100 bg-teal-50/50">SUM (HKD)</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-teal-50">
+                                {cashStats.markets.map(mkt => {
+                                    const actualRate = globalFxRates[mkt] || 1;
+                                    let rawRowSum = 0;
+                                    return (
+                                        <tr key={mkt} className="hover:bg-teal-50/30">
+                                            <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-teal-50 bg-teal-50/20">{mkt}</td>
+                                            {cashStats.accounts.map(acc => {
+                                                const rawVal = cashStats.rawMatrix[mkt][acc] || 0;
+                                                rawRowSum += rawVal;
+                                                const displayVal = isHKDView ? rawVal * actualRate : rawVal;
+                                                return (
+                                                    <td key={acc} className={`px-3 py-2 font-mono ${displayVal > 0 ? 'text-red-600' : displayVal < 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                                                        {displayVal > 0 ? '+' : ''}{displayVal === 0 ? '-' : formatMoney(displayVal, isHKDView)}
+                                                    </td>
+                                                );
+                                            })}
+                                            <td className={`px-3 py-2 font-mono font-bold border-l border-teal-50 bg-teal-50/20 ${rawRowSum * actualRate > 0 ? 'text-red-600' : rawRowSum * actualRate < 0 ? 'text-green-600' : 'text-gray-500'}`}>
+                                                {rawRowSum * actualRate > 0 ? '+' : ''}{rawRowSum === 0 ? '-' : formatMoney(rawRowSum * actualRate, true)}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                                {cashStats.markets.length === 0 && (
+                                    <tr><td colSpan={cashStats.accounts.length + 2} className="px-3 py-4 text-center text-gray-400">暂无数据</td></tr>
+                                )}
+                            </tbody>
+                            {cashStats.markets.length > 0 && (
+                                <tfoot className="bg-teal-100 text-teal-900 border-t-2 border-teal-200 shadow-inner">
+                                    <tr>
+                                        <td className="px-3 py-3 text-center font-bold border-r border-teal-200">SUM (HKD)</td>
+                                        {cashStats.accounts.map(acc => {
+                                            let colSumHKD = 0;
+                                            cashStats.markets.forEach(mkt => {
+                                                const rawVal = cashStats.rawMatrix[mkt][acc] || 0;
+                                                colSumHKD += rawVal * (globalFxRates[mkt] || 1);
+                                            });
+                                            return (
+                                                <td key={acc} className={`px-3 py-3 font-mono font-bold ${colSumHKD > 0 ? 'text-red-600' : colSumHKD < 0 ? 'text-green-600' : 'text-teal-900'}`}>
+                                                    {colSumHKD > 0 ? '+' : ''}{colSumHKD === 0 ? '-' : formatMoney(colSumHKD, true)}
+                                                </td>
+                                            );
+                                        })}
+                                        <td className={`px-3 py-3 font-mono font-bold text-sm border-l border-teal-200 ${totalCashNetBuyHKD > 0 ? 'text-red-600' : totalCashNetBuyHKD < 0 ? 'text-green-600' : 'text-teal-900'}`}>
+                                            {totalCashNetBuyHKD > 0 ? '+' : ''}{formatMoney(totalCashNetBuyHKD, true)} HKD
+                                        </td>
+                                    </tr>
+                                </tfoot>
+                            )}
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            {/* --- モジュール 6：后台库管理模块 --- */}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200 mt-8">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">

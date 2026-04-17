@@ -683,6 +683,31 @@ export default function SpotHoldingsPage() {
       }, 0);
   }, [initialHoldings, globalFxRates]);
 
+  // --- 资金净买入数据入库逻辑 ---
+  const handleSaveCashStats = async () => {
+      if (!user) return;
+      try {
+          const payload = {
+              accounts: netBuyStats.accounts,
+              markets: netBuyStats.markets,
+              rawMatrix: netBuyStats.rawMatrix,
+              updatedAt: new Date().toISOString()
+          };
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_spot', 'latest_summary'), payload);
+      } catch (e) {
+          console.error("保存资金净买入统计失败:", e);
+      }
+  };
+
+  // 每分钟自动保存资金统计
+  useEffect(() => {
+      if (!user) return;
+      const intervalId = setInterval(() => {
+          handleSaveCashStats();
+      }, 60000); 
+      return () => clearInterval(intervalId);
+  }, [user, netBuyStats]);
+
   // --- 初始持仓增删改查事件 ---
   const handleUpdateBaseDate = async (newDate: string) => {
       setBaseDate(newDate);
