@@ -1517,6 +1517,40 @@ export default function PEHoldingsPage() {
             </div>
         )}
 
+        {/* --- 汇率详情弹窗 --- */}
+        {showFxModal && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
+                    <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
+                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                            <Info className="text-blue-500" size={18} /> 全局汇率 (对 HKD)
+                        </h3>
+                        <button onClick={() => setShowFxModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                            <X size={20}/>
+                        </button>
+                    </div>
+                    <div className="p-5">
+                        {Object.keys(globalFxRates).length === 0 ? (
+                            <p className="text-sm text-gray-500 text-center py-4">暂无已缓存的汇率数据，请点击右上角“更新汇率”。</p>
+                        ) : (
+                            <div className="space-y-3">
+                                {Object.entries(globalFxRates).map(([currency, rate]) => (
+                                    <div key={currency} className="flex justify-between items-center border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+                                        <span className="font-bold text-gray-700 font-mono">{currency}</span>
+                                        <span className="text-gray-600 font-mono">{Number(rate).toFixed(4)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <div className="bg-gray-50 px-5 py-3 border-t border-gray-100 flex justify-end">
+                        <button onClick={() => setShowFxModal(false)} className="px-4 py-2 bg-blue-600 text-white text-sm font-bold rounded shadow-sm hover:bg-blue-700 transition-colors">
+                            关闭
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
     </div>
   );
 }

@@ -141,7 +141,7 @@ export default function SpotHoldingsPage() {
   // 初始持仓（底座）与基准日期
   const [initialHoldings, setInitialHoldings] = useState<InitialHolding[]>([]);
   const [baseDate, setBaseDate] = useState<string>('');
-  const [newInit, setNewInit] = useState({ code: '', market: 'HK', account: '', quantity: 0, costPrice: 0 });
+  const [newInit, setNewInit] = useState({ code: '', market: 'HKD', account: '', quantity: 0, costPrice: 0 });
   const [submittingInit, setSubmittingInit] = useState(false);
 
   // --- 汇率锁定 State ---
@@ -1219,7 +1219,7 @@ export default function SpotHoldingsPage() {
             </div>
         </div>
 
-        {/* === 模块 4：初始股票持仓 (期初建账) === */}
+        {/* === 模块 5：初始股票持仓 (期初建账底座) === */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
                 <h2 className="text-base font-bold text-gray-800 flex items-center gap-2">
@@ -1236,7 +1236,7 @@ export default function SpotHoldingsPage() {
                     />
                     <button
                         onClick={() => {
-                            const mkts = new Set(['USD', 'CN', 'US']); 
+                            const mkts = new Set(['USD', 'CNY', 'JPY']); 
                             initialHoldings.forEach(h => { if(h.market && h.market !== 'HKD' && h.market !== 'HK') mkts.add(h.market); });
                             const drafts: Record<string, string> = {};
                             mkts.forEach(m => { drafts[m] = baseFxRates[m]?.toString() || ''; });
@@ -1290,9 +1290,10 @@ export default function SpotHoldingsPage() {
                             </td>
                             <td className="px-4 py-2">
                                 <select value={newInit.market} onChange={e => setNewInit({...newInit, market: e.target.value})} className="w-full p-1.5 border border-purple-200 rounded text-xs outline-none focus:ring-1 focus:ring-purple-400 bg-white">
-                                    <option value="HK">HK</option>
-                                    <option value="US">US</option>
-                                    <option value="CN">CN</option>
+                                    <option value="USD">USD</option>
+                                    <option value="CNY">CNY</option>
+                                    <option value="HKD">HKD</option>
+                                    <option value="JPY">JPY</option>
                                 </select>
                             </td>
                             <td className="px-4 py-2">

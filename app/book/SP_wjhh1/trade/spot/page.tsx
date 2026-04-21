@@ -52,7 +52,7 @@ interface SpotTrade {
 const initialFormState: SpotTrade = {
   date: new Date().toISOString().split('T')[0],
   account: '',
-  market: 'HK',
+  market: 'HKD',
   executor: '',
   type: '普通股票',
   direction: 'BUY',
@@ -348,9 +348,10 @@ export default function SpotTradePage() {
             <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-500 mb-1">市场</label>
               <select name="market" value={formData.market} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none">
-                <option value="HK">港股 (HK)</option>
-                <option value="US">美股 (US)</option>
-                <option value="CN">A股 (CN)</option>
+                <option value="USD">USD</option>
+                <option value="CNY">CNY</option>
+                <option value="HKD">HKD</option>
+                <option value="JPY">JPY</option>
               </select>
             </div>
             <div className="col-span-1">

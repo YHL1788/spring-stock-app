@@ -145,7 +145,7 @@ export default function CBBCHoldingsPage() {
   const [cbbcPrices, setCbbcPrices] = useState<Record<string, CBBCPriceRecord>>({});
   
   // --- 新增期初记录 State ---
-  const [newInit, setNewInit] = useState({ futuresCode: '', futuresName: '', market: 'HK', account: '', quantity: 0, costPrice: 0 });
+  const [newInit, setNewInit] = useState({ futuresCode: '', futuresName: '', market: 'USD', account: '', quantity: 0, costPrice: 0 });
   const [submittingInit, setSubmittingInit] = useState(false);
   const [draftPrices, setDraftPrices] = useState<Record<string, string>>({}); 
 
@@ -240,7 +240,7 @@ export default function CBBCHoldingsPage() {
                         id: docSnap.id, 
                         date: d.date, 
                         account: d.account || '', 
-                        market: d.market || 'HK',
+                        market: d.market || 'HKD',
                         futuresCode: d.futuresCode, 
                         futuresName: d.futuresName, 
                         direction,
@@ -699,7 +699,7 @@ export default function CBBCHoldingsPage() {
       setSubmittingInit(true);
       try {
           await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_start'), newInit);
-          setNewInit({ futuresCode: '', futuresName: '', market: 'HK', account: '', quantity: 0, costPrice: 0 });
+          setNewInit({ futuresCode: '', futuresName: '', market: 'USD', account: '', quantity: 0, costPrice: 0 });
       } catch (e) { alert('添加期初持仓失败'); } 
       finally { setSubmittingInit(false); }
   };
@@ -938,12 +938,12 @@ export default function CBBCHoldingsPage() {
             </div>
         </div>
 
-        {/* === 模块 2：损益分析图表 === */}
+        {/* === 模块 2：盈亏分析图表 === */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
                 <h2 className="text-base font-bold text-gray-800 flex items-center gap-2">
                     <BarChartIcon size={18} className="text-rose-500" />
-                    盈亏分析明细与图表 (未实现浮盈 vs 已实现盈亏)
+                    盈亏分析明细与图表 (未实现 vs 已实现)
                 </h2>
                 <div className="flex bg-white rounded border border-gray-300 p-0.5 shadow-sm">
                     <button 
@@ -1342,9 +1342,6 @@ export default function CBBCHoldingsPage() {
                             </td>
                             <td className="px-4 py-2">
                                 <select value={newInit.market} onChange={e => setNewInit({...newInit, market: e.target.value})} className="w-full p-1.5 border border-purple-200 rounded text-xs outline-none focus:ring-1 focus:ring-purple-400 bg-white">
-                                    <option value="HK">HK</option>
-                                    <option value="US">US</option>
-                                    <option value="CN">CN</option>
                                     <option value="USD">USD</option>
                                     <option value="CNY">CNY</option>
                                     <option value="HKD">HKD</option>
@@ -1511,9 +1508,44 @@ export default function CBBCHoldingsPage() {
                             });
                             await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_start', '_global_config'), { baseFxRates: parsed }, { merge: true });
                             setShowBaseFxModal(false);
-                            setBaseFxRates(parsed); // 立即更新UI状态
+                            setBaseFxRates(parsed); 
                         }} className="px-4 py-2 bg-purple-600 text-white text-sm font-bold rounded shadow-sm hover:bg-purple-700 transition-colors">
                             保存锁定
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* --- 汇率详情弹窗 --- */}
+        {showFxModal && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
+                    <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
+                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                            <Info className="text-blue-500" size={18} /> 全局汇率 (对 HKD)
+                        </h3>
+                        <button onClick={() => setShowFxModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                            <X size={20}/>
+                        </button>
+                    </div>
+                    <div className="p-5">
+                        {Object.keys(globalFxRates).length === 0 ? (
+                            <p className="text-sm text-gray-500 text-center py-4">暂无已缓存的汇率数据，请点击右上角“更新汇率”。</p>
+                        ) : (
+                            <div className="space-y-3">
+                                {Object.entries(globalFxRates).map(([currency, rate]) => (
+                                    <div key={currency} className="flex justify-between items-center border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+                                        <span className="font-bold text-gray-700 font-mono">{currency}</span>
+                                        <span className="text-gray-600 font-mono">{Number(rate).toFixed(4)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <div className="bg-gray-50 px-5 py-3 border-t border-gray-100 flex justify-end">
+                        <button onClick={() => setShowFxModal(false)} className="px-4 py-2 bg-blue-600 text-white text-sm font-bold rounded shadow-sm hover:bg-blue-700 transition-colors">
+                            关闭
                         </button>
                     </div>
                 </div>
