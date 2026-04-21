@@ -12,7 +12,8 @@ import {
   Search,
   Database,
   Save,
-  Trash2
+  Trash2,
+  X
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -143,6 +144,11 @@ export default function SpotHoldingsPage() {
   const [newInit, setNewInit] = useState({ code: '', market: 'HK', account: '', quantity: 0, costPrice: 0 });
   const [submittingInit, setSubmittingInit] = useState(false);
 
+  // --- 汇率锁定 State ---
+  const [baseFxRates, setBaseFxRates] = useState<Record<string, number>>({});
+  const [showBaseFxModal, setShowBaseFxModal] = useState(false);
+  const [draftBaseFx, setDraftBaseFx] = useState<Record<string, string>>({});
+
   // 全局状态
   const [isHKDView, setIsHKDView] = useState(false);
   const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
@@ -201,14 +207,17 @@ export default function SpotHoldingsPage() {
             unsubStart = onSnapshot(qStart, (snapshot) => {
                 const starts: InitialHolding[] = [];
                 let bDate = '';
+                let bFx: Record<string, number> = {};
                 snapshot.forEach(docSnap => {
                     if (docSnap.id === '_global_config') {
                         bDate = docSnap.data().baseDate || '';
+                        bFx = docSnap.data().baseFxRates || {};
                     } else {
                         starts.push({ id: docSnap.id, ...docSnap.data() } as InitialHolding);
                     }
                 });
                 setBaseDate(bDate);
+                setBaseFxRates(bFx);
                 setInitialHoldings(starts);
             });
 
@@ -652,7 +661,7 @@ export default function SpotHoldingsPage() {
       return { accounts, markets, rawMatrix };
   }, [displayTrades]);
 
-  // --- 模块 4: 初始持仓（期初投入）二维统计数据 ---
+  // --- 模块 5: 初始持仓（期初投入）二维统计数据 ---
   const initialStats = useMemo(() => {
       const accountsSet = new Set<string>();
       const marketsSet = new Set<string>();
@@ -682,10 +691,10 @@ export default function SpotHoldingsPage() {
 
   const totalInitialHKD = useMemo(() => {
       return initialHoldings.reduce((sum, h) => {
-          const rate = globalFxRates[h.market] || 1;
+          const rate = baseFxRates[h.market] || globalFxRates[h.market] || 1;
           return sum + (h.quantity * h.costPrice * rate);
       }, 0);
-  }, [initialHoldings, globalFxRates]);
+  }, [initialHoldings, baseFxRates, globalFxRates]);
 
   // --- 资金净买入数据入库逻辑 ---
   const handleSaveCashStats = async () => {
@@ -1225,6 +1234,19 @@ export default function SpotHoldingsPage() {
                         onChange={(e) => handleUpdateBaseDate(e.target.value)}
                         className="p-1.5 border border-purple-200 rounded text-sm focus:ring-2 focus:ring-purple-500 outline-none shadow-sm"
                     />
+                    <button
+                        onClick={() => {
+                            const mkts = new Set(['USD', 'CN', 'US']); 
+                            initialHoldings.forEach(h => { if(h.market && h.market !== 'HKD' && h.market !== 'HK') mkts.add(h.market); });
+                            const drafts: Record<string, string> = {};
+                            mkts.forEach(m => { drafts[m] = baseFxRates[m]?.toString() || ''; });
+                            setDraftBaseFx(drafts);
+                            setShowBaseFxModal(true);
+                        }}
+                        className="px-3 py-1.5 bg-purple-100 text-purple-700 hover:bg-purple-200 rounded text-xs font-bold transition-colors border border-purple-200 shadow-sm"
+                    >
+                        ⚙️ 设置建账汇率
+                    </button>
                 </div>
             </div>
             
@@ -1243,7 +1265,7 @@ export default function SpotHoldingsPage() {
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                         {initialHoldings.map(h => {
-                            const rate = isHKDView ? (globalFxRates[h.market] || 1) : 1;
+                            const rate = isHKDView ? (baseFxRates[h.market] || globalFxRates[h.market] || 1) : 1;
                             const amt = h.quantity * h.costPrice * rate;
                             return (
                             <tr key={h.id} className="hover:bg-purple-50/30 transition-colors">
@@ -1317,7 +1339,7 @@ export default function SpotHoldingsPage() {
                         </thead>
                         <tbody className="divide-y divide-purple-50">
                             {initialStats.markets.map(mkt => {
-                                const rate = isHKDView ? (globalFxRates[mkt] || 1) : 1;
+                                const rate = isHKDView ? (baseFxRates[mkt] || globalFxRates[mkt] || 1) : 1;
                                 let rowSum = 0;
                                 return (
                                     <tr key={mkt} className="hover:bg-purple-50/30">
@@ -1350,7 +1372,7 @@ export default function SpotHoldingsPage() {
                                         let colSumHKD = 0;
                                         initialStats.markets.forEach(mkt => {
                                             const rawVal = initialStats.rawMatrix[mkt][acc] || 0;
-                                            colSumHKD += rawVal * (globalFxRates[mkt] || 1);
+                                            colSumHKD += rawVal * (baseFxRates[mkt] || globalFxRates[mkt] || 1);
                                         });
                                         return (
                                             <td key={acc} className="px-3 py-3 font-mono font-bold text-purple-900">
@@ -1368,6 +1390,69 @@ export default function SpotHoldingsPage() {
                 </div>
             </div>
         </div>
+
+        {/* --- 汇率锁定弹窗 --- */}
+        {showBaseFxModal && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
+                    <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
+                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                            ⚙️ 设置期初建账汇率 (对 HKD)
+                        </h3>
+                        <button onClick={() => setShowBaseFxModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                            <X size={20}/>
+                        </button>
+                    </div>
+                    <div className="p-5 space-y-4">
+                        <p className="text-xs text-gray-500">锁定这些汇率后，期初投入的总成本(HKD)将永远固定，不会随每日市场汇率波动。</p>
+                        <button
+                            onClick={() => {
+                                const drafts: Record<string, string> = {};
+                                Object.keys(draftBaseFx).forEach(m => {
+                                    drafts[m] = globalFxRates[m]?.toString() || draftBaseFx[m];
+                                });
+                                setDraftBaseFx(drafts);
+                            }}
+                            className="w-full py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded text-xs font-bold transition-colors border border-blue-200"
+                        >
+                            ⬇️ 获取当前最新汇率填充
+                        </button>
+                        <div className="space-y-3">
+                            {Object.keys(draftBaseFx).map(mkt => (
+                                <div key={mkt} className="flex justify-between items-center">
+                                    <span className="font-bold text-gray-700 font-mono w-16">{mkt}</span>
+                                    <input
+                                        type="number"
+                                        step="0.0001"
+                                        value={draftBaseFx[mkt]}
+                                        onChange={(e) => setDraftBaseFx(prev => ({...prev, [mkt]: e.target.value}))}
+                                        className="w-32 p-1.5 border rounded text-right text-sm font-mono outline-none focus:ring-1 focus:ring-purple-500"
+                                        placeholder="如: 7.82"
+                                    />
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="bg-gray-50 px-5 py-3 border-t border-gray-100 flex justify-end gap-3">
+                        <button onClick={() => setShowBaseFxModal(false)} className="px-4 py-2 bg-gray-200 text-gray-700 text-sm font-bold rounded shadow-sm hover:bg-gray-300 transition-colors">
+                            取消
+                        </button>
+                        <button onClick={async () => {
+                            const parsed: Record<string, number> = {};
+                            Object.entries(draftBaseFx).forEach(([k, v]) => {
+                                const val = parseFloat(v);
+                                if (!isNaN(val) && val > 0) parsed[k] = val;
+                            });
+                            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start', '_global_config'), { baseFxRates: parsed }, { merge: true });
+                            setShowBaseFxModal(false);
+                            setBaseFxRates(parsed); 
+                        }} className="px-4 py-2 bg-purple-600 text-white text-sm font-bold rounded shadow-sm hover:bg-purple-700 transition-colors">
+                            保存锁定
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
 
     </div>
   );

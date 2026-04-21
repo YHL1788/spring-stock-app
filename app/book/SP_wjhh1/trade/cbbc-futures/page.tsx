@@ -53,7 +53,7 @@ const getInitialFormState = (): CBBCTrade => ({
   account: '',
   futuresCode: '',
   futuresName: '',
-  market: 'HK',
+  market: 'USD', // 默认值改为 USD，与 PE Trade 保持一致
   executor: '',
   direction: 'BUY',
   quantity: 0,
@@ -319,9 +319,6 @@ export default function CBBCTradePage() {
             <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-500 mb-1">市场 (币种)</label>
               <select name="market" value={formData.market} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-purple-500">
-                <option value="HK">港股 (HK)</option>
-                <option value="US">美股 (US)</option>
-                <option value="CN">A股 (CN)</option>
                 <option value="USD">USD</option>
                 <option value="CNY">CNY</option>
                 <option value="HKD">HKD</option>

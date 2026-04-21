@@ -13,7 +13,9 @@ import {
   Database,
   Save,
   Trash2,
-  DollarSign
+  DollarSign,
+  Info,
+  X
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -147,10 +149,16 @@ export default function PEHoldingsPage() {
   const [submittingInit, setSubmittingInit] = useState(false);
   const [draftPrices, setDraftPrices] = useState<Record<string, string>>({}); 
 
+  // --- 汇率锁定 State ---
+  const [baseFxRates, setBaseFxRates] = useState<Record<string, number>>({});
+  const [showBaseFxModal, setShowBaseFxModal] = useState(false);
+  const [draftBaseFx, setDraftBaseFx] = useState<Record<string, string>>({});
+
   // --- 全局状态 ---
   const [isHKDView, setIsHKDView] = useState(false);
   const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
   const [isFetchingFx, setIsFetchingFx] = useState(false);
+  const [showFxModal, setShowFxModal] = useState(false);
   
   // --- 图表切换 ---
   const [chartType, setChartType] = useState<'BEST' | 'WORST'>('BEST');
@@ -206,14 +214,17 @@ export default function PEHoldingsPage() {
             unsubStart = onSnapshot(qStart, (snapshot) => {
                 const starts: InitialPEHolding[] = [];
                 let bDate = '';
+                let bFx: Record<string, number> = {};
                 snapshot.forEach(docSnap => {
                     if (docSnap.id === '_global_config') {
                         bDate = docSnap.data().baseDate || '';
+                        bFx = docSnap.data().baseFxRates || {};
                     } else {
                         starts.push({ id: docSnap.id, ...docSnap.data() } as InitialPEHolding);
                     }
                 });
                 setBaseDate(bDate);
+                setBaseFxRates(bFx);
                 setInitialHoldings(starts);
             });
 
@@ -639,11 +650,44 @@ export default function PEHoldingsPage() {
       }
   };
 
+  const handleDeletePrice = async (fundCode: string) => {
+      if (!confirm(`确定要删除 [${fundCode}] 的手动估值吗？删除后系统将恢复使用历史平均成本价计算市值。`)) return;
+      try {
+          await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_lastprice', fundCode));
+          setDraftPrices(prev => { const next = {...prev}; delete next[fundCode]; return next; });
+      } catch (e) {
+          alert("删除估值失败");
+      }
+  };
+
+  // --- 期初投入二维统计数据 (必须放在 early return 前面！) ---
+  const initialStats = useMemo(() => {
+      const accountsSet = new Set<string>();
+      const marketsSet = new Set<string>();
+      initialHoldings.forEach(h => {
+          if (h.account) accountsSet.add(h.account);
+          if (h.market) marketsSet.add(h.market);
+      });
+      const accounts = Array.from(accountsSet).sort();
+      const markets = Array.from(marketsSet).sort();
+      const rawMatrix: Record<string, Record<string, number>> = {};
+      markets.forEach(m => {
+          rawMatrix[m] = {};
+          accounts.forEach(a => rawMatrix[m][a] = 0);
+      });
+      initialHoldings.forEach(h => {
+          if (h.market && h.account) {
+              rawMatrix[h.market][h.account] += h.quantity * h.costPrice;
+          }
+      });
+      return { accounts, markets, rawMatrix };
+  }, [initialHoldings]);
+
   // --- 模块 6: 期初持仓设置 ---
   const handleUpdateBaseDate = async (newDate: string) => {
       setBaseDate(newDate);
       try {
-          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_start', '_global_config'), { baseDate: newDate });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_start', '_global_config'), { baseDate: newDate }, { merge: true });
       } catch (e) { console.error("更新基准日期失败", e); }
   };
 
@@ -673,6 +717,7 @@ export default function PEHoldingsPage() {
   };
   const fmtPct = (val: number) => (val * 100).toFixed(2) + '%';
 
+  // 【重要】所有 Hooks 必须在此之前声明
   if (loadingInitial) {
       return <div className="min-h-screen flex items-center justify-center"><Loader2 className="animate-spin text-blue-600" size={40}/></div>;
   }
@@ -690,7 +735,15 @@ export default function PEHoldingsPage() {
                     专属非标资产盯市。采用【期初底座】+【增量申赎】计算 FIFO 成本，并依赖底部【内部价格录入】实现市值重估。
                 </p>
             </div>
-            <div className="flex gap-3">
+            <div className="flex gap-2">
+                 <button 
+                    onClick={() => setShowFxModal(true)} 
+                    className="px-3 py-2 text-sm rounded border bg-white hover:bg-gray-50 text-gray-600 transition-colors shadow-sm flex items-center gap-1"
+                    title="查看当前汇率"
+                >
+                    <Info size={16} className="text-blue-500" />
+                    汇率详情
+                </button>
                  <button 
                     onClick={() => fetchFxRates()} 
                     disabled={isFetchingFx}
@@ -745,7 +798,7 @@ export default function PEHoldingsPage() {
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                         {displayHoldings.length === 0 ? (
-                            <tr><td colSpan={11} className="p-8 text-center text-gray-400">当前无持仓数据</td></tr>
+                            <tr><td colSpan={12} className="p-8 text-center text-gray-400">当前无持仓数据</td></tr>
                         ) : displayHoldings.map(h => {
                             const pctOfTotalMktVal = holdingSums.mktValHKD > 0 ? h.mktValHKD / holdingSums.mktValHKD : 0;
                             const pnlContribution = holdingSums.totalCostHKD > 0 ? h.unrealizedPnlHKD / holdingSums.totalCostHKD : 0;
@@ -1186,13 +1239,24 @@ export default function PEHoldingsPage() {
                                         {lastRec ? formatTime(lastRec.updatedAt) : <span className="text-gray-300">尚未录入</span>}
                                     </td>
                                     <td className="px-4 py-3 text-center">
-                                        <button 
-                                            onClick={() => handleSavePrice(fund.fundCode, fund.market, fund.fundName)}
-                                            disabled={!isChanged}
-                                            className={`px-3 py-1.5 rounded font-bold text-xs shadow-sm flex items-center justify-center gap-1 mx-auto transition-colors ${isChanged ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
-                                        >
-                                            <Save size={14} /> 保存净值
-                                        </button>
+                                        <div className="flex items-center justify-center gap-2">
+                                            <button 
+                                                onClick={() => handleSavePrice(fund.fundCode, fund.market, fund.fundName)}
+                                                disabled={!isChanged}
+                                                className={`px-3 py-1.5 rounded font-bold text-xs shadow-sm flex items-center justify-center gap-1 transition-colors ${isChanged ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                                            >
+                                                <Save size={14} /> 保存净值
+                                            </button>
+                                            {lastRec && (
+                                                <button 
+                                                    onClick={() => handleDeletePrice(fund.fundCode)}
+                                                    className="px-2 py-1.5 rounded text-xs shadow-sm flex items-center justify-center gap-1 text-red-500 hover:bg-red-50 hover:text-red-700 transition-colors border border-red-100 bg-white"
+                                                    title="删除该估值记录"
+                                                >
+                                                    <Trash2 size={14} />
+                                                </button>
+                                            )}
+                                        </div>
                                     </td>
                                 </tr>
                             );
@@ -1217,6 +1281,19 @@ export default function PEHoldingsPage() {
                         onChange={(e) => handleUpdateBaseDate(e.target.value)}
                         className="p-1.5 border border-purple-200 rounded text-sm focus:ring-2 focus:ring-purple-500 outline-none shadow-sm"
                     />
+                    <button
+                        onClick={() => {
+                            const mkts = new Set(['USD', 'CNY', 'JPY']);
+                            initialHoldings.forEach(h => { if(h.market && h.market !== 'HKD') mkts.add(h.market); });
+                            const drafts: Record<string, string> = {};
+                            mkts.forEach(m => { drafts[m] = baseFxRates[m]?.toString() || ''; });
+                            setDraftBaseFx(drafts);
+                            setShowBaseFxModal(true);
+                        }}
+                        className="px-3 py-1.5 bg-purple-100 text-purple-700 hover:bg-purple-200 rounded text-xs font-bold transition-colors border border-purple-200 shadow-sm"
+                    >
+                        ⚙️ 设置建账汇率
+                    </button>
                 </div>
             </div>
             
@@ -1236,7 +1313,7 @@ export default function PEHoldingsPage() {
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                         {initialHoldings.map(h => {
-                            const rate = isHKDView ? (globalFxRates[h.market] || 1) : 1;
+                            const rate = isHKDView ? (baseFxRates[h.market] || globalFxRates[h.market] || 1) : 1;
                             const amt = h.quantity * h.costPrice * rate;
                             return (
                             <tr key={h.id} className="hover:bg-purple-50/30 transition-colors">
@@ -1290,7 +1367,155 @@ export default function PEHoldingsPage() {
                     </tbody>
                 </table>
             </div>
+
+            {/* 期初投入二维统计矩阵 */}
+            <div className="mt-6 bg-purple-50 border-t border-purple-100 p-5 rounded-lg">
+                <div className="flex justify-between items-center mb-3">
+                    <h3 className="font-bold text-purple-800 text-sm">期初投入二维统计矩阵</h3>
+                    <div className="flex items-center gap-4">
+                        <span className="text-xs text-purple-600">采用锁定的建账汇率计算，确保历史成本恒定</span>
+                        <button 
+                            onClick={() => setIsHKDView(!isHKDView)}
+                            className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-purple-600 text-white border-purple-600 shadow-inner' : 'bg-white text-purple-700 border-purple-200 hover:bg-purple-100 shadow-sm'}`}
+                        >
+                            {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
+                        </button>
+                    </div>
+                </div>
+                <div className="overflow-x-auto rounded border border-purple-200 bg-white">
+                    <table className="min-w-full text-xs text-right">
+                        <thead className="bg-purple-100/50 text-purple-900 font-medium">
+                            <tr>
+                                <th className="px-3 py-2 text-center border-b border-r border-purple-100 bg-purple-50/50">币种 \ 账户</th>
+                                {initialStats.accounts.map(acc => (
+                                    <th key={acc} className="px-3 py-2 border-b border-purple-100">{acc}</th>
+                                ))}
+                                <th className="px-3 py-2 border-b border-l border-purple-100 bg-purple-50/50">SUM (HKD)</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-purple-50">
+                            {initialStats.markets.map(mkt => {
+                                const rate = isHKDView ? (baseFxRates[mkt] || globalFxRates[mkt] || 1) : 1;
+                                const actualRate = baseFxRates[mkt] || globalFxRates[mkt] || 1;
+                                let rawRowSum = 0;
+                                return (
+                                    <tr key={mkt} className="hover:bg-purple-50/30">
+                                        <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-purple-50 bg-purple-50/20">{mkt}</td>
+                                        {initialStats.accounts.map(acc => {
+                                            const rawVal = initialStats.rawMatrix[mkt][acc] || 0;
+                                            rawRowSum += rawVal;
+                                            const displayVal = rawVal * rate;
+                                            return (
+                                                <td key={acc} className="px-3 py-2 font-mono text-gray-700">
+                                                    {displayVal === 0 ? '-' : formatMoneyStr(displayVal, isHKDView)}
+                                                </td>
+                                            );
+                                        })}
+                                        <td className="px-3 py-2 font-mono font-bold text-purple-900 border-l border-purple-50 bg-purple-50/20">
+                                            {rawRowSum * actualRate === 0 ? '-' : formatMoneyStr(rawRowSum * actualRate, true)}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                            {initialStats.markets.length === 0 && (
+                                <tr><td colSpan={initialStats.accounts.length + 2} className="px-3 py-4 text-center text-gray-400">暂无期初数据</td></tr>
+                            )}
+                        </tbody>
+                        {initialStats.markets.length > 0 && (
+                            <tfoot className="bg-purple-100 text-purple-900 border-t-2 border-purple-200 shadow-inner">
+                                <tr>
+                                    <td className="px-3 py-3 text-center font-bold border-r border-purple-200">SUM (HKD)</td>
+                                    {initialStats.accounts.map(acc => {
+                                        let colSumHKD = 0;
+                                        initialStats.markets.forEach(mkt => {
+                                            const rawVal = initialStats.rawMatrix[mkt][acc] || 0;
+                                            colSumHKD += rawVal * (baseFxRates[mkt] || globalFxRates[mkt] || 1);
+                                        });
+                                        return (
+                                            <td key={acc} className="px-3 py-3 font-mono font-bold text-purple-900">
+                                                {colSumHKD === 0 ? '-' : formatMoneyStr(colSumHKD, true)}
+                                            </td>
+                                        );
+                                    })}
+                                    <td className="px-3 py-3 font-mono font-bold text-sm border-l border-purple-200 text-purple-900">
+                                        {formatMoneyStr(
+                                            initialStats.markets.reduce((sum, mkt) => {
+                                                let mSum = 0;
+                                                initialStats.accounts.forEach(a => mSum += initialStats.rawMatrix[mkt][a] || 0);
+                                                return sum + mSum * (baseFxRates[mkt] || globalFxRates[mkt] || 1);
+                                            }, 0), true
+                                        )} HKD
+                                    </td>
+                                </tr>
+                            </tfoot>
+                        )}
+                    </table>
+                </div>
+            </div>
         </div>
+
+        {/* --- 汇率锁定弹窗 --- */}
+        {showBaseFxModal && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
+                    <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
+                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                            ⚙️ 设置期初建账汇率 (对 HKD)
+                        </h3>
+                        <button onClick={() => setShowBaseFxModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                            <X size={20}/>
+                        </button>
+                    </div>
+                    <div className="p-5 space-y-4">
+                        <p className="text-xs text-gray-500">锁定这些汇率后，期初投入的总成本(HKD)将永远固定，不会随每日市场汇率波动。</p>
+                        <button
+                            onClick={() => {
+                                const drafts: Record<string, string> = {};
+                                Object.keys(draftBaseFx).forEach(m => {
+                                    drafts[m] = globalFxRates[m]?.toString() || draftBaseFx[m];
+                                });
+                                setDraftBaseFx(drafts);
+                            }}
+                            className="w-full py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded text-xs font-bold transition-colors border border-blue-200"
+                        >
+                            ⬇️ 获取当前最新汇率填充
+                        </button>
+                        <div className="space-y-3">
+                            {Object.keys(draftBaseFx).map(mkt => (
+                                <div key={mkt} className="flex justify-between items-center">
+                                    <span className="font-bold text-gray-700 font-mono w-16">{mkt}</span>
+                                    <input
+                                        type="number"
+                                        step="0.0001"
+                                        value={draftBaseFx[mkt]}
+                                        onChange={(e) => setDraftBaseFx(prev => ({...prev, [mkt]: e.target.value}))}
+                                        className="w-32 p-1.5 border rounded text-right text-sm font-mono outline-none focus:ring-1 focus:ring-purple-500"
+                                        placeholder="如: 7.82"
+                                    />
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="bg-gray-50 px-5 py-3 border-t border-gray-100 flex justify-end gap-3">
+                        <button onClick={() => setShowBaseFxModal(false)} className="px-4 py-2 bg-gray-200 text-gray-700 text-sm font-bold rounded shadow-sm hover:bg-gray-300 transition-colors">
+                            取消
+                        </button>
+                        <button onClick={async () => {
+                            const parsed: Record<string, number> = {};
+                            Object.entries(draftBaseFx).forEach(([k, v]) => {
+                                const val = parseFloat(v);
+                                if (!isNaN(val) && val > 0) parsed[k] = val;
+                            });
+                            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_start', '_global_config'), { baseFxRates: parsed }, { merge: true });
+                            setShowBaseFxModal(false);
+                            setBaseFxRates(parsed); // 立即更新UI状态
+                        }} className="px-4 py-2 bg-purple-600 text-white text-sm font-bold rounded shadow-sm hover:bg-purple-700 transition-colors">
+                            保存锁定
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
 
     </div>
   );
