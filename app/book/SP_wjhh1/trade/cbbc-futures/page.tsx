@@ -12,11 +12,7 @@ import {
   Edit2, 
   X      
 } from 'lucide-react';
-
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { 
-  getFirestore,
   collection, 
   addDoc, 
   deleteDoc,
@@ -27,30 +23,10 @@ import {
   orderBy, 
   serverTimestamp 
 } from 'firebase/firestore';
+import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
-// --- 统一 Firebase 初始化 ---
-declare var __firebase_config: string;
-declare var __app_id: string;
-declare var __initial_auth_token: string;
-
-let firebaseConfig = {
-  apiKey: "mock-key",
-  authDomain: "mock-domain",
-  projectId: "mock-project"
-};
-
-if (typeof __firebase_config !== 'undefined') {
-  try {
-    firebaseConfig = JSON.parse(__firebase_config);
-  } catch (e) {
-    console.error('Failed to parse firebase config', e);
-  }
-}
-
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-const auth = getAuth(app);
-const db = getFirestore(app);
-const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+// 引入统一的 Firebase 实例和工具
+import { db, auth, APP_ID } from '@/app/lib/stockService';
 
 // --- 类型定义 ---
 interface CBBCTrade {
@@ -77,7 +53,7 @@ const getInitialFormState = (): CBBCTrade => ({
   account: '',
   futuresCode: '',
   futuresName: '',
-  market: 'USD',
+  market: 'HK',
   executor: '',
   direction: 'BUY',
   quantity: 0,
@@ -113,8 +89,10 @@ export default function CBBCTradePage() {
       try {
         // 1. 确保用户已登录
         if (!auth.currentUser) {
-           if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-             await signInWithCustomToken(auth, __initial_auth_token);
+           // @ts-ignore
+           if (typeof window !== 'undefined' && window.__initial_auth_token) {
+             // @ts-ignore
+             await signInWithCustomToken(auth, window.__initial_auth_token);
            } else {
              await signInAnonymously(auth);
            }
@@ -125,7 +103,7 @@ export default function CBBCTradePage() {
           setUser(currentUser);
           
           if (currentUser) {
-            // 3. 用户登录后，开始监听数据 (集合名称使用 sip_trade_cbbc 以防嵌套问题)
+            // 3. 用户登录后，开始监听数据
             const q = query(
               collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_cbbc'),
               orderBy('date', 'desc')
@@ -246,7 +224,7 @@ export default function CBBCTradePage() {
         });
       }
 
-      // 重置表单，保留部分偏好设置（如日期、账户、市场、执行人）
+      // 重置表单，保留部分偏好设置
       setFormData({
         ...getInitialFormState(),
         date: formData.date,
@@ -282,9 +260,9 @@ export default function CBBCTradePage() {
     <div className="space-y-6 pb-10 max-w-[1400px] mx-auto">
       <div className="border-b border-gray-200 pb-4 flex justify-between items-end">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">牛熊证交易录入 (CBBC Trade)</h1>
+          <h1 className="text-2xl font-bold text-gray-900">牛熊证/期货交易录入 (CBBC Trade)</h1>
           <p className="mt-1 text-sm text-gray-500">
-            录入牛熊证及相关衍生品的交易流水，系统将自动计算含费金额与均价。
+            录入牛熊证、期货及相关衍生品的交易流水，系统将自动计算含费金额与均价。无需关联股票池代码。
           </p>
         </div>
         <div className="text-sm text-gray-400">
@@ -299,33 +277,21 @@ export default function CBBCTradePage() {
           <div className="flex-1">
             <h3 className="text-sm font-bold text-red-800">发生错误</h3>
             <p className="text-sm text-red-700 mt-1 break-all font-mono">{error}</p>
-            {error.includes('requires an index') && (
-              <p className="text-xs text-red-600 mt-2">
-                提示: Firestore 需要建立索引。请复制错误信息中的 URL 在浏览器打开以创建索引。
-              </p>
-            )}
           </div>
           <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600">
-            <span className="sr-only">关闭</span>
             <XCircle size={20} />
           </button>
         </div>
       )}
 
       {/* --- 录入表单 --- */}
-      <div className={`bg-white p-6 rounded-lg shadow-sm border transition-all duration-300 ${isEditing ? 'border-blue-400 ring-1 ring-blue-100' : 'border-gray-200'}`}>
+      <div className={`bg-white p-6 rounded-lg shadow-sm border transition-all duration-300 ${isEditing ? 'border-purple-400 ring-1 ring-purple-100' : 'border-gray-200'}`}>
         <div className="flex justify-between items-center mb-4">
-          <h2 className={`text-sm font-bold flex items-center gap-2 ${isEditing ? 'text-blue-600' : 'text-gray-700'}`}>
+          <h2 className={`text-sm font-bold flex items-center gap-2 ${isEditing ? 'text-purple-600' : 'text-gray-700'}`}>
             {isEditing ? (
-              <>
-                <Edit2 size={16} />
-                修改交易记录
-              </>
+              <><Edit2 size={16} />修改交易记录</>
             ) : (
-              <>
-                <Plus size={16} className="text-blue-600" />
-                新增牛熊证交易
-              </>
+              <><Plus size={16} className="text-purple-600" />新增牛熊证/期货交易</>
             )}
           </h2>
           {isEditing && (
@@ -333,8 +299,7 @@ export default function CBBCTradePage() {
               onClick={handleCancelEdit}
               className="text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-100 px-2 py-1 rounded flex items-center gap-1 transition-colors"
             >
-              <X size={14} />
-              取消修改
+              <X size={14} />取消修改
             </button>
           )}
         </div>
@@ -345,15 +310,18 @@ export default function CBBCTradePage() {
             {/* 第一行：基础信息 */}
             <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-500 mb-1">日期</label>
-              <input type="date" name="date" required value={formData.date} onChange={handleInputChange} className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+              <input type="date" name="date" required value={formData.date} onChange={handleInputChange} className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-purple-500 outline-none" />
             </div>
             <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-500 mb-1">账户</label>
-              <input type="text" name="account" placeholder="输入账户" required value={formData.account} onChange={handleInputChange} className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+              <input type="text" name="account" placeholder="输入账户" required value={formData.account} onChange={handleInputChange} className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-purple-500 outline-none" />
             </div>
             <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-500 mb-1">市场 (币种)</label>
-              <select name="market" value={formData.market} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-blue-500">
+              <select name="market" value={formData.market} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-purple-500">
+                <option value="HK">港股 (HK)</option>
+                <option value="US">美股 (US)</option>
+                <option value="CN">A股 (CN)</option>
                 <option value="USD">USD</option>
                 <option value="CNY">CNY</option>
                 <option value="HKD">HKD</option>
@@ -362,47 +330,47 @@ export default function CBBCTradePage() {
             </div>
             <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-500 mb-1">执行人</label>
-              <input type="text" name="executor" placeholder="Trader Name" value={formData.executor} onChange={handleInputChange} className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+              <input type="text" name="executor" placeholder="Trader Name" value={formData.executor} onChange={handleInputChange} className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-purple-500 outline-none" />
             </div>
             <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-500 mb-1">交易方向</label>
               <select name="direction" value={formData.direction} onChange={handleInputChange} className={`w-full p-2 border rounded text-sm font-bold outline-none ${formData.direction === 'BUY' ? 'text-red-600 bg-red-50' : 'text-green-600 bg-green-50'}`}>
-                <option value="BUY">买入 (BUY)</option>
-                <option value="SELL">卖出 (SELL)</option>
+                <option value="BUY">买入 / 开仓 (BUY)</option>
+                <option value="SELL">卖出 / 平仓 (SELL)</option>
               </select>
             </div>
 
-            {/* 第二行：期货信息与数值 */}
+            {/* 第二行：标的信息与数值 */}
             <div className="col-span-1">
-              <label className="block text-xs font-medium text-gray-500 mb-1">期货简码</label>
-              <input type="text" name="futuresCode" placeholder="e.g. HSI" required value={formData.futuresCode} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none font-mono focus:ring-2 focus:ring-blue-500" />
+              <label className="block text-xs font-medium text-gray-500 mb-1">标的简码</label>
+              <input type="text" name="futuresCode" placeholder="e.g. 50012.HK" required value={formData.futuresCode} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none font-mono focus:ring-2 focus:ring-purple-500" />
             </div>
             <div className="col-span-1 md:col-span-2">
-              <label className="block text-xs font-medium text-gray-500 mb-1">期货名称</label>
-              <input type="text" name="futuresName" placeholder="输入期货全称" required value={formData.futuresName} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+              <label className="block text-xs font-medium text-gray-500 mb-1">标的名称</label>
+              <input type="text" name="futuresName" placeholder="输入全称 (如 恒指法兴四甲牛G.C)" required value={formData.futuresName} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-purple-500" />
             </div>
             <div className="col-span-1">
-              <label className="block text-xs font-medium text-gray-500 mb-1">数量</label>
-              <input type="number" name="quantity" min="0" step="0.0001" required value={formData.quantity || ''} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-blue-500 font-mono" />
+              <label className="block text-xs font-medium text-gray-500 mb-1">份额数量</label>
+              <input type="number" name="quantity" min="0" step="0.0001" required value={formData.quantity || ''} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-purple-500 font-mono" />
             </div>
             <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-500 mb-1">均价 (不含费)</label>
-              <input type="number" name="price_excl_fee" min="0" step="0.0001" required value={formData.price_excl_fee || ''} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-blue-500 font-mono" />
+              <input type="number" name="price_excl_fee" min="0" step="0.0001" required value={formData.price_excl_fee || ''} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-purple-500 font-mono" />
             </div>
 
             {/* 第三行：费用与计算展示 */}
             <div className="col-span-1">
               <label className="block text-xs font-medium text-gray-500 mb-1">手续费</label>
-              <input type="number" name="fee" min="0" step="0.01" value={formData.fee || ''} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-blue-500 font-mono" />
+              <input type="number" name="fee" min="0" step="0.01" value={formData.fee || ''} onChange={handleInputChange} className="w-full p-2 border rounded text-sm outline-none focus:ring-2 focus:ring-purple-500 font-mono" />
             </div>
-            <div className="col-span-2 md:col-span-4 flex items-center gap-4 bg-blue-50 p-2 rounded border border-blue-100">
-               <Calculator size={20} className="text-blue-400" />
+            <div className="col-span-2 md:col-span-4 flex items-center gap-4 bg-purple-50 p-2 rounded border border-purple-100">
+               <Calculator size={20} className="text-purple-400" />
                <div className="flex-1 grid grid-cols-2 gap-4">
-                 <div className="flex justify-between items-center text-xs text-blue-800">
+                 <div className="flex justify-between items-center text-xs text-purple-800">
                    <span>金额 (不含费):</span>
                    <span className="font-mono">{formData.amount_excl_fee.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
                  </div>
-                 <div className="flex justify-between items-center text-sm font-bold text-blue-900 border-l border-blue-200 pl-4">
+                 <div className="flex justify-between items-center text-sm font-bold text-purple-900 border-l border-purple-200 pl-4">
                    <span>金额 (含费):</span>
                    <span className="font-mono">{formData.amount_incl_fee.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
                  </div>
@@ -425,7 +393,7 @@ export default function CBBCTradePage() {
               disabled={submitting}
               className={`flex items-center gap-2 text-white px-6 py-2 rounded disabled:opacity-50 transition-colors shadow-sm ${
                 isEditing 
-                ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200' 
+                ? 'bg-purple-600 hover:bg-purple-700 shadow-purple-200' 
                 : 'bg-green-600 hover:bg-green-700 shadow-green-200'
               }`}
             >
@@ -449,7 +417,7 @@ export default function CBBCTradePage() {
             <thead className="bg-gray-50 text-gray-500 font-medium border-b border-gray-200">
               <tr>
                 <th className="px-4 py-3 whitespace-nowrap">日期</th>
-                <th className="px-4 py-3 whitespace-nowrap">期货名称/简码</th>
+                <th className="px-4 py-3 whitespace-nowrap">标的名称/简码</th>
                 <th className="px-4 py-3 whitespace-nowrap">账户</th>
                 <th className="px-4 py-3 whitespace-nowrap text-center">市场</th>
                 <th className="px-4 py-3 whitespace-nowrap text-center">方向</th>
@@ -473,14 +441,14 @@ export default function CBBCTradePage() {
                 <tr>
                   <td colSpan={10} className="px-4 py-8 text-center text-gray-400 flex flex-col items-center">
                     <AlertCircle size={24} className="mb-2 opacity-50" />
-                    暂无牛熊证交易记录
+                    暂无交易记录
                   </td>
                 </tr>
               ) : (
                 transactions.map((t) => (
                   <tr 
                     key={t.id} 
-                    className={`hover:bg-gray-50 transition-colors group ${currentEditId === t.id ? 'bg-blue-50/50' : ''}`}
+                    className={`hover:bg-gray-50 transition-colors group ${currentEditId === t.id ? 'bg-purple-50/50' : ''}`}
                   >
                     <td className="px-4 py-3 whitespace-nowrap text-gray-600">{t.date}</td>
                     <td className="px-4 py-3 whitespace-nowrap">
@@ -500,12 +468,12 @@ export default function CBBCTradePage() {
                     <td className="px-4 py-3 text-right font-mono text-gray-700">{t.quantity.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 4})}</td>
                     <td className="px-4 py-3 text-right font-mono text-gray-600">{t.price_excl_fee.toFixed(4)}</td>
                     <td className="px-4 py-3 text-right font-mono text-gray-400">{t.fee.toFixed(2)}</td>
-                    <td className="px-4 py-3 text-right font-mono font-medium text-blue-700 bg-blue-50/30">{t.amount_incl_fee.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                    <td className="px-4 py-3 text-right font-mono font-medium text-purple-700 bg-purple-50/30">{t.amount_incl_fee.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
                     <td className="px-4 py-3 text-center">
                       <div className="flex items-center justify-center gap-2">
                         <button 
                           onClick={() => handleEditClick(t)}
-                          className="text-gray-400 hover:text-blue-600 p-1 rounded hover:bg-blue-50 transition-colors"
+                          className="text-gray-400 hover:text-purple-600 p-1 rounded hover:bg-purple-50 transition-colors"
                           title="修改"
                         >
                           <Edit2 size={16} />

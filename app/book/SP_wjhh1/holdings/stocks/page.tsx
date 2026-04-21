@@ -73,6 +73,7 @@ interface StockHolding {
   mktValHKD: number; // 现市值 (HKD)
   unrealizedPnlHKD: number; // 浮动盈亏 (HKD)
   realizedPnlHKD: number; // 已实现盈亏 (HKD)
+  pnlRatio: number; // 盈亏比
   accounts: Record<string, number>; // 各账户持仓股数
 }
 
@@ -404,6 +405,7 @@ export default function SpotHoldingsPage() {
                   mktValHKD: 0,
                   unrealizedPnlHKD: 0,
                   realizedPnlHKD: 0,
+                  pnlRatio: 0,
                   accounts: {}
               };
           }
@@ -440,6 +442,7 @@ export default function SpotHoldingsPage() {
                   mktValHKD: 0,
                   unrealizedPnlHKD: 0,
                   realizedPnlHKD: 0, // 注意：已实现盈亏只计算基准日之后的增量部分
+                  pnlRatio: 0,
                   accounts: {}
               };
           }
@@ -480,6 +483,7 @@ export default function SpotHoldingsPage() {
           h.totalCostHKD = (h.quantity * h.avgCost) * rate;
           h.mktValHKD = (h.quantity * h.currentPrice) * rate;
           h.unrealizedPnlHKD = h.mktValHKD - h.totalCostHKD;
+          h.pnlRatio = h.totalCostHKD > 0 ? (h.mktValHKD / h.totalCostHKD) - 1 : 0;
       });
 
       return Object.values(holdingsMap).filter(h => h.quantity > 0 || Math.abs(h.realizedPnlHKD) > 0.01);
@@ -826,6 +830,7 @@ export default function SpotHoldingsPage() {
                             <Th label="总成本 (HKD)" sortKey="totalCostHKD" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
                             <Th label="现市值 (HKD)" sortKey="mktValHKD" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
                             <Th label="浮动盈亏 (HKD)" sortKey="unrealizedPnlHKD" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
+                            <Th label="盈亏比" sortKey="pnlRatio" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
                             <Th label="市值占比" sortKey={null} filterKey={null} align="right" />
                             <Th label="盈亏贡献率" sortKey={null} filterKey={null} align="right" />
                             <Th label="各账户持仓股数" sortKey={null} filterKey={null} />
@@ -861,6 +866,9 @@ export default function SpotHoldingsPage() {
                                     <td className={`px-3 py-2 text-right font-mono font-bold ${h.unrealizedPnlHKD >= 0 ? 'text-red-600' : 'text-green-600'}`}>
                                         {h.unrealizedPnlHKD > 0 ? '+' : ''}{formatMoney(h.unrealizedPnlHKD, true)}
                                     </td>
+                                    <td className={`px-3 py-2 text-right font-mono font-bold ${h.pnlRatio >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                        {h.pnlRatio > 0 ? '+' : ''}{fmtPct(h.pnlRatio)}
+                                    </td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-500">{fmtPct(pctOfTotalMktVal)}</td>
                                     <td className={`px-3 py-2 text-right font-mono ${pnlContribution >= 0 ? 'text-red-500' : 'text-green-500'}`}>
                                         {pnlContribution > 0 ? '+' : ''}{fmtPct(pnlContribution)}
@@ -882,6 +890,9 @@ export default function SpotHoldingsPage() {
                                 <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatMoney(holdingSums.mktValHKD, true)}</td>
                                 <td className={`px-3 py-3 text-right font-mono font-bold text-lg ${holdingSums.unrealizedPnlHKD >= 0 ? 'text-red-600' : 'text-green-600'}`}>
                                     {holdingSums.unrealizedPnlHKD > 0 ? '+' : ''}{formatMoney(holdingSums.unrealizedPnlHKD, true)}
+                                </td>
+                                <td className={`px-3 py-3 text-right font-mono font-bold text-lg ${totalUnrealizedPct >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                    {totalUnrealizedPct > 0 ? '+' : ''}{fmtPct(totalUnrealizedPct)}
                                 </td>
                                 <td colSpan={1} className="px-3 py-3 text-right font-mono font-bold text-indigo-600">100.00%</td>
                                 <td className={`px-3 py-3 text-right font-mono font-bold ${totalUnrealizedPct >= 0 ? 'text-red-600' : 'text-green-600'}`}>
@@ -1036,7 +1047,7 @@ export default function SpotHoldingsPage() {
                             <ResponsiveContainer width="100%" height="100%">
                                 <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-                                    <XAxis dataKey="code" tick={{fontSize: 10}} interval={0} angle={-30} textAnchor="end" height={50} />
+                                    <XAxis dataKey="name" tick={{fontSize: 10}} interval={0} angle={-30} textAnchor="end" height={50} />
                                     <YAxis tickFormatter={(val) => `${(val/10000).toFixed(0)}w`} tick={{fontSize: 10}} />
                                     <Tooltip 
                                         formatter={(value: any) => [formatMoney(Number(value) || 0, true) + ' HKD', '总盈亏']}
