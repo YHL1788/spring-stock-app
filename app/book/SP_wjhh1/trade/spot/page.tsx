@@ -108,7 +108,7 @@ export default function SpotTradePage() {
           if (currentUser) {
             // 3. 用户登录后，开始监听数据
             const q = query(
-              collection(db, 'artifacts', APP_ID, 'public', 'data', 'spot_trades'),
+              collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_spot_trade'),
               orderBy('date', 'desc')
             );
 
@@ -223,7 +223,7 @@ export default function SpotTradePage() {
     try {
       if (isEditing && currentEditId) {
         // --- 更新逻辑 ---
-        const docRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'spot_trades', currentEditId);
+        const docRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_spot_trade', currentEditId);
         // 不更新 createdAt
         const { id, createdAt, ...updateData } = formData; 
         await updateDoc(docRef, updateData);
@@ -233,7 +233,7 @@ export default function SpotTradePage() {
         setCurrentEditId(null);
       } else {
         // --- 新增逻辑 ---
-        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'spot_trades'), {
+        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_spot_trade'), {
           ...formData,
           createdAt: serverTimestamp()
         });
@@ -261,7 +261,7 @@ export default function SpotTradePage() {
     if (!user) return;
 
     try {
-      await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'spot_trades', id));
+      await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_spot_trade', id));
       // 如果正在编辑被删除的项，退出编辑模式
       if (isEditing && currentEditId === id) {
         handleCancelEdit();

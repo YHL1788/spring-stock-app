@@ -6,6 +6,7 @@ import { FileText } from 'lucide-react';
 
 // 定义交易孙页面列表
 const tradeItems = [
+  { path: 'cash', label: '现金 交易' },
   { path: 'fcn', label: 'FCN 交易' },
   { path: 'option', label: 'Option 交易' },
   { path: 'dq-aq', label: 'DQ-AQ 交易' },

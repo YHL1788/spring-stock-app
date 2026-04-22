@@ -78,6 +78,18 @@ interface StockHolding {
   accounts: Record<string, number>; // 各账户持仓股数
 }
 
+// --- 辅助函数：统一币种映射 (数据清洗) ---
+const mapMarket = (m: string | undefined, defaultVal: string) => {
+    if (!m) return defaultVal;
+    const up = m.toUpperCase();
+    if (up === 'US') return 'USD';
+    if (up === 'HK') return 'HKD';
+    if (up === 'CH' || up === 'CN') return 'CNY';
+    if (up === 'JP') return 'JPY';
+    if (['USD', 'HKD', 'CNY', 'JPY'].includes(up)) return up;
+    return defaultVal;
+};
+
 // --- 时间辅助函数 ---
 const getTime = (val: any) => {
     if (!val) return 0;
@@ -213,7 +225,12 @@ export default function SpotHoldingsPage() {
                         bDate = docSnap.data().baseDate || '';
                         bFx = docSnap.data().baseFxRates || {};
                     } else {
-                        starts.push({ id: docSnap.id, ...docSnap.data() } as InitialHolding);
+                        const data = docSnap.data();
+                        starts.push({ 
+                            id: docSnap.id, 
+                            ...data,
+                            market: mapMarket(data.market, 'HKD') // 标准化币种
+                        } as InitialHolding);
                     }
                 });
                 setBaseDate(bDate);
@@ -235,7 +252,8 @@ export default function SpotHoldingsPage() {
                  const direction = d.direction?.toUpperCase() || 'BUY';
                  const qty = Math.abs(Number(d.quantity));
                  merged.push({
-                   id: doc.id, source: 'SPOT', date: d.date, account: d.account || '', market: d.market || 'HK',
+                   id: doc.id, source: 'SPOT', date: d.date, account: d.account || '', 
+                   market: mapMarket(d.market, 'HKD'),
                    code: d.code, name: d.name, direction,
                    quantity: direction === 'BUY' ? qty : -qty,
                    price: Number(d.avg_price_incl_fee || d.price_excl_fee || 0),
@@ -249,7 +267,8 @@ export default function SpotHoldingsPage() {
                  const direction = d.direction?.toUpperCase() || 'BUY';
                  const qty = Math.abs(Number(d.quantity));
                  merged.push({
-                   id: doc.id, source: 'FCN', date: d.date, account: d.account || '', market: d.market || 'HK',
+                   id: doc.id, source: 'FCN', date: d.date, account: d.account || '', 
+                   market: mapMarket(d.market, 'HKD'),
                    code: d.stockCode, name: d.stockName, direction,
                    quantity: direction === 'BUY' ? qty : -qty,
                    price: Number(d.priceWithFee || d.priceNoFee || 0),
@@ -263,7 +282,8 @@ export default function SpotHoldingsPage() {
                  const direction = d.direction?.toUpperCase() || 'BUY';
                  const qty = Math.abs(Number(d.quantity));
                  merged.push({
-                   id: doc.id, source: 'DQ/AQ', date: d.date, account: d.account || '', market: d.market || 'US',
+                   id: doc.id, source: 'DQ/AQ', date: d.date, account: d.account || '', 
+                   market: mapMarket(d.market, 'USD'),
                    code: d.stockCode, name: d.stockName, direction,
                    quantity: direction === 'BUY' ? qty : -qty,
                    price: Number(d.priceNoFee || 0), // 假设 DQ/AQ 无费
@@ -278,7 +298,8 @@ export default function SpotHoldingsPage() {
                  const qty = Math.abs(Number(d.quantity));
                  const sourceType = (d.type || '').toLowerCase().includes('put') ? 'OPTION_PUT' : 'OPTION_CALL';
                  merged.push({
-                   id: doc.id, source: sourceType as any, date: d.date, account: d.account || '', market: d.market || 'US',
+                   id: doc.id, source: sourceType as any, date: d.date, account: d.account || '', 
+                   market: mapMarket(d.market, 'USD'),
                    code: d.stockCode, name: d.stockName, direction,
                    quantity: direction === 'BUY' ? qty : -qty,
                    price: Number(d.priceNoFee || 0), 
@@ -324,17 +345,13 @@ export default function SpotHoldingsPage() {
     setIsFetchingRealTime(true);
     
     try {
-      // 1. 收集所有需要的币种和代码 (结合底座和流水)
+      // 1. 收集所有需要的标准币种和代码 (结合底座和流水)
       const markets = new Set<string>();
       const symbols = new Set<string>();
       
       const collect = (code: string, market: string) => {
-          if (market && market !== 'HKD' && market !== 'HK') {
-              let currency = market;
-              if (currency === 'US') currency = 'USD';
-              if (currency === 'CH' || currency === 'CN') currency = 'CNY';
-              if (currency === 'JP') currency = 'JPY';
-              markets.add(currency);
+          if (market && market !== 'HKD') {
+              markets.add(market);
           }
           if (code) symbols.add(code);
       };
@@ -342,8 +359,8 @@ export default function SpotHoldingsPage() {
       activeTrades.forEach(t => collect(t.code, t.market));
       initialHoldings.forEach(h => collect(h.code, h.market));
 
-      // 2. 并发抓取汇率
-      const newRates: Record<string, number> = { 'HKD': 1.0, 'HK': 1.0 };
+      // 2. 并发抓取标准币种汇率
+      const newRates: Record<string, number> = { 'HKD': 1.0 };
       await Promise.all(Array.from(markets).map(async (currency) => {
           try {
               const res = await fetch(`/api/quote?currency=${currency}`);
@@ -351,9 +368,6 @@ export default function SpotHoldingsPage() {
                   const data = await res.json();
                   if (data && data.rate) {
                       newRates[currency] = data.rate;
-                      if (currency === 'USD') newRates['US'] = data.rate;
-                      if (currency === 'CNY') { newRates['CH'] = data.rate; newRates['CN'] = data.rate; }
-                      if (currency === 'JPY') newRates['JP'] = data.rate;
                   }
               }
           } catch(e) {}
@@ -739,7 +753,7 @@ export default function SpotHoldingsPage() {
       setSubmittingInit(true);
       try {
           await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start'), newInit);
-          setNewInit({ code: '', market: 'HK', account: '', quantity: 0, costPrice: 0 });
+          setNewInit({ code: '', market: 'HKD', account: '', quantity: 0, costPrice: 0 });
       } catch (e) {
           alert('添加期初持仓失败');
       } finally {
@@ -1237,7 +1251,7 @@ export default function SpotHoldingsPage() {
                     <button
                         onClick={() => {
                             const mkts = new Set(['USD', 'CNY', 'JPY']); 
-                            initialHoldings.forEach(h => { if(h.market && h.market !== 'HKD' && h.market !== 'HK') mkts.add(h.market); });
+                            initialHoldings.forEach(h => { if(h.market && h.market !== 'HKD') mkts.add(h.market); });
                             const drafts: Record<string, string> = {};
                             mkts.forEach(m => { drafts[m] = baseFxRates[m]?.toString() || ''; });
                             setDraftBaseFx(drafts);
