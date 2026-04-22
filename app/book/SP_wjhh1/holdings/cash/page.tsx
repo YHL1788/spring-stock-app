@@ -132,8 +132,9 @@ export default function CashHoldingsPage() {
             }));
 
             // 3-7. 各业务线的最新净买入总结
+            // 【重要修复】：Spot 读取路径已变更为 sip_holding_cash_stock
             const summaries = [
-                { path: 'sip_holding_cash_spot', setter: setSpotSummary },
+                { path: 'sip_holding_cash_stock', setter: setSpotSummary }, 
                 { path: 'sip_holding_cash_pe', setter: setPeSummary },
                 { path: 'sip_holding_cash_cbbc', setter: setCbbcSummary },
                 { path: 'sip_holding_cash_option', setter: setOptionSummary },
@@ -297,11 +298,12 @@ export default function CashHoldingsPage() {
       }
   };
 
-  // 每分钟静默后台保存
+  // 每分钟静默后台保存与刷新
   useEffect(() => {
       if (!user) return;
       const intervalId = setInterval(() => {
-          handleSaveRealtimeStats(true);
+          fetchFxRates(); // 自动刷新汇率
+          handleSaveRealtimeStats(true); // 自动入库
       }, 60000); 
       return () => clearInterval(intervalId);
   }, [user, currentCashStats]);
@@ -437,7 +439,7 @@ export default function CashHoldingsPage() {
                             <tfoot className="bg-emerald-100 text-emerald-900 border-t-2 border-emerald-200 shadow-inner">
                                 <tr>
                                     <td className="px-3 py-4 text-center font-bold border-r border-emerald-200">
-                                        {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
+                                        {isHKDView ? 'SUM (HKD)' : 'SUM'}
                                     </td>
                                     {currentCashStats.accounts.map(acc => {
                                         if (!isHKDView) return <td key={acc} className="px-3 py-4 text-center font-mono text-gray-400">-</td>;
@@ -471,20 +473,30 @@ export default function CashHoldingsPage() {
                 </div>
             </div>
 
-            {/* 手动保存/状态栏 */}
+            {/* 手动刷新/保存/状态栏 */}
             <div className="px-6 py-4 bg-white border-t border-gray-100 flex items-center justify-between">
                 <div className="flex items-center gap-4 text-sm text-gray-500">
                     <span className="flex items-center gap-1.5"><Clock size={15} /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastSavedTime}</span></span>
-                    <span className="text-xs bg-gray-100 px-2 py-1 rounded">※每分钟自动后台静默保存</span>
+                    <span className="text-xs bg-gray-100 px-2 py-1 rounded">※每分钟自动刷新数据并后台静默保存</span>
                 </div>
-                <button 
-                    onClick={() => handleSaveRealtimeStats(false)}
-                    disabled={isSavingRealtime}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-lg shadow-sm transition-colors disabled:opacity-50"
-                >
-                    {isSavingRealtime ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                    保存入库 (手动更新)
-                </button>
+                <div className="flex items-center gap-3">
+                    <button 
+                        onClick={() => fetchFxRates()}
+                        disabled={isFetchingFx}
+                        className="flex items-center gap-2 px-6 py-2.5 bg-white border border-emerald-600 text-emerald-600 hover:bg-emerald-50 text-sm font-bold rounded-lg shadow-sm transition-colors disabled:opacity-50"
+                    >
+                        <RefreshCw size={16} className={isFetchingFx ? 'animate-spin' : ''} />
+                        手动刷新
+                    </button>
+                    <button 
+                        onClick={() => handleSaveRealtimeStats(false)}
+                        disabled={isSavingRealtime}
+                        className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-lg shadow-sm transition-colors disabled:opacity-50"
+                    >
+                        {isSavingRealtime ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                        手动保存入库
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -619,7 +631,7 @@ export default function CashHoldingsPage() {
                             <tfoot className="bg-purple-100 text-purple-900 border-t-2 border-purple-200 shadow-inner">
                                 <tr>
                                     <td className="px-3 py-4 text-center font-bold border-r border-purple-200">
-                                        {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
+                                        {isHKDView ? 'SUM (HKD)' : 'SUM'}
                                     </td>
                                     {initialCashStats.accounts.map(acc => {
                                         if (!isHKDView) return <td key={acc} className="px-3 py-4 text-center font-mono text-gray-400">-</td>;

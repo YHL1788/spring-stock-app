@@ -13,6 +13,7 @@ import {
   Database,
   Save,
   Trash2,
+  Info,
   X
 } from 'lucide-react';
 import { 
@@ -166,6 +167,7 @@ export default function SpotHoldingsPage() {
   const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
   const [realTimeQuotes, setRealTimeQuotes] = useState<Record<string, { price: number, changePercent: number }>>({});
   const [isFetchingRealTime, setIsFetchingRealTime] = useState(false);
+  const [showFxModal, setShowFxModal] = useState(false);
   
   // 图表切换
   const [chartType, setChartType] = useState<'BEST' | 'WORST'>('BEST');
@@ -720,7 +722,8 @@ export default function SpotHoldingsPage() {
               rawMatrix: netBuyStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_spot', 'latest_summary'), payload);
+          // 【更新】金蟬脫殼：將入庫路徑改為 sip_holding_cash_stock，避開幽靈進程的污染
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_stock', 'latest_summary'), payload);
       } catch (e) {
           console.error("保存资金净买入统计失败:", e);
       }
@@ -805,6 +808,14 @@ export default function SpotHoldingsPage() {
                 </p>
             </div>
             <div className="flex gap-3">
+                 <button 
+                    onClick={() => setShowFxModal(true)} 
+                    className="px-3 py-2 text-sm rounded border bg-white hover:bg-gray-50 text-gray-600 transition-colors shadow-sm flex items-center gap-1"
+                    title="查看当前汇率"
+                >
+                    <Info size={16} className="text-blue-500" />
+                    汇率详情
+                </button>
                  <button 
                     onClick={() => fetchMarketData()} 
                     disabled={isFetchingRealTime}
@@ -962,39 +973,51 @@ export default function SpotHoldingsPage() {
                                             const displayVal = rawVal * rate;
                                             rowSum += displayVal;
                                             return (
-                                                <td key={acc} className="px-3 py-2 font-mono text-gray-700">
-                                                    {displayVal === 0 ? '-' : formatMoney(displayVal, isHKDView)}
+                                                <td key={acc} className={`px-3 py-3 font-mono ${displayVal > 0 ? 'text-gray-900' : displayVal < 0 ? 'text-red-600' : 'text-gray-400'}`}>
+                                                    {displayVal === 0 ? '-' : formatMoney(displayVal)}
                                                 </td>
                                             );
                                         })}
-                                        <td className="px-3 py-2 font-mono font-bold text-indigo-900 border-l border-indigo-50 bg-indigo-50/20">
-                                            {rowSum === 0 ? '-' : formatMoney(rowSum, isHKDView)}
+                                        <td className={`px-3 py-3 font-mono font-bold border-l border-indigo-50 bg-indigo-50/20 ${rowSum > 0 ? 'text-indigo-900' : rowSum < 0 ? 'text-red-700' : 'text-gray-500'}`}>
+                                            {rowSum === 0 ? '-' : formatMoney(rowSum)}
                                         </td>
                                     </tr>
                                 );
                             })}
                             {currentMktStats.markets.length === 0 && (
-                                <tr><td colSpan={currentMktStats.accounts.length + 2} className="px-3 py-4 text-center text-gray-400">暂无数据</td></tr>
+                                <tr><td colSpan={currentMktStats.accounts.length + 2} className="px-3 py-6 text-center text-gray-400">暂无数据</td></tr>
                             )}
                         </tbody>
                         {currentMktStats.markets.length > 0 && (
                             <tfoot className="bg-indigo-100 text-indigo-900 border-t-2 border-indigo-200 shadow-inner">
                                 <tr>
-                                    <td className="px-3 py-3 text-center font-bold border-r border-indigo-200">SUM (HKD)</td>
+                                    <td className="px-3 py-4 text-center font-bold border-r border-indigo-200">
+                                        {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
+                                    </td>
                                     {currentMktStats.accounts.map(acc => {
+                                        if (!isHKDView) return <td key={acc} className="px-3 py-4 text-center font-mono text-gray-400">-</td>;
+                                        
                                         let colSumHKD = 0;
                                         currentMktStats.markets.forEach(mkt => {
                                             const rawVal = currentMktStats.rawMatrix[mkt][acc] || 0;
                                             colSumHKD += rawVal * (globalFxRates[mkt] || 1);
                                         });
                                         return (
-                                            <td key={acc} className="px-3 py-3 font-mono font-bold text-indigo-900">
-                                                {colSumHKD === 0 ? '-' : formatMoney(colSumHKD, true)}
+                                            <td key={acc} className={`px-3 py-4 font-mono font-bold ${colSumHKD > 0 ? 'text-indigo-900' : colSumHKD < 0 ? 'text-red-700' : 'text-gray-500'}`}>
+                                                {colSumHKD === 0 ? '-' : formatMoney(colSumHKD)}
                                             </td>
                                         );
                                     })}
-                                    <td className="px-3 py-3 font-mono font-bold text-sm border-l border-indigo-200 text-indigo-900">
-                                        {formatMoney(holdingSums.mktValHKD, true)} HKD
+                                    <td className="px-3 py-4 font-mono font-bold text-sm border-l border-indigo-200 bg-indigo-200/50 text-indigo-900">
+                                        {!isHKDView ? <span className="text-gray-400">-</span> : (
+                                            formatMoney(
+                                                currentMktStats.markets.reduce((sum, mkt) => {
+                                                    let rSum = 0;
+                                                    currentMktStats.accounts.forEach(a => rSum += currentMktStats.rawMatrix[mkt][a] || 0);
+                                                    return sum + rSum * (globalFxRates[mkt] || 1);
+                                                }, 0)
+                                            ) + ' HKD'
+                                        )}
                                     </td>
                                 </tr>
                             </tfoot>
@@ -1396,7 +1419,13 @@ export default function SpotHoldingsPage() {
                                         );
                                     })}
                                     <td className="px-3 py-3 font-mono font-bold text-sm border-l border-purple-200 text-purple-900">
-                                        {formatMoney(totalInitialHKD, true)} HKD
+                                        {formatMoney(
+                                            initialStats.markets.reduce((sum, mkt) => {
+                                                let rSum = 0;
+                                                initialStats.accounts.forEach(a => rSum += initialStats.rawMatrix[mkt][a] || 0);
+                                                return sum + rSum * (baseFxRates[mkt] || globalFxRates[mkt] || 1);
+                                            }, 0), true
+                                        )} HKD
                                     </td>
                                 </tr>
                             </tfoot>
@@ -1463,6 +1492,41 @@ export default function SpotHoldingsPage() {
                             setBaseFxRates(parsed); 
                         }} className="px-4 py-2 bg-purple-600 text-white text-sm font-bold rounded shadow-sm hover:bg-purple-700 transition-colors">
                             保存锁定
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* --- 汇率详情弹窗 --- */}
+        {showFxModal && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
+                    <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
+                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                            <Info className="text-blue-500" size={18} /> 全局汇率 (对 HKD)
+                        </h3>
+                        <button onClick={() => setShowFxModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                            <X size={20}/>
+                        </button>
+                    </div>
+                    <div className="p-5">
+                        {Object.keys(globalFxRates).length === 0 ? (
+                            <p className="text-sm text-gray-500 text-center py-4">暂无已缓存的汇率数据，请点击右上角“更新汇率”。</p>
+                        ) : (
+                            <div className="space-y-3">
+                                {Object.entries(globalFxRates).map(([currency, rate]) => (
+                                    <div key={currency} className="flex justify-between items-center border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+                                        <span className="font-bold text-gray-700 font-mono">{currency}</span>
+                                        <span className="text-gray-600 font-mono">{Number(rate).toFixed(4)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <div className="bg-gray-50 px-5 py-3 border-t border-gray-100 flex justify-end">
+                        <button onClick={() => setShowFxModal(false)} className="px-4 py-2 bg-blue-600 text-white text-sm font-bold rounded shadow-sm hover:bg-blue-700 transition-colors">
+                            关闭
                         </button>
                     </div>
                 </div>
