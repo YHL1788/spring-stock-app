@@ -9,7 +9,8 @@ import {
   BarChart as BarChartIcon,
   Building2,
   RefreshCw,
-  Info
+  Info,
+  X
 } from 'lucide-react';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { doc, onSnapshot } from 'firebase/firestore';
@@ -54,6 +55,7 @@ export default function SummaryHoldingsPage() {
   const [isHKDView, setIsHKDView] = useState(false);
   const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
   const [isFetchingFx, setIsFetchingFx] = useState(false);
+  const [showFxModal, setShowFxModal] = useState(false);
   
   // 模块1 State
   const [mktPctView, setMktPctView] = useState(false);
@@ -63,6 +65,35 @@ export default function SummaryHoldingsPage() {
   // 模块2 State
   const [plPctView, setPlPctView] = useState(false);
   const [plViewType, setPlViewType] = useState<'total' | 'realized' | 'unrealized'>('total');
+
+  // --- 交互联动 Handlers ---
+  const handleToggleHKDView = () => {
+    const nextHKD = !isHKDView;
+    setIsHKDView(nextHKD);
+    if (!nextHKD) {
+      // 联动锁：关闭 HKD 时，强制关闭所有的百分比视图
+      setMktPctView(false);
+      setPlPctView(false);
+    }
+  };
+
+  const handleToggleMktPct = () => {
+    const nextPct = !mktPctView;
+    setMktPctView(nextPct);
+    if (nextPct && !isHKDView) {
+      // 联动锁：开启百分比时，强制开启 HKD 统一计价
+      setIsHKDView(true);
+    }
+  };
+
+  const handleTogglePlPct = () => {
+    const nextPct = !plPctView;
+    setPlPctView(nextPct);
+    if (nextPct && !isHKDView) {
+      // 联动锁：开启百分比时，强制开启 HKD 统一计价
+      setIsHKDView(true);
+    }
+  };
 
   // --- Auth & 数据监听 ---
   useEffect(() => {
@@ -281,12 +312,22 @@ export default function SummaryHoldingsPage() {
             基于单位净值法（NAV）的全局资产概览与真实收益率追踪。聚合全系 7 大底层引擎。
           </p>
         </div>
-        <button 
-            onClick={fetchFxRates} disabled={isFetchingFx}
-            className="px-4 py-2 bg-white border border-gray-300 rounded shadow-sm text-sm font-bold text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-        >
-            <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 更新系统汇率
-        </button>
+        <div className="flex gap-2">
+            <button 
+                onClick={() => setShowFxModal(true)} 
+                className="px-3 py-2 text-sm rounded border bg-white hover:bg-gray-50 text-gray-600 transition-colors shadow-sm flex items-center gap-1"
+                title="查看当前汇率"
+            >
+                <Info size={16} className="text-indigo-500" />
+                汇率详情
+            </button>
+            <button 
+                onClick={fetchFxRates} disabled={isFetchingFx}
+                className="px-4 py-2 bg-white border border-gray-300 rounded shadow-sm text-sm font-bold text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+            >
+                <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 更新系统汇率
+            </button>
+        </div>
       </div>
 
       {error && (
@@ -318,14 +359,14 @@ export default function SummaryHoldingsPage() {
                 
                 <div className="flex items-center gap-2 bg-white p-1 rounded-lg border border-indigo-200 shadow-sm">
                     <button 
-                        onClick={() => setIsHKDView(!isHKDView)}
+                        onClick={handleToggleHKDView}
                         className={`px-4 py-1.5 text-xs font-bold rounded transition-colors ${isHKDView ? 'bg-indigo-600 text-white shadow-inner' : 'text-indigo-700 hover:bg-indigo-50'}`}
                     >
                         {isHKDView ? '恢复原币种' : 'TO HKD (汇率折算)'}
                     </button>
                     <div className="w-px h-4 bg-indigo-200 mx-1"></div>
                     <button 
-                        onClick={() => setMktPctView(!mktPctView)}
+                        onClick={handleToggleMktPct}
                         className={`px-4 py-1.5 text-xs font-bold rounded transition-colors ${mktPctView ? 'bg-indigo-600 text-white shadow-inner' : 'text-indigo-700 hover:bg-indigo-50'}`}
                     >
                         TO Percentage (%)
@@ -446,14 +487,14 @@ export default function SummaryHoldingsPage() {
                 
                 <div className="flex items-center gap-2 bg-white p-1 rounded-lg border border-rose-200 shadow-sm">
                     <button 
-                        onClick={() => setIsHKDView(!isHKDView)}
+                        onClick={handleToggleHKDView}
                         className={`px-4 py-1.5 text-xs font-bold rounded transition-colors ${isHKDView ? 'bg-rose-600 text-white shadow-inner' : 'text-rose-700 hover:bg-rose-50'}`}
                     >
                         {isHKDView ? '恢复原币种' : 'TO HKD (汇率折算)'}
                     </button>
                     <div className="w-px h-4 bg-rose-200 mx-1"></div>
                     <button 
-                        onClick={() => setPlPctView(!plPctView)}
+                        onClick={handleTogglePlPct}
                         className={`px-4 py-1.5 text-xs font-bold rounded transition-colors ${plPctView ? 'bg-rose-600 text-white shadow-inner' : 'text-rose-700 hover:bg-rose-50'}`}
                         title="查看各项盈亏占全盘总盈亏的绝对值比例"
                     >
@@ -511,6 +552,41 @@ export default function SummaryHoldingsPage() {
             </div>
          </div>
       </div>
+
+      {/* --- 汇率详情弹窗 --- */}
+      {showFxModal && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
+                  <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
+                      <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                          <Info className="text-indigo-500" size={18} /> 全局汇率 (对 HKD)
+                      </h3>
+                      <button onClick={() => setShowFxModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                          <X size={20}/>
+                      </button>
+                  </div>
+                  <div className="p-5">
+                      {Object.keys(globalFxRates).length === 0 ? (
+                          <p className="text-sm text-gray-500 text-center py-4">暂无已缓存的汇率数据，请点击右上角的“更新系统汇率”按钮。</p>
+                      ) : (
+                          <div className="space-y-3">
+                              {Object.entries(globalFxRates).map(([currency, rate]) => (
+                                  <div key={currency} className="flex justify-between items-center border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+                                      <span className="font-bold text-gray-700 font-mono">{currency}</span>
+                                      <span className="text-gray-600 font-mono">{Number(rate).toFixed(4)}</span>
+                                  </div>
+                              ))}
+                          </div>
+                      )}
+                  </div>
+                  <div className="bg-gray-50 px-5 py-3 border-t border-gray-100 flex justify-end">
+                      <button onClick={() => setShowFxModal(false)} className="px-4 py-2 bg-indigo-600 text-white text-sm font-bold rounded shadow-sm hover:bg-indigo-700 transition-colors">
+                          关闭
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
 
     </div>
   );

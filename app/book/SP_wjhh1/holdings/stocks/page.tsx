@@ -16,7 +16,8 @@ import {
   Info,
   Clock,
   X,
-  FileJson
+  FileJson,
+  Edit2
 } from 'lucide-react';
 import { collection, getDocs, query, onSnapshot, addDoc, deleteDoc, setDoc, doc, updateDoc } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
@@ -158,8 +159,12 @@ export default function SpotHoldingsPage() {
   // 初始持仓（底座）与基准日期
   const [initialHoldings, setInitialHoldings] = useState<InitialHolding[]>([]);
   const [baseDate, setBaseDate] = useState<string>('');
+  
+  // 期初底座编辑与筛选 State
   const [newInit, setNewInit] = useState({ code: '', market: 'HKD', account: '', quantity: 0, costPrice: 0 });
   const [submittingInit, setSubmittingInit] = useState(false);
+  const [editingInitId, setEditingInitId] = useState<string | null>(null);
+  const [initCodeFilter, setInitCodeFilter] = useState('');
 
   // --- 汇率锁定 State ---
   const [baseFxRates, setBaseFxRates] = useState<Record<string, number>>({});
@@ -386,6 +391,13 @@ export default function SpotHoldingsPage() {
       // 核心时间截断：如果设定了基准日期，严格过滤掉该日期（含）之前的流水，只取增量
       return allTrades.filter(t => !baseDate || t.date > baseDate);
   }, [allTrades, baseDate]);
+
+  // --- 过滤后的初始持仓显示 ---
+  const displayInitialHoldings = useMemo(() => {
+      if (!initCodeFilter.trim()) return initialHoldings;
+      const lowerFilter = initCodeFilter.trim().toLowerCase();
+      return initialHoldings.filter(h => h.code.toLowerCase().includes(lowerFilter));
+  }, [initialHoldings, initCodeFilter]);
 
   // --- API 调用：获取汇率与实时行情 ---
   const fetchMarketData = async () => {
@@ -946,26 +958,48 @@ export default function SpotHoldingsPage() {
       } catch (e) { console.error("更新基准日期失败", e); }
   };
 
-  const handleAddInitialHolding = async () => {
+  const handleSaveInitialHolding = async () => {
       if (!newInit.code || !newInit.market || !newInit.account || newInit.quantity <= 0 || newInit.costPrice < 0) {
           alert('请正确填写代码、账户、数量(>0)和成本价(>=0)');
           return;
       }
       setSubmittingInit(true);
       try {
-          await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start'), newInit);
+          if (editingInitId) {
+              await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start', editingInitId), newInit);
+              setEditingInitId(null);
+          } else {
+              await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start'), newInit);
+          }
           setNewInit({ code: '', market: 'HKD', account: '', quantity: 0, costPrice: 0 });
       } catch (e) {
-          alert('添加期初持仓失败');
+          alert(editingInitId ? '修改期初持仓失败' : '添加期初持仓失败');
       } finally {
           setSubmittingInit(false);
       }
+  };
+
+  const handleEditInitialClick = (h: InitialHolding) => {
+      setEditingInitId(h.id);
+      setNewInit({
+          code: h.code,
+          market: h.market,
+          account: h.account,
+          quantity: h.quantity,
+          costPrice: h.costPrice
+      });
+  };
+
+  const handleCancelEditInit = () => {
+      setEditingInitId(null);
+      setNewInit({ code: '', market: 'HKD', account: '', quantity: 0, costPrice: 0 });
   };
 
   const handleDeleteInitialHolding = async (id: string) => {
       if (!confirm('确认删除这条期初持仓吗？这可能直接改变当前所有持仓市值与成本。')) return;
       try {
           await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start', id));
+          if (editingInitId === id) handleCancelEditInit();
       } catch (e) { console.error("删除失败", e); }
   };
 
@@ -1608,21 +1642,35 @@ export default function SpotHoldingsPage() {
                 <table className="min-w-full text-xs text-left">
                     <thead className="bg-gray-50 text-gray-500 font-medium border-b border-gray-200">
                         <tr>
-                            <th className="px-4 py-3 whitespace-nowrap">代码 (Code)</th>
-                            <th className="px-4 py-3 text-center whitespace-nowrap">币种</th>
-                            <th className="px-4 py-3 text-center whitespace-nowrap">账户</th>
-                            <th className="px-4 py-3 text-right whitespace-nowrap">期初数量</th>
-                            <th className="px-4 py-3 text-right whitespace-nowrap">期初成本均价</th>
-                            <th className="px-4 py-3 text-right whitespace-nowrap">期初总投入金额</th>
-                            <th className="px-4 py-3 text-center whitespace-nowrap">操作</th>
+                            <th className="px-4 py-3 whitespace-nowrap align-top">
+                                <div className="flex flex-col gap-1">
+                                    <span>代码 (Code)</span>
+                                    <div className="relative">
+                                        <input 
+                                            type="text" 
+                                            placeholder="模糊筛选..." 
+                                            value={initCodeFilter}
+                                            onChange={(e) => setInitCodeFilter(e.target.value)}
+                                            className="w-full p-1 border border-gray-300 rounded text-[10px] font-normal outline-none focus:ring-1 focus:ring-purple-500 text-gray-700 bg-white"
+                                        />
+                                        <Search size={10} className="absolute top-1/2 right-2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                                    </div>
+                                </div>
+                            </th>
+                            <th className="px-4 py-3 text-center whitespace-nowrap align-top">币种</th>
+                            <th className="px-4 py-3 text-center whitespace-nowrap align-top">账户</th>
+                            <th className="px-4 py-3 text-right whitespace-nowrap align-top">期初数量</th>
+                            <th className="px-4 py-3 text-right whitespace-nowrap align-top">期初成本均价</th>
+                            <th className="px-4 py-3 text-right whitespace-nowrap align-top">期初总投入金额</th>
+                            <th className="px-4 py-3 text-center whitespace-nowrap align-top">操作</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                        {initialHoldings.map(h => {
+                        {displayInitialHoldings.map(h => {
                             const rate = isHKDView ? (baseFxRates[h.market] || globalFxRates[h.market] || 1) : 1;
                             const amt = h.quantity * h.costPrice * rate;
                             return (
-                            <tr key={h.id} className="hover:bg-purple-50/30 transition-colors">
+                            <tr key={h.id} className={`transition-colors ${editingInitId === h.id ? 'bg-blue-50 border-l-4 border-blue-500' : 'hover:bg-purple-50/30'}`}>
                                 <td className="px-4 py-2 font-bold text-gray-800">{h.code}</td>
                                 <td className="px-4 py-2 text-center font-mono text-gray-500">{h.market}</td>
                                 <td className="px-4 py-2 text-center text-gray-600">{h.account}</td>
@@ -1630,20 +1678,25 @@ export default function SpotHoldingsPage() {
                                 <td className="px-4 py-2 text-right font-mono text-gray-600">{h.costPrice.toFixed(4)}</td>
                                 <td className="px-4 py-2 text-right font-mono font-medium">{formatMoney(amt, isHKDView)}</td>
                                 <td className="px-4 py-2 text-center">
-                                    <button onClick={() => handleDeleteInitialHolding(h.id)} className="text-gray-400 hover:text-red-600 p-1 rounded">
-                                        <Trash2 size={16} />
-                                    </button>
+                                    <div className="flex justify-center items-center gap-1">
+                                        <button onClick={() => handleEditInitialClick(h)} className="text-gray-400 hover:text-blue-600 p-1.5 rounded hover:bg-blue-100 transition-colors" title="修改该条记录">
+                                            <Edit2 size={16} />
+                                        </button>
+                                        <button onClick={() => handleDeleteInitialHolding(h.id)} className="text-gray-400 hover:text-red-600 p-1.5 rounded hover:bg-red-100 transition-colors" title="删除该条记录">
+                                            <Trash2 size={16} />
+                                        </button>
+                                    </div>
                                 </td>
                             </tr>
                         )})}
                         
-                        {/* 录入空行 */}
-                        <tr className="bg-purple-50/50 border-t-2 border-purple-100">
+                        {/* 录入/编辑空行 */}
+                        <tr className={`${editingInitId ? 'bg-blue-50/50 border-t-2 border-blue-200 shadow-inner' : 'bg-purple-50/50 border-t-2 border-purple-100'}`}>
                             <td className="px-4 py-2">
-                                <input type="text" placeholder="如 AAPL" value={newInit.code} onChange={e => setNewInit({...newInit, code: e.target.value.toUpperCase().trim()})} className="w-full p-1.5 border border-purple-200 rounded text-xs outline-none focus:ring-1 focus:ring-purple-400" />
+                                <input type="text" placeholder="如 AAPL" value={newInit.code} onChange={e => setNewInit({...newInit, code: e.target.value.toUpperCase().trim()})} className={`w-full p-1.5 border rounded text-xs outline-none focus:ring-1 ${editingInitId ? 'border-blue-300 focus:ring-blue-500' : 'border-purple-200 focus:ring-purple-400'}`} />
                             </td>
                             <td className="px-4 py-2">
-                                <select value={newInit.market} onChange={e => setNewInit({...newInit, market: e.target.value})} className="w-full p-1.5 border border-purple-200 rounded text-xs outline-none focus:ring-1 focus:ring-purple-400 bg-white">
+                                <select value={newInit.market} onChange={e => setNewInit({...newInit, market: e.target.value})} className={`w-full p-1.5 border rounded text-xs outline-none focus:ring-1 bg-white ${editingInitId ? 'border-blue-300 focus:ring-blue-500' : 'border-purple-200 focus:ring-purple-400'}`}>
                                     <option value="USD">USD</option>
                                     <option value="CNY">CNY</option>
                                     <option value="HKD">HKD</option>
@@ -1651,19 +1704,26 @@ export default function SpotHoldingsPage() {
                                 </select>
                             </td>
                             <td className="px-4 py-2">
-                                <input type="text" placeholder="账户名称" value={newInit.account} onChange={e => setNewInit({...newInit, account: e.target.value.trim()})} className="w-full p-1.5 border border-purple-200 rounded text-xs outline-none focus:ring-1 focus:ring-purple-400" />
+                                <input type="text" placeholder="账户名称" value={newInit.account} onChange={e => setNewInit({...newInit, account: e.target.value.trim()})} className={`w-full p-1.5 border rounded text-xs outline-none focus:ring-1 ${editingInitId ? 'border-blue-300 focus:ring-blue-500' : 'border-purple-200 focus:ring-purple-400'}`} />
                             </td>
                             <td className="px-4 py-2">
-                                <input type="number" min="0" placeholder="数量" value={newInit.quantity || ''} onChange={e => setNewInit({...newInit, quantity: parseFloat(e.target.value)||0})} className="w-full p-1.5 border border-purple-200 rounded text-xs outline-none text-right focus:ring-1 focus:ring-purple-400" />
+                                <input type="number" min="0" placeholder="数量" value={newInit.quantity === 0 ? '' : newInit.quantity} onChange={e => setNewInit({...newInit, quantity: parseFloat(e.target.value)||0})} className={`w-full p-1.5 border rounded text-xs outline-none text-right focus:ring-1 ${editingInitId ? 'border-blue-300 focus:ring-blue-500' : 'border-purple-200 focus:ring-purple-400'}`} />
                             </td>
                             <td className="px-4 py-2">
-                                <input type="number" min="0" step="0.0001" placeholder="成本均价" value={newInit.costPrice || ''} onChange={e => setNewInit({...newInit, costPrice: parseFloat(e.target.value)||0})} className="w-full p-1.5 border border-purple-200 rounded text-xs outline-none text-right focus:ring-1 focus:ring-purple-400" />
+                                <input type="number" min="0" step="0.0001" placeholder="成本均价" value={newInit.costPrice === 0 ? '' : newInit.costPrice} onChange={e => setNewInit({...newInit, costPrice: parseFloat(e.target.value)||0})} className={`w-full p-1.5 border rounded text-xs outline-none text-right focus:ring-1 ${editingInitId ? 'border-blue-300 focus:ring-blue-500' : 'border-purple-200 focus:ring-purple-400'}`} />
                             </td>
-                            <td className="px-4 py-2 text-right text-purple-400 text-xs font-medium">自动计算...</td>
+                            <td className={`px-4 py-2 text-right text-xs font-medium ${editingInitId ? 'text-blue-500' : 'text-purple-400'}`}>自动计算...</td>
                             <td className="px-4 py-2 text-center">
-                                <button onClick={handleAddInitialHolding} disabled={submittingInit} className="text-white bg-purple-600 hover:bg-purple-700 px-3 py-1.5 rounded shadow-sm flex items-center justify-center gap-1 mx-auto transition-colors">
-                                    {submittingInit ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 保存
-                                </button>
+                                <div className="flex flex-col gap-1 items-center justify-center">
+                                    <button onClick={handleSaveInitialHolding} disabled={submittingInit} className={`text-white px-3 py-1.5 rounded shadow-sm flex items-center justify-center gap-1 w-full transition-colors ${editingInitId ? 'bg-blue-600 hover:bg-blue-700' : 'bg-purple-600 hover:bg-purple-700'}`}>
+                                        {submittingInit ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} {editingInitId ? '确认修改' : '保存'}
+                                    </button>
+                                    {editingInitId && (
+                                        <button onClick={handleCancelEditInit} className="text-gray-600 bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded text-xs w-full transition-colors">
+                                            取消
+                                        </button>
+                                    )}
+                                </div>
                             </td>
                         </tr>
                     </tbody>
@@ -1823,6 +1883,104 @@ export default function SpotHoldingsPage() {
                 </div>
             )}
         </div>
+
+        {/* --- 汇率锁定弹窗 --- */}
+        {showBaseFxModal && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
+                    <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
+                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                            ⚙️ 设置期初建账汇率 (对 HKD)
+                        </h3>
+                        <button onClick={() => setShowBaseFxModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                            <X size={20}/>
+                        </button>
+                    </div>
+                    <div className="p-5 space-y-4">
+                        <p className="text-xs text-gray-500">锁定这些汇率后，期初投入的总成本(HKD)将永远固定，不会随每日市场汇率波动。</p>
+                        <button
+                            onClick={() => {
+                                const drafts: Record<string, string> = {};
+                                Object.keys(draftBaseFx).forEach(m => {
+                                    drafts[m] = globalFxRates[m]?.toString() || draftBaseFx[m];
+                                });
+                                setDraftBaseFx(drafts);
+                            }}
+                            className="w-full py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded text-xs font-bold transition-colors border border-blue-200"
+                        >
+                            ⬇️ 获取当前最新汇率填充
+                        </button>
+                        <div className="space-y-3">
+                            {Object.keys(draftBaseFx).map(mkt => (
+                                <div key={mkt} className="flex justify-between items-center">
+                                    <span className="font-bold text-gray-700 font-mono w-16">{mkt}</span>
+                                    <input
+                                        type="number"
+                                        step="0.0001"
+                                        value={draftBaseFx[mkt]}
+                                        onChange={(e) => setDraftBaseFx(prev => ({...prev, [mkt]: e.target.value}))}
+                                        className="w-32 p-1.5 border rounded text-right text-sm font-mono outline-none focus:ring-1 focus:ring-purple-500"
+                                        placeholder="如: 7.82"
+                                    />
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="bg-gray-50 px-5 py-3 border-t border-gray-100 flex justify-end gap-3">
+                        <button onClick={() => setShowBaseFxModal(false)} className="px-4 py-2 bg-gray-200 text-gray-700 text-sm font-bold rounded shadow-sm hover:bg-gray-300 transition-colors">
+                            取消
+                        </button>
+                        <button onClick={async () => {
+                            const parsed: Record<string, number> = {};
+                            Object.entries(draftBaseFx).forEach(([k, v]) => {
+                                const val = parseFloat(v);
+                                if (!isNaN(val) && val > 0) parsed[k] = val;
+                            });
+                            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start', '_global_config'), { baseFxRates: parsed }, { merge: true });
+                            setShowBaseFxModal(false);
+                            setBaseFxRates(parsed); 
+                        }} className="px-4 py-2 bg-purple-600 text-white text-sm font-bold rounded shadow-sm hover:bg-purple-700 transition-colors">
+                            保存锁定
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* --- 汇率详情弹窗 --- */}
+        {showFxModal && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
+                    <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
+                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                            <Info className="text-blue-500" size={18} /> 全局汇率 (对 HKD)
+                        </h3>
+                        <button onClick={() => setShowFxModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                            <X size={20}/>
+                        </button>
+                    </div>
+                    <div className="p-5">
+                        {Object.keys(globalFxRates).length === 0 ? (
+                            <p className="text-sm text-gray-500 text-center py-4">暂无已缓存的汇率数据，请点击右上角的“更新行情”按钮。</p>
+                        ) : (
+                            <div className="space-y-3">
+                                {Object.entries(globalFxRates).map(([currency, rate]) => (
+                                    <div key={currency} className="flex justify-between items-center border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+                                        <span className="font-bold text-gray-700 font-mono">{currency}</span>
+                                        <span className="text-gray-600 font-mono">{Number(rate).toFixed(4)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <div className="bg-gray-50 px-5 py-3 border-t border-gray-100 flex justify-end">
+                        <button onClick={() => setShowFxModal(false)} className="px-4 py-2 bg-blue-600 text-white text-sm font-bold rounded shadow-sm hover:bg-blue-700 transition-colors">
+                            关闭
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
 
         {/* 修改 Raw JSON 弹窗 */}
         {editRecordModal && (
