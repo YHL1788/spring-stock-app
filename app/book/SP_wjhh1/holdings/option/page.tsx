@@ -12,9 +12,11 @@ import {
   TrendingUp,
   Save,
   CheckCircle2,
-  PieChart
+  PieChart,
+  Clock,
+  BarChart
 } from 'lucide-react';
-import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, addDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, addDoc, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
@@ -153,7 +155,9 @@ export default function OptionHoldingPage() {
     const [diedRecords, setDiedRecords] = useState<MergedRecord[]>([]);
     const [loadingLiving, setLoadingLiving] = useState(false);
     const [loadingDied, setLoadingDied] = useState(false);
-    const [loadingSum, setLoadingSum] = useState(false);
+
+    // --- 统计模块切换 ---
+    const [statsTab, setStatsTab] = useState<'GLOBAL' | 'MKT_VAL' | 'PL'>('GLOBAL');
 
     // --- グローバルな最新為替レートとHKD表示のフラグ ---
     const [isHKDView, setIsHKDView] = useState(false);
@@ -174,6 +178,15 @@ export default function OptionHoldingPage() {
     const [riskFilters, setRiskFilters] = useState<Record<string, string>>({});
     const [diedSort, setDiedSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: '', dir: null});
     const [diedFilters, setDiedFilters] = useState<Record<string, string>>({});
+
+    const [isSavingMktVal, setIsSavingMktVal] = useState(false);
+    const [lastMktValSavedTime, setLastMktValSavedTime] = useState<string>('未获取');
+    
+    const [isSavingPl, setIsSavingPl] = useState(false);
+    const [lastPlSavedTime, setLastPlSavedTime] = useState<string>('未获取');
+
+    const [isSavingCash, setIsSavingCash] = useState(false);
+    const [lastCashSavedTime, setLastCashSavedTime] = useState<string>('未获取');
 
     const toggleSort = (setSort: any) => (key: string) => {
         setSort((prev: any) => {
@@ -197,15 +210,48 @@ export default function OptionHoldingPage() {
 
     // --- 認証の初期化 ---
     useEffect(() => {
+        let unsubCashTime: (() => void) | undefined;
+        let unsubMktValTime: (() => void) | undefined;
+        let unsubPlTime: (() => void) | undefined;
+
         const initAuth = async () => {
             if (!auth.currentUser) {
                 // @ts-ignore
                 if (typeof window !== 'undefined' && window.__initial_auth_token) await signInWithCustomToken(auth, window.__initial_auth_token);
                 else await signInAnonymously(auth);
             }
-            onAuthStateChanged(auth, setUser);
+            onAuthStateChanged(auth, (currentUser) => {
+                setUser(currentUser);
+                if (currentUser) {
+                    unsubMktValTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_mktvalue', 'latest_summary'), (docSnap) => {
+                        if (docSnap.exists()) {
+                            const data = docSnap.data();
+                            if (data.updatedAt) setLastMktValSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
+                        }
+                    });
+
+                    unsubPlTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_pl', 'latest_summary'), (docSnap) => {
+                        if (docSnap.exists()) {
+                            const data = docSnap.data();
+                            if (data.updatedAt) setLastPlSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
+                        }
+                    });
+
+                    unsubCashTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_option', 'latest_summary'), (docSnap) => {
+                        if (docSnap.exists()) {
+                            const data = docSnap.data();
+                            if (data.updatedAt) setLastCashSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
+                        }
+                    });
+                }
+            });
         };
         initAuth();
+        return () => {
+            if (unsubMktValTime) unsubMktValTime();
+            if (unsubPlTime) unsubPlTime();
+            if (unsubCashTime) unsubCashTime();
+        };
     }, []);
 
     // --- コア処理：tradeIdを基にInputとOutputのコレクションをマージ ---
@@ -602,7 +648,7 @@ export default function OptionHoldingPage() {
                 strike: Number(und.strike) || 0,
                 spotPrice: Number(und.spotPrice) || 0,
                 realizedPremium: out.realizedPremium || 0,
-                unrealizedPnl: out.expectedPayoff || 0, // Option Trade は expectedPayoff に保存
+                unrealizedPnl: out.expectedPayoff || 0, // Option Trade は expectedPayoff に保存。即市值。
                 totalPnl: out.totalPnl || 0,
                 fx_rate: basic.fxRate || 1
             };
@@ -689,8 +735,8 @@ export default function OptionHoldingPage() {
                     market: mkt,
                     notionalTotal: 0,
                     notionalLiving: 0,
-                    realizedTotal: 0,
-                    unrealized: 0,
+                    realizedTotal: 0, // 已实现期权金(含历史)
+                    unrealized: 0,    // 当前预期收益(未实现)
                     totalPnl: 0,
                     fxRate: 1
                 };
@@ -732,6 +778,51 @@ export default function OptionHoldingPage() {
 
         return { marketList, hkdSum };
     }, [finalLiving, finalDied, globalFxRates]);
+
+    // --- 【新增】当前市值二维统计矩阵 ---
+    const currentMktStats = useMemo(() => {
+        const accountsSet = new Set<string>();
+        const marketsSet = new Set<string>();
+
+        processedLiving.forEach(item => {
+            if (item.account) accountsSet.add(item.account);
+            if (item.currency) marketsSet.add(item.currency);
+        });
+
+        const accounts = Array.from(accountsSet).sort();
+        const markets = Array.from(marketsSet).sort();
+
+        const rawMatrix: Record<string, Record<string, number>> = {};
+        markets.forEach(m => {
+            rawMatrix[m] = {};
+            accounts.forEach(a => rawMatrix[m][a] = 0);
+        });
+
+        processedLiving.forEach(item => {
+            if (item.currency && item.account) {
+                // Option 的市值等于当前预期收益(未实现)
+                rawMatrix[item.currency][item.account] += (item.unrealizedPnl || 0);
+            }
+        });
+
+        return { accounts, markets, rawMatrix };
+    }, [processedLiving]);
+
+    // --- 【新增】当前收益统计矩阵 ---
+    const currentPlStats = useMemo(() => {
+        const markets = globalStats.marketList.map(m => m.market).sort();
+        const rawMatrix: Record<string, { realized: number, unrealized: number, total: number }> = {};
+        
+        globalStats.marketList.forEach(m => {
+            rawMatrix[m.market] = {
+                realized: m.realizedTotal, // 已实现期权金(含历史)
+                unrealized: m.unrealized,  // 当前预期收益(未实现)
+                total: m.totalPnl
+            };
+        });
+
+        return { markets, rawMatrix };
+    }, [globalStats]);
 
     // --- 【追加】資金純買付統計データ (資金浄買入 = -已実現期権金) ---
     const cashStats = useMemo(() => {
@@ -782,31 +873,48 @@ export default function OptionHoldingPage() {
         return total;
     }, [cashStats, globalFxRates]);
 
-    // --- Option 統計のデータベース保存ロジック ---
-    const handleSaveSum = async (isAuto = false) => {
+    // --- 市值与盈亏数据入库逻辑 ---
+    const handleSaveMktValStats = async (isAuto = false) => {
         if (!user) return;
+        if (!isAuto) setIsSavingMktVal(true);
         try {
-            if (!isAuto) setLoadingSum(true);
-            const payload = replaceUndefinedWithNull({
-                marketStats: globalStats.marketList,
-                hkdSum: globalStats.hkdSum,
-                updatedAt: new Date() // 絶対時間を使用
-            });
-
-            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_sum', 'latest_summary'), payload);
-            
-            if (!isAuto) alert("Option 统计已成功覆盖更新至 Sum 库！");
-        } catch (e: any) {
-            if (!isAuto) alert("保存 Option 统计失败: " + e.message);
-            console.error("Auto-save sum failed", e);
+            const payload = {
+                accounts: currentMktStats.accounts,
+                markets: currentMktStats.markets,
+                rawMatrix: currentMktStats.rawMatrix,
+                updatedAt: new Date().toISOString()
+            };
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_mktvalue', 'latest_summary'), payload);
+            if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+        } catch (e) {
+            console.error("保存当前市值统计失败:", e);
         } finally {
-            if (!isAuto) setLoadingSum(false);
+            if (!isAuto) setIsSavingMktVal(false);
+        }
+    };
+
+    const handleSavePlStats = async (isAuto = false) => {
+        if (!user) return;
+        if (!isAuto) setIsSavingPl(true);
+        try {
+            const payload = {
+                markets: currentPlStats.markets,
+                rawMatrix: currentPlStats.rawMatrix,
+                updatedAt: new Date().toISOString()
+            };
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_pl', 'latest_summary'), payload);
+            if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+        } catch (e) {
+            console.error("保存当前收益统计失败:", e);
+        } finally {
+            if (!isAuto) setIsSavingPl(false);
         }
     };
 
     // --- 【追加】資金純買付データの保存ロジック ---
-    const handleSaveCashStats = async () => {
+    const handleSaveCashStats = async (isAuto = false) => {
         if (!user) return;
+        if (!isAuto) setIsSavingCash(true);
         try {
             const payload = {
                 accounts: cashStats.accounts,
@@ -815,8 +923,13 @@ export default function OptionHoldingPage() {
                 updatedAt: new Date().toISOString()
             };
             await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_option', 'latest_summary'), payload);
+            if (!isAuto) {
+                setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+            }
         } catch (e) {
             console.error("保存 Option 资金净买入统计失败:", e);
+        } finally {
+            if (!isAuto) setIsSavingCash(false);
         }
     };
 
@@ -824,11 +937,12 @@ export default function OptionHoldingPage() {
     useEffect(() => {
         if (!user) return;
         const intervalId = setInterval(() => {
-            handleSaveSum(true);
-            handleSaveCashStats();
+            handleSaveMktValStats(true);
+            handleSavePlStats(true);
+            handleSaveCashStats(true);
         }, 60000); 
         return () => clearInterval(intervalId);
-    }, [user, globalStats, cashStats]);
+    }, [user, currentMktStats, currentPlStats, cashStats]);
 
     // --- ヘルパー関数 ---
     const formatMoneyWithUnit = (val: number, ccy: string, fxRate: number = 1) => {
@@ -851,7 +965,7 @@ export default function OptionHoldingPage() {
             if (tab.includes('get-stock')) {
                 return `【交收】${r.account || ''} | ${r.direction || ''} ${r.quantity || 0}股 ${r.stockName || r.stockCode || ''}`;
             }
-            if (tab.includes('sum')) {
+            if (tab.includes('mktvalue') || tab.includes('pl')) {
                 const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
                 return `全局大盘统计快照 (更新于: ${time})`;
             }
@@ -1061,68 +1175,263 @@ export default function OptionHoldingPage() {
                         【Option 统计】
                         <span className="text-sm font-normal text-gray-500 ml-2">全局数据统一折合为 HKD</span>
                     </h2>
-                    <span className="text-xs text-gray-400">数据每分钟自动刷新存库</span>
-                </div>
-                
-                <div className="overflow-x-auto border rounded-lg mb-6 shadow-sm">
-                    <table className="min-w-full text-sm text-left divide-y divide-gray-200">
-                        <thead className="bg-indigo-50 text-indigo-900 font-medium">
-                            <tr>
-                                <th className="px-3 py-2 text-center whitespace-nowrap">市场(币种)</th>
-                                <th className="px-3 py-2 text-right whitespace-nowrap">总名义金额(含历史) HKD</th>
-                                <th className="px-3 py-2 text-right whitespace-nowrap">总名义金额(存续中) HKD</th>
-                                <th className="px-3 py-2 text-right whitespace-nowrap">已实现期权金(含历史) HKD</th>
-                                <th className="px-3 py-2 text-right whitespace-nowrap">未实现损益 HKD</th>
-                                <th className="px-3 py-2 text-right whitespace-nowrap">总损益 HKD</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100 bg-white">
-                            {globalStats.marketList.length === 0 ? (
-                                <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">暂无统计数据</td></tr>
-                            ) : globalStats.marketList.map((m: any) => (
-                                <tr key={m.market} className="hover:bg-indigo-50/30">
-                                    <td className="px-3 py-2 text-center font-bold text-gray-700">{m.market}</td>
-                                    <td className="px-3 py-2 text-right font-mono text-gray-800">{m.notionalTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                    <td className="px-3 py-2 text-right font-mono text-gray-800">{m.notionalLiving.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                    <td className="px-3 py-2 text-right font-mono text-gray-800">{m.realizedTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                    <td className={`px-3 py-2 text-right font-mono font-medium ${m.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                        {m.unrealized > 0 ? '+' : ''}{m.unrealized.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                    </td>
-                                    <td className={`px-3 py-2 text-right font-mono font-bold ${m.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                        {m.totalPnl > 0 ? '+' : ''}{m.totalPnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                        {globalStats.marketList.length > 0 && (
-                            <tfoot className="bg-indigo-100 border-t-2 border-indigo-200 shadow-inner">
-                                <tr>
-                                    <td className="px-3 py-3 text-center font-bold text-indigo-900 tracking-wider">全局大盘 SUM</td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.notionalTotal)}</td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.notionalLiving)}</td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.realizedTotal)}</td>
-                                    <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.hkdSum.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                        {formatSumWithSign(globalStats.hkdSum.unrealized)}
-                                    </td>
-                                    <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.hkdSum.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                        {formatSumWithSign(globalStats.hkdSum.totalPnl)}
-                                    </td>
-                                </tr>
-                            </tfoot>
-                        )}
-                    </table>
+                    <span className="text-xs text-gray-400">仅市值与收益表进行入库</span>
                 </div>
 
-                <div className="flex justify-end">
-                    <button
-                        onClick={() => handleSaveSum(false)}
-                        disabled={loadingSum}
-                        className={`py-2 px-6 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingSum ? 'bg-indigo-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+                <div className="flex bg-gray-100 p-1 rounded-lg w-max mb-4">
+                    <button 
+                        onClick={() => setStatsTab('GLOBAL')} 
+                        className={`px-4 py-1.5 text-xs font-bold rounded-md transition-colors ${statsTab === 'GLOBAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                     >
-                        {loadingSum ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
-                        {loadingSum ? '正在保存统计...' : '手动更新至 Sum 库'}
+                        全局统计 (不入库)
+                    </button>
+                    <button 
+                        onClick={() => setStatsTab('MKT_VAL')} 
+                        className={`px-4 py-1.5 text-xs font-bold rounded-md transition-colors ${statsTab === 'MKT_VAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                        当前市值二维统计 (入库)
+                    </button>
+                    <button 
+                        onClick={() => setStatsTab('PL')} 
+                        className={`px-4 py-1.5 text-xs font-bold rounded-md transition-colors ${statsTab === 'PL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                        当前收益统计表 (入库)
                     </button>
                 </div>
+                
+                {statsTab === 'GLOBAL' && (
+                    <div className="overflow-x-auto border rounded-lg shadow-sm">
+                        <table className="min-w-full text-sm text-left divide-y divide-gray-200">
+                            <thead className="bg-indigo-50 text-indigo-900 font-medium">
+                                <tr>
+                                    <th className="px-3 py-2 text-center whitespace-nowrap">市场(币种)</th>
+                                    <th className="px-3 py-2 text-right whitespace-nowrap">总名义金额(含历史) HKD</th>
+                                    <th className="px-3 py-2 text-right whitespace-nowrap">总名义金额(存续中) HKD</th>
+                                    <th className="px-3 py-2 text-right whitespace-nowrap">已实现期权金(含历史) HKD</th>
+                                    <th className="px-3 py-2 text-right whitespace-nowrap">未实现损益 HKD</th>
+                                    <th className="px-3 py-2 text-right whitespace-nowrap">总损益 HKD</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100 bg-white">
+                                {globalStats.marketList.length === 0 ? (
+                                    <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">暂无统计数据</td></tr>
+                                ) : globalStats.marketList.map((m: any) => (
+                                    <tr key={m.market} className="hover:bg-indigo-50/30">
+                                        <td className="px-3 py-2 text-center font-bold text-gray-700">{m.market}</td>
+                                        <td className="px-3 py-2 text-right font-mono text-gray-800">{m.notionalTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                        <td className="px-3 py-2 text-right font-mono text-gray-800">{m.notionalLiving.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                        <td className="px-3 py-2 text-right font-mono text-gray-800">{m.realizedTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                        <td className={`px-3 py-2 text-right font-mono font-medium ${m.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                            {m.unrealized > 0 ? '+' : ''}{m.unrealized.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                        </td>
+                                        <td className={`px-3 py-2 text-right font-mono font-bold ${m.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                            {m.totalPnl > 0 ? '+' : ''}{m.totalPnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                            {globalStats.marketList.length > 0 && (
+                                <tfoot className="bg-indigo-100 border-t-2 border-indigo-200 shadow-inner">
+                                    <tr>
+                                        <td className="px-3 py-3 text-center font-bold text-indigo-900 tracking-wider">全局大盘 SUM</td>
+                                        <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.notionalTotal)}</td>
+                                        <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.notionalLiving)}</td>
+                                        <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.realizedTotal)}</td>
+                                        <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.hkdSum.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                            {formatSumWithSign(globalStats.hkdSum.unrealized)}
+                                        </td>
+                                        <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.hkdSum.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                            {formatSumWithSign(globalStats.hkdSum.totalPnl)}
+                                        </td>
+                                    </tr>
+                                </tfoot>
+                            )}
+                        </table>
+                    </div>
+                )}
+
+                {statsTab === 'MKT_VAL' && (
+                    <div className="bg-indigo-50 border-t border-indigo-100 p-5 rounded-lg">
+                        <div className="flex justify-between items-center mb-3">
+                            <h3 className="font-bold text-indigo-800 text-sm">当前市值二维统计矩阵</h3>
+                            <button 
+                                onClick={handleToggleHKDView}
+                                disabled={isFetchingFx}
+                                className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-indigo-600 text-white border-indigo-600 shadow-inner' : 'bg-white text-indigo-700 border-indigo-200 hover:bg-indigo-100 shadow-sm'}`}
+                            >
+                                {isFetchingFx && <Loader2 size={12} className="animate-spin inline mr-1" />}
+                                {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
+                            </button>
+                        </div>
+                        <div className="overflow-x-auto rounded border border-indigo-200 bg-white">
+                            <table className="min-w-full text-xs text-right">
+                                <thead className="bg-indigo-100/50 text-indigo-900 font-medium">
+                                    <tr>
+                                        <th className="px-3 py-2 text-center border-b border-r border-indigo-100 bg-indigo-50/50">币种 \ 账户</th>
+                                        {currentMktStats.accounts.map(acc => (
+                                            <th key={acc} className="px-3 py-2 border-b border-indigo-100">{acc}</th>
+                                        ))}
+                                        <th className="px-3 py-2 border-b border-l border-indigo-100 bg-indigo-50/50">SUM (HKD)</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-indigo-50">
+                                    {currentMktStats.markets.map(mkt => {
+                                        const rate = isHKDView ? (globalFxRates[mkt] || 1) : 1;
+                                        const actualRate = globalFxRates[mkt] || 1;
+                                        let rawRowSum = 0;
+                                        return (
+                                            <tr key={mkt} className="hover:bg-indigo-50/30">
+                                                <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-indigo-50 bg-indigo-50/20">{mkt}</td>
+                                                {currentMktStats.accounts.map(acc => {
+                                                    const rawVal = currentMktStats.rawMatrix[mkt][acc] || 0;
+                                                    rawRowSum += rawVal;
+                                                    const displayVal = rawVal * rate;
+                                                    return (
+                                                        <td key={acc} className={`px-3 py-2 font-mono ${displayVal >= 0 ? 'text-gray-700' : 'text-red-600'}`}>
+                                                            {displayVal === 0 ? '-' : formatMoney(displayVal, isHKDView)}
+                                                        </td>
+                                                    );
+                                                })}
+                                                <td className={`px-3 py-2 font-mono font-bold border-l border-indigo-50 bg-indigo-50/20 ${rawRowSum * actualRate >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
+                                                    {rawRowSum * actualRate === 0 ? '-' : formatMoney(rawRowSum * actualRate, true)}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                    {currentMktStats.markets.length === 0 && (
+                                        <tr><td colSpan={currentMktStats.accounts.length + 2} className="px-3 py-4 text-center text-gray-400">暂无数据</td></tr>
+                                    )}
+                                </tbody>
+                                {currentMktStats.markets.length > 0 && (
+                                    <tfoot className="bg-indigo-100 text-indigo-900 border-t-2 border-indigo-200 shadow-inner">
+                                        <tr>
+                                            <td className="px-3 py-3 text-center font-bold border-r border-indigo-200">SUM (HKD)</td>
+                                            {currentMktStats.accounts.map(acc => {
+                                                let colSumHKD = 0;
+                                                currentMktStats.markets.forEach(mkt => {
+                                                    const rawVal = currentMktStats.rawMatrix[mkt][acc] || 0;
+                                                    colSumHKD += rawVal * (globalFxRates[mkt] || 1);
+                                                });
+                                                return (
+                                                    <td key={acc} className={`px-3 py-3 font-mono font-bold ${colSumHKD >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
+                                                        {colSumHKD === 0 ? '-' : formatMoney(colSumHKD, true)}
+                                                    </td>
+                                                );
+                                            })}
+                                            <td className={`px-3 py-3 font-mono font-bold text-sm border-l border-indigo-200 ${globalStats.hkdSum.unrealized >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
+                                                {formatMoney(globalStats.hkdSum.unrealized, true)} HKD
+                                            </td>
+                                        </tr>
+                                    </tfoot>
+                                )}
+                            </table>
+                        </div>
+
+                        <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-indigo-100 shadow-sm">
+                            <div className="flex items-center gap-4 text-xs text-gray-500">
+                                <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
+                                <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">※每分钟自动入库</span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-600 text-indigo-600 hover:bg-indigo-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                    <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
+                                </button>
+                                <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                    {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {statsTab === 'PL' && (
+                    <div className="bg-rose-50 border-t border-rose-100 p-5 rounded-lg">
+                        <div className="flex justify-between items-center mb-3">
+                            <h3 className="font-bold text-rose-800 text-sm">当前收益统计表</h3>
+                            <button 
+                                onClick={handleToggleHKDView}
+                                disabled={isFetchingFx}
+                                className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-rose-600 text-white border-rose-600 shadow-inner' : 'bg-white text-rose-700 border-rose-200 hover:bg-rose-100 shadow-sm'}`}
+                            >
+                                {isFetchingFx && <Loader2 size={12} className="animate-spin inline mr-1" />}
+                                {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
+                            </button>
+                        </div>
+                        <div className="overflow-x-auto rounded border border-rose-200 bg-white">
+                            <table className="min-w-full text-xs text-right">
+                                <thead className="bg-rose-100/50 text-rose-900 font-medium">
+                                    <tr>
+                                        <th className="px-3 py-2 text-center border-b border-r border-rose-100 bg-rose-50/50">币种</th>
+                                        <th className="px-3 py-2 border-b border-rose-100">已实现盈亏 (期权金)</th>
+                                        <th className="px-3 py-2 border-b border-rose-100">浮动盈亏 (未实现预期)</th>
+                                        <th className="px-3 py-2 border-b border-l border-rose-100 bg-rose-50/50">总盈亏 {isHKDView ? '(HKD)' : '(原币种)'}</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-rose-50">
+                                    {currentPlStats.markets.map(mkt => {
+                                        const rate = isHKDView ? (globalFxRates[mkt] || 1) : 1;
+                                        const data = currentPlStats.rawMatrix[mkt];
+                                        const displayRealized = data.realized * rate;
+                                        const displayUnrealized = data.unrealized * rate;
+                                        const displayTotal = data.total * rate;
+                                        return (
+                                            <tr key={mkt} className="hover:bg-rose-50/30">
+                                                <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-rose-50 bg-rose-50/20">{mkt}</td>
+                                                <td className={`px-3 py-3 font-mono ${displayRealized > 0 ? 'text-red-600' : displayRealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                                                    {displayRealized > 0 ? '+' : ''}{displayRealized === 0 ? '-' : formatMoney(displayRealized, isHKDView)}
+                                                </td>
+                                                <td className={`px-3 py-3 font-mono ${displayUnrealized > 0 ? 'text-red-600' : displayUnrealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                                                    {displayUnrealized > 0 ? '+' : ''}{displayUnrealized === 0 ? '-' : formatMoney(displayUnrealized, isHKDView)}
+                                                </td>
+                                                <td className={`px-3 py-3 font-mono font-bold border-l border-rose-50 bg-rose-50/20 ${displayTotal > 0 ? 'text-red-700' : displayTotal < 0 ? 'text-green-700' : 'text-gray-500'}`}>
+                                                    {displayTotal > 0 ? '+' : ''}{displayTotal === 0 ? '-' : formatMoney(displayTotal, isHKDView)}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                    {currentPlStats.markets.length === 0 && (
+                                        <tr><td colSpan={4} className="px-3 py-6 text-center text-gray-400">暂无数据</td></tr>
+                                    )}
+                                </tbody>
+                                {currentPlStats.markets.length > 0 && (
+                                    <tfoot className="bg-rose-100 text-rose-900 border-t-2 border-rose-200 shadow-inner">
+                                        <tr>
+                                            <td className="px-3 py-4 text-center font-bold border-r border-rose-200">
+                                                {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
+                                            </td>
+                                            <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (globalStats.hkdSum.realizedTotal > 0 ? 'text-red-600' : globalStats.hkdSum.realizedTotal < 0 ? 'text-green-600' : 'text-gray-500')}`}>
+                                                {!isHKDView ? '-' : (globalStats.hkdSum.realizedTotal > 0 ? '+' : '') + (globalStats.hkdSum.realizedTotal === 0 ? '-' : formatSum(globalStats.hkdSum.realizedTotal))}
+                                            </td>
+                                            <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (globalStats.hkdSum.unrealized > 0 ? 'text-red-600' : globalStats.hkdSum.unrealized < 0 ? 'text-green-600' : 'text-gray-500')}`}>
+                                                {!isHKDView ? '-' : (globalStats.hkdSum.unrealized > 0 ? '+' : '') + (globalStats.hkdSum.unrealized === 0 ? '-' : formatSum(globalStats.hkdSum.unrealized))}
+                                            </td>
+                                            <td className="px-3 py-4 font-mono font-bold text-sm border-l border-rose-200 bg-rose-200/50 text-rose-900">
+                                                {!isHKDView ? <span className="text-gray-400">-</span> : (
+                                                    (globalStats.hkdSum.totalPnl > 0 ? '+' : '') + formatSum(globalStats.hkdSum.totalPnl) + ' HKD'
+                                                )}
+                                            </td>
+                                        </tr>
+                                    </tfoot>
+                                )}
+                            </table>
+                        </div>
+
+                        <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-rose-100 shadow-sm">
+                            <div className="flex items-center gap-4 text-xs text-gray-500">
+                                <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
+                                <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">※每分钟自动入库</span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-rose-600 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                    <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
+                                </button>
+                                <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                    {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* === モジュール 5：资金净买入统计表 (資金浄買入統計表) === */}
@@ -1212,6 +1521,22 @@ export default function OptionHoldingPage() {
                             )}
                         </table>
                     </div>
+                    
+                    {/* 资金统计底部功能区 */}
+                    <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-teal-100 shadow-sm">
+                        <div className="flex items-center gap-4 text-xs text-gray-500">
+                            <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
+                            <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">※每分钟自动入库</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-teal-600 text-teal-600 hover:bg-teal-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
+                            </button>
+                            <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1233,7 +1558,8 @@ export default function OptionHoldingPage() {
                         'sip_trade_option_input_died', 
                         'sip_holding_option_output_died', 
                         'sip_holding_option_output_get-stock',
-                        'sip_holding_option_output_sum'
+                        'sip_holding_option_mktvalue',
+                        'sip_holding_option_pl'
                     ].map(tab => (
                         <button key={tab} onClick={() => setActiveDbTab(tab)} className={`px-3 py-1.5 text-xs font-bold rounded whitespace-nowrap transition-colors ${activeDbTab === tab ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
                             {tab.replace('sip_', '').replace(/_/g, '/')}

@@ -14,8 +14,15 @@ import {
   Save,
   Trash2,
   Info,
-  X
+  Clock,
+  X,
+  FileJson
 } from 'lucide-react';
+import { collection, getDocs, query, onSnapshot, addDoc, deleteDoc, setDoc, doc, updateDoc } from 'firebase/firestore';
+import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+
+import { db, auth, APP_ID } from '@/app/lib/stockService';
+import { useStockPool } from '@/app/hooks/useStockPool';
 import { 
   BarChart, 
   Bar, 
@@ -26,11 +33,6 @@ import {
   ResponsiveContainer,
   Cell
 } from 'recharts';
-import { collection, getDocs, query, onSnapshot, addDoc, deleteDoc, setDoc, doc } from 'firebase/firestore';
-import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
-
-import { db, auth, APP_ID } from '@/app/lib/stockService';
-import { useStockPool } from '@/app/hooks/useStockPool';
 
 // --- 统一的流水数据类型 ---
 interface UnifiedTrade {
@@ -75,6 +77,8 @@ interface StockHolding {
   mktValHKD: number; // 现市值 (HKD)
   unrealizedPnlHKD: number; // 浮动盈亏 (HKD)
   realizedPnlHKD: number; // 已实现盈亏 (HKD)
+  unrealizedPnlLocal: number; // 浮动盈亏 (原币种)
+  realizedPnlLocal: number; // 已实现盈亏 (原币种)
   pnlRatio: number; // 盈亏比
   accounts: Record<string, number>; // 各账户持仓股数
 }
@@ -169,10 +173,24 @@ export default function SpotHoldingsPage() {
   const [isFetchingRealTime, setIsFetchingRealTime] = useState(false);
   const [showFxModal, setShowFxModal] = useState(false);
   
+  const [isSavingCash, setIsSavingCash] = useState(false);
+  const [lastCashSavedTime, setLastCashSavedTime] = useState<string>('未获取');
+  
+  const [isSavingMktVal, setIsSavingMktVal] = useState(false);
+  const [lastMktValSavedTime, setLastMktValSavedTime] = useState<string>('未获取');
+
+  const [isSavingPl, setIsSavingPl] = useState(false);
+  const [lastPlSavedTime, setLastPlSavedTime] = useState<string>('未获取');
+
   // 图表切换
   const [chartType, setChartType] = useState<'BEST' | 'WORST'>('BEST');
 
-  // --- 排序与筛选 State ---
+  // --- 数据库管理模块状态 ---
+  const [activeDbTab, setActiveDbTab] = useState('spot_trades');
+  const [dbRecords, setDbRecords] = useState<any[]>([]);
+  const [loadingDb, setLoadingDb] = useState(false);
+  const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
+
   const [tradeSort, setTradeSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: 'date', dir: 'desc'});
   const [tradeFilters, setTradeFilters] = useState<Record<string, string>>({});
   const [holdingSort, setHoldingSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: 'mktValHKD', dir: 'desc'});
@@ -199,6 +217,9 @@ export default function SpotHoldingsPage() {
   // --- 鉴权与数据抓取 (5个库：4个流水 + 1个期初底座) ---
   useEffect(() => {
     let unsubStart: (() => void) | undefined;
+    let unsubCashTime: (() => void) | undefined;
+    let unsubMktValTime: (() => void) | undefined;
+    let unsubPlTime: (() => void) | undefined;
 
     const initData = async () => {
       try {
@@ -238,6 +259,28 @@ export default function SpotHoldingsPage() {
                 setBaseDate(bDate);
                 setBaseFxRates(bFx);
                 setInitialHoldings(starts);
+            });
+
+            // 获取最后保存时间
+            unsubCashTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_stock', 'latest_summary'), (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    if (data.updatedAt) setLastCashSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
+                }
+            });
+
+            unsubMktValTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_stock_mktvalue', 'latest_summary'), (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    if (data.updatedAt) setLastMktValSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
+                }
+            });
+
+            unsubPlTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_stock_pl', 'latest_summary'), (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    if (data.updatedAt) setLastPlSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
+                }
             });
 
             // 2. 抓取：四个增量流水库的数据
@@ -332,6 +375,9 @@ export default function SpotHoldingsPage() {
     initData();
     return () => {
         if (unsubStart) unsubStart();
+        if (unsubCashTime) unsubCashTime();
+        if (unsubMktValTime) unsubMktValTime();
+        if (unsubPlTime) unsubPlTime();
     };
   }, []);
 
@@ -430,6 +476,8 @@ export default function SpotHoldingsPage() {
                   mktValHKD: 0,
                   unrealizedPnlHKD: 0,
                   realizedPnlHKD: 0,
+                  unrealizedPnlLocal: 0,
+                  realizedPnlLocal: 0,
                   pnlRatio: 0,
                   accounts: {}
               };
@@ -467,6 +515,8 @@ export default function SpotHoldingsPage() {
                   mktValHKD: 0,
                   unrealizedPnlHKD: 0,
                   realizedPnlHKD: 0, // 注意：已实现盈亏只计算基准日之后的增量部分
+                  unrealizedPnlLocal: 0,
+                  realizedPnlLocal: 0,
                   pnlRatio: 0,
                   accounts: {}
               };
@@ -487,6 +537,7 @@ export default function SpotHoldingsPage() {
               const costOfGoodsSold = sellQty * h.avgCost; 
               const sellProceeds = t.amount; 
               const realizedPnlLocal = sellProceeds - costOfGoodsSold;
+              h.realizedPnlLocal += realizedPnlLocal;
               h.realizedPnlHKD += (realizedPnlLocal * rate);
 
               h.quantity -= sellQty;
@@ -507,6 +558,7 @@ export default function SpotHoldingsPage() {
           
           h.totalCostHKD = (h.quantity * h.avgCost) * rate;
           h.mktValHKD = (h.quantity * h.currentPrice) * rate;
+          h.unrealizedPnlLocal = (h.currentPrice - h.avgCost) * h.quantity;
           h.unrealizedPnlHKD = h.mktValHKD - h.totalCostHKD;
           h.pnlRatio = h.totalCostHKD > 0 ? (h.mktValHKD / h.totalCostHKD) - 1 : 0;
       });
@@ -579,6 +631,30 @@ export default function SpotHoldingsPage() {
       
       return { accounts, markets, rawMatrix };
   }, [displayHoldings]);
+
+  // --- 【新增】当前收益统计表数据 ---
+  const currentPlStats = useMemo(() => {
+      const marketsSet = new Set<string>();
+      calculatedHoldings.forEach(h => {
+          if (h.market) marketsSet.add(h.market);
+      });
+      const markets = Array.from(marketsSet).sort();
+      
+      const rawMatrix: Record<string, { realized: number, unrealized: number, total: number }> = {};
+      markets.forEach(m => {
+          rawMatrix[m] = { realized: 0, unrealized: 0, total: 0 };
+      });
+      
+      calculatedHoldings.forEach(h => {
+          if (h.market) {
+              rawMatrix[h.market].realized += (h.realizedPnlLocal || 0);
+              rawMatrix[h.market].unrealized += (h.unrealizedPnlLocal || 0);
+              rawMatrix[h.market].total += ((h.realizedPnlLocal || 0) + (h.unrealizedPnlLocal || 0));
+          }
+      });
+      
+      return { markets, rawMatrix };
+  }, [calculatedHoldings]);
 
   // --- 模块 2: 盈亏分析处理 ---
   const pnlData = useMemo(() => {
@@ -713,8 +789,9 @@ export default function SpotHoldingsPage() {
   }, [initialHoldings, baseFxRates, globalFxRates]);
 
   // --- 资金净买入数据入库逻辑 ---
-  const handleSaveCashStats = async () => {
+  const handleSaveCashStats = async (isAuto = false) => {
       if (!user) return;
+      if (!isAuto) setIsSavingCash(true);
       try {
           const payload = {
               accounts: netBuyStats.accounts,
@@ -724,19 +801,140 @@ export default function SpotHoldingsPage() {
           };
           // 【更新】金蟬脫殼：將入庫路徑改為 sip_holding_cash_stock，避開幽靈進程的污染
           await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_stock', 'latest_summary'), payload);
+          if (!isAuto) {
+              setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          }
       } catch (e) {
           console.error("保存资金净买入统计失败:", e);
+      } finally {
+          if (!isAuto) setIsSavingCash(false);
       }
   };
 
-  // 每分钟自动保存资金统计
+  // --- 市值与盈亏数据入库逻辑 ---
+  const handleSaveMktValStats = async (isAuto = false) => {
+      if (!user) return;
+      if (!isAuto) setIsSavingMktVal(true);
+      try {
+          const payload = {
+              accounts: currentMktStats.accounts,
+              markets: currentMktStats.markets,
+              rawMatrix: currentMktStats.rawMatrix,
+              updatedAt: new Date().toISOString()
+          };
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_stock_mktvalue', 'latest_summary'), payload);
+          if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+      } catch (e) {
+          console.error("保存当前市值统计失败:", e);
+      } finally {
+          if (!isAuto) setIsSavingMktVal(false);
+      }
+  };
+
+  const handleSavePlStats = async (isAuto = false) => {
+      if (!user) return;
+      if (!isAuto) setIsSavingPl(true);
+      try {
+          const payload = {
+              markets: currentPlStats.markets,
+              rawMatrix: currentPlStats.rawMatrix,
+              updatedAt: new Date().toISOString()
+          };
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_stock_pl', 'latest_summary'), payload);
+          if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+      } catch (e) {
+          console.error("保存当前收益统计失败:", e);
+      } finally {
+          if (!isAuto) setIsSavingPl(false);
+      }
+  };
+
+  // 每分钟自动保存各种统计
   useEffect(() => {
       if (!user) return;
       const intervalId = setInterval(() => {
-          handleSaveCashStats();
+          handleSaveCashStats(true);
+          handleSaveMktValStats(true);
+          handleSavePlStats(true);
       }, 60000); 
       return () => clearInterval(intervalId);
-  }, [user, netBuyStats]);
+  }, [user, netBuyStats, currentMktStats, currentPlStats]);
+
+  // --- 获取并刷新后台库数据 ---
+  const fetchDbRecords = async (collectionName: string) => {
+      if (!user) return;
+      setLoadingDb(true);
+      try {
+          const querySnapshot = await getDocs(query(collection(db, 'artifacts', APP_ID, 'public', 'data', collectionName)));
+          let records: any[] = [];
+          querySnapshot.forEach((docSnap) => {
+              const data = docSnap.data();
+              delete data.id; // 防止污染
+              records.push({ ...data, id: docSnap.id });
+          });
+          records.sort((a, b) => {
+             const timeA = getTime(a.updatedAt) || getTime(a.createdAt);
+             const timeB = getTime(b.updatedAt) || getTime(b.createdAt);
+             return timeB - timeA;
+          });
+          setDbRecords(records);
+      } catch(e) {
+          console.error("读取数据库失败:", e);
+      } finally {
+          setLoadingDb(false);
+      }
+  };
+
+  useEffect(() => {
+      if (user) { fetchDbRecords(activeDbTab); }
+  }, [activeDbTab, user]);
+
+  // --- 后台库管理 Handlers ---
+  const handleDeleteRecord = async (id: string) => {
+      if (!confirm("确定要永久删除这条记录吗？不可恢复。")) return;
+      try {
+          await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, id));
+          setDbRecords(dbRecords.filter(r => r.id !== id));
+      } catch(e: any) { alert("删除失败: " + e.message); }
+  };
+
+  const handleSaveRecordEdit = async () => {
+      if (!editRecordModal) return;
+      try {
+          const parsedData = JSON.parse(editRecordModal.rawJson);
+          const docId = parsedData.id || editRecordModal.record.id;
+          delete parsedData.id;
+          parsedData.updatedAt = new Date().toISOString();
+          await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
+          alert("数据修改成功！");
+          setEditRecordModal(null);
+          fetchDbRecords(activeDbTab);
+      } catch(e: any) {
+          alert("修改失败 (请检查 JSON 格式是否正确): \n" + e.message);
+      }
+  };
+
+  const getRecordSummary = (r: any, tab: string) => {
+      try {
+          if (tab === 'spot_trades') {
+              return `[${r.direction}] ${Math.abs(r.quantity)}股 ${r.code} | ${r.account}`;
+          }
+          if (tab === 'sip_holding_spot_start') {
+              if (r.id === '_global_config') return `全局基准配置`;
+              return `[期初] ${r.quantity}股 ${r.code} | ${r.account}`;
+          }
+          if (tab.includes('get-stock')) {
+              return `【交收】${r.account || ''} | ${r.direction || ''} ${Math.abs(r.quantity || 0)}股 ${r.stockName || r.stockCode || ''}`;
+          }
+          if (tab.includes('mktvalue') || tab.includes('pl') || tab.includes('cash')) {
+              const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
+              return `全局大盘统计快照 (更新于: ${time})`;
+          }
+          return JSON.stringify(r).substring(0, 100) + '...';
+      } catch (e) {
+          return '解析失败...';
+      }
+  };
 
   // --- 初始持仓增删改查事件 ---
   const handleUpdateBaseDate = async (newDate: string) => {
@@ -1024,6 +1222,22 @@ export default function SpotHoldingsPage() {
                         )}
                     </table>
                 </div>
+
+                {/* 当前市值底部功能区 */}
+                <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-indigo-100 shadow-sm">
+                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                        <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
+                        <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">※每分钟自动入库</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => fetchMarketData()} disabled={isFetchingRealTime} className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-600 text-indigo-600 hover:bg-indigo-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} /> 手动刷新
+                        </button>
+                        <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1108,6 +1322,93 @@ export default function SpotHoldingsPage() {
                                 </BarChart>
                             </ResponsiveContainer>
                         )}
+                    </div>
+                </div>
+            </div>
+
+            {/* 当前收益统计表 */}
+            <div className="bg-rose-50 border-t border-rose-100 p-5">
+                <div className="flex justify-between items-center mb-3">
+                    <h3 className="font-bold text-rose-800 text-sm">当前收益统计表</h3>
+                    <button 
+                        onClick={() => setIsHKDView(!isHKDView)}
+                        className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-rose-600 text-white border-rose-600 shadow-inner' : 'bg-white text-rose-700 border-rose-200 hover:bg-rose-100 shadow-sm'}`}
+                    >
+                        {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
+                    </button>
+                </div>
+                <div className="overflow-x-auto rounded border border-rose-200 bg-white">
+                    <table className="min-w-full text-xs text-right">
+                        <thead className="bg-rose-100/50 text-rose-900 font-medium">
+                            <tr>
+                                <th className="px-3 py-2 text-center border-b border-r border-rose-100 bg-rose-50/50">币种</th>
+                                <th className="px-3 py-2 border-b border-rose-100">已实现盈亏</th>
+                                <th className="px-3 py-2 border-b border-rose-100">浮动盈亏 (未实现)</th>
+                                <th className="px-3 py-2 border-b border-l border-rose-100 bg-rose-50/50">总盈亏 {isHKDView ? '(HKD)' : '(原币种)'}</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-rose-50">
+                            {currentPlStats.markets.map(mkt => {
+                                const rate = isHKDView ? (globalFxRates[mkt] || 1) : 1;
+                                const data = currentPlStats.rawMatrix[mkt];
+                                const displayRealized = data.realized * rate;
+                                const displayUnrealized = data.unrealized * rate;
+                                const displayTotal = data.total * rate;
+                                return (
+                                    <tr key={mkt} className="hover:bg-rose-50/30">
+                                        <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-rose-50 bg-rose-50/20">{mkt}</td>
+                                        <td className={`px-3 py-3 font-mono ${displayRealized > 0 ? 'text-red-600' : displayRealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                                            {displayRealized > 0 ? '+' : ''}{displayRealized === 0 ? '-' : formatMoney(displayRealized)}
+                                        </td>
+                                        <td className={`px-3 py-3 font-mono ${displayUnrealized > 0 ? 'text-red-600' : displayUnrealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                                            {displayUnrealized > 0 ? '+' : ''}{displayUnrealized === 0 ? '-' : formatMoney(displayUnrealized)}
+                                        </td>
+                                        <td className={`px-3 py-3 font-mono font-bold border-l border-rose-50 bg-rose-50/20 ${displayTotal > 0 ? 'text-red-700' : displayTotal < 0 ? 'text-green-700' : 'text-gray-500'}`}>
+                                            {displayTotal > 0 ? '+' : ''}{displayTotal === 0 ? '-' : formatMoney(displayTotal)}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                            {currentPlStats.markets.length === 0 && (
+                                <tr><td colSpan={4} className="px-3 py-6 text-center text-gray-400">暂无数据</td></tr>
+                            )}
+                        </tbody>
+                        {currentPlStats.markets.length > 0 && (
+                            <tfoot className="bg-rose-100 text-rose-900 border-t-2 border-rose-200 shadow-inner">
+                                <tr>
+                                    <td className="px-3 py-4 text-center font-bold border-r border-rose-200">
+                                        {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
+                                    </td>
+                                    <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (pnlSums.realized > 0 ? 'text-red-600' : pnlSums.realized < 0 ? 'text-green-600' : 'text-gray-500')}`}>
+                                        {!isHKDView ? '-' : (pnlSums.realized > 0 ? '+' : '') + (pnlSums.realized === 0 ? '-' : formatMoney(pnlSums.realized))}
+                                    </td>
+                                    <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (pnlSums.unrealized > 0 ? 'text-red-600' : pnlSums.unrealized < 0 ? 'text-green-600' : 'text-gray-500')}`}>
+                                        {!isHKDView ? '-' : (pnlSums.unrealized > 0 ? '+' : '') + (pnlSums.unrealized === 0 ? '-' : formatMoney(pnlSums.unrealized))}
+                                    </td>
+                                    <td className="px-3 py-4 font-mono font-bold text-sm border-l border-rose-200 bg-rose-200/50 text-rose-900">
+                                        {!isHKDView ? <span className="text-gray-400">-</span> : (
+                                            (pnlSums.total > 0 ? '+' : '') + formatMoney(pnlSums.total) + ' HKD'
+                                        )}
+                                    </td>
+                                </tr>
+                            </tfoot>
+                        )}
+                    </table>
+                </div>
+
+                {/* 当前收益底部功能区 */}
+                <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-rose-100 shadow-sm">
+                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                        <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
+                        <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">※每分钟自动入库</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => fetchMarketData()} disabled={isFetchingRealTime} className="flex items-center gap-2 px-4 py-2 bg-white border border-rose-600 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} /> 手动刷新
+                        </button>
+                        <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                        </button>
                     </div>
                 </div>
             </div>
@@ -1252,6 +1553,22 @@ export default function SpotHoldingsPage() {
                             </tfoot>
                         )}
                     </table>
+                </div>
+
+                {/* 资金统计底部功能区 */}
+                <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-blue-100 shadow-sm">
+                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                        <span className="flex items-center gap-1.5"><Clock size={14} className="text-blue-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
+                        <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded border border-blue-100">※每分钟自动入库</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => fetchMarketData()} disabled={isFetchingRealTime} className="flex items-center gap-2 px-4 py-2 bg-white border border-blue-600 text-blue-600 hover:bg-blue-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} /> 手动刷新
+                        </button>
+                        <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1435,104 +1752,97 @@ export default function SpotHoldingsPage() {
             </div>
         </div>
 
-        {/* --- 汇率锁定弹窗 --- */}
-        {showBaseFxModal && (
-            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
-                    <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
-                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
-                            ⚙️ 设置期初建账汇率 (对 HKD)
-                        </h3>
-                        <button onClick={() => setShowBaseFxModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
-                            <X size={20}/>
-                        </button>
-                    </div>
-                    <div className="p-5 space-y-4">
-                        <p className="text-xs text-gray-500">锁定这些汇率后，期初投入的总成本(HKD)将永远固定，不会随每日市场汇率波动。</p>
-                        <button
-                            onClick={() => {
-                                const drafts: Record<string, string> = {};
-                                Object.keys(draftBaseFx).forEach(m => {
-                                    drafts[m] = globalFxRates[m]?.toString() || draftBaseFx[m];
-                                });
-                                setDraftBaseFx(drafts);
-                            }}
-                            className="w-full py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded text-xs font-bold transition-colors border border-blue-200"
-                        >
-                            ⬇️ 获取当前最新汇率填充
-                        </button>
-                        <div className="space-y-3">
-                            {Object.keys(draftBaseFx).map(mkt => (
-                                <div key={mkt} className="flex justify-between items-center">
-                                    <span className="font-bold text-gray-700 font-mono w-16">{mkt}</span>
-                                    <input
-                                        type="number"
-                                        step="0.0001"
-                                        value={draftBaseFx[mkt]}
-                                        onChange={(e) => setDraftBaseFx(prev => ({...prev, [mkt]: e.target.value}))}
-                                        className="w-32 p-1.5 border rounded text-right text-sm font-mono outline-none focus:ring-1 focus:ring-purple-500"
-                                        placeholder="如: 7.82"
-                                    />
-                                </div>
+        {/* === 模块 6：后台库管理模块 === */}
+        <div className="bg-white shadow rounded-lg p-6 border border-gray-200 mt-8">
+            <div className="flex justify-between items-center mb-4">
+                <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                    <FileJson size={20} className="text-purple-600"/> 【后台库管理模块】
+                </h2>
+                <button onClick={() => fetchDbRecords(activeDbTab)} className="text-sm text-purple-600 hover:text-purple-800 flex items-center gap-1">
+                    <RefreshCw size={14}/> 刷新数据
+                </button>
+            </div>
+
+            <div className="flex gap-2 mb-4 border-b pb-2 overflow-x-auto">
+                {[
+                    'spot_trades',
+                    'sip_holding_spot_start',
+                    'sip_holding_fcn_output_get-stock',
+                    'sip_holding_dqaq_output_get-stock',
+                    'sip_holding_option_output_get-stock',
+                    'sip_holding_stock_mktvalue',
+                    'sip_holding_stock_pl',
+                    'sip_holding_cash_stock'
+                ].map(tab => (
+                    <button 
+                        key={tab} 
+                        onClick={() => setActiveDbTab(tab)} 
+                        className={`px-3 py-1.5 text-xs font-bold rounded whitespace-nowrap transition-colors ${activeDbTab === tab ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                    >
+                        {tab.replace('sip_', '').replace(/_/g, '/')}
+                    </button>
+                ))}
+            </div>
+
+            {loadingDb ? (
+                <div className="py-10 text-center"><Loader2 className="animate-spin mx-auto text-purple-600 mb-2" size={30}/></div>
+            ) : dbRecords.length === 0 ? (
+                <div className="py-10 text-center text-gray-400 bg-gray-50 rounded border border-dashed">该库中暂无数据</div>
+            ) : (
+                <div className="overflow-x-auto border rounded">
+                    <table className="min-w-full text-sm text-left divide-y divide-gray-200">
+                        <thead className="bg-gray-50 text-gray-500">
+                            <tr>
+                                <th className="px-3 py-2 whitespace-nowrap">ID / 确切修改时间</th>
+                                <th className="px-3 py-2">内容摘要 / 绑定信息</th>
+                                <th className="px-3 py-2 text-center whitespace-nowrap">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                            {dbRecords.map(r => (
+                                <tr key={r.id} className="hover:bg-gray-50 transition-colors">
+                                    <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap font-mono">
+                                        <div className="font-bold text-gray-700">{r.id.substring(0,8)}...</div>
+                                        <div className="text-blue-600">
+                                            {formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A'}
+                                        </div>
+                                    </td>
+                                    <td className="px-3 py-2 text-xs">
+                                        <div className="max-w-md xl:max-w-2xl truncate text-gray-700 bg-blue-50/50 px-2 py-1.5 rounded border border-blue-100 font-medium">
+                                            {getRecordSummary(r, activeDbTab)}
+                                        </div>
+                                    </td>
+                                    <td className="px-3 py-2 text-center whitespace-nowrap">
+                                        <button onClick={() => setEditRecordModal({show: true, record: r, rawJson: JSON.stringify(r, null, 4)})} className="text-blue-600 hover:text-blue-800 mx-1 p-1 hover:bg-blue-50 rounded transition-colors" title="修改 JSON"><FileJson size={16}/></button>
+                                        <button onClick={() => handleDeleteRecord(r.id)} className="text-red-600 hover:text-red-800 mx-1 p-1 hover:bg-red-50 rounded transition-colors" title="永久删除"><Trash2 size={16}/></button>
+                                    </td>
+                                </tr>
                             ))}
-                        </div>
+                        </tbody>
+                    </table>
+                </div>
+            )}
+        </div>
+
+        {/* 修改 Raw JSON 弹窗 */}
+        {editRecordModal && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-5xl flex flex-col h-[85vh]">
+                    <div className="flex justify-between items-center mb-4 border-b pb-4">
+                        <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700"><FileJson size={20}/> 进阶修改记录 - {editRecordModal.record?.id}</h3>
+                        <button onClick={() => setEditRecordModal(null)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
                     </div>
-                    <div className="bg-gray-50 px-5 py-3 border-t border-gray-100 flex justify-end gap-3">
-                        <button onClick={() => setShowBaseFxModal(false)} className="px-4 py-2 bg-gray-200 text-gray-700 text-sm font-bold rounded shadow-sm hover:bg-gray-300 transition-colors">
-                            取消
-                        </button>
-                        <button onClick={async () => {
-                            const parsed: Record<string, number> = {};
-                            Object.entries(draftBaseFx).forEach(([k, v]) => {
-                                const val = parseFloat(v);
-                                if (!isNaN(val) && val > 0) parsed[k] = val;
-                            });
-                            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start', '_global_config'), { baseFxRates: parsed }, { merge: true });
-                            setShowBaseFxModal(false);
-                            setBaseFxRates(parsed); 
-                        }} className="px-4 py-2 bg-purple-600 text-white text-sm font-bold rounded shadow-sm hover:bg-purple-700 transition-colors">
-                            保存锁定
-                        </button>
+                    <p className="text-xs text-gray-500 mb-2 border-l-2 border-orange-400 pl-2">
+                        警告：直接修改 Raw JSON 属于高阶操作，请确保 JSON 格式合法且结构正确，否则可能会导致页面崩溃或逻辑错误。
+                    </p>
+                    <textarea className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none" value={editRecordModal.rawJson} onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)} />
+                    <div className="flex justify-end gap-3 pt-2 border-t">
+                        <button onClick={() => setEditRecordModal(null)} className="px-5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-medium transition-colors">取消</button>
+                        <button onClick={handleSaveRecordEdit} className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-sm font-bold flex items-center gap-2 transition-colors"><Save size={16}/> 保存强制覆盖</button>
                     </div>
                 </div>
             </div>
         )}
-
-        {/* --- 汇率详情弹窗 --- */}
-        {showFxModal && (
-            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
-                    <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
-                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
-                            <Info className="text-blue-500" size={18} /> 全局汇率 (对 HKD)
-                        </h3>
-                        <button onClick={() => setShowFxModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
-                            <X size={20}/>
-                        </button>
-                    </div>
-                    <div className="p-5">
-                        {Object.keys(globalFxRates).length === 0 ? (
-                            <p className="text-sm text-gray-500 text-center py-4">暂无已缓存的汇率数据，请点击右上角“更新汇率”。</p>
-                        ) : (
-                            <div className="space-y-3">
-                                {Object.entries(globalFxRates).map(([currency, rate]) => (
-                                    <div key={currency} className="flex justify-between items-center border-b border-gray-100 pb-2 last:border-0 last:pb-0">
-                                        <span className="font-bold text-gray-700 font-mono">{currency}</span>
-                                        <span className="text-gray-600 font-mono">{Number(rate).toFixed(4)}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                    <div className="bg-gray-50 px-5 py-3 border-t border-gray-100 flex justify-end">
-                        <button onClick={() => setShowFxModal(false)} className="px-4 py-2 bg-blue-600 text-white text-sm font-bold rounded shadow-sm hover:bg-blue-700 transition-colors">
-                            关闭
-                        </button>
-                    </div>
-                </div>
-            </div>
-        )}
-
     </div>
   );
 }
