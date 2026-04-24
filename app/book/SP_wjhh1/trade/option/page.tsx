@@ -3,14 +3,14 @@
 import React, { useState, useEffect } from 'react';
 import { 
     Calculator, Save, Loader2, Database, Trash2, FileJson, 
-    X, AlertCircle, Play, CheckCircle2, RefreshCw, Edit2
+    X, AlertCircle, Play, CheckCircle2, RefreshCw, Edit2, ClipboardList
 } from 'lucide-react';
-import { collection, addDoc, getDocs, doc, deleteDoc, updateDoc, query, where } from 'firebase/firestore';
+import { collection, addDoc, getDocs, doc, deleteDoc, updateDoc, query, where, writeBatch } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 
-// --- 時間解析輔助函數 ---
+// --- 时间解析辅助函数 ---
 const getTime = (val: any) => {
     if (!val) return 0;
     if (val.toMillis && typeof val.toMillis === 'function') return val.toMillis();
@@ -25,11 +25,24 @@ const formatTime = (val: any) => {
     return new Date(val).toLocaleString();
 };
 
-// --- 輔助函數：序列化處理 ---
+// --- 日期格式规范化辅助函数 (清洗 Excel 各种斜杠、不补零格式) ---
+const normalizeDateStr = (dateStr: string) => {
+    if (!dateStr) return '';
+    let formatted = dateStr.replace(/\//g, '-');
+    const parts = formatted.split('-');
+    if (parts.length === 3) {
+        const y = parts[0];
+        const m = parts[1].padStart(2, '0');
+        const d = parts[2].padStart(2, '0');
+        formatted = `${y}-${m}-${d}`;
+    }
+    return formatted;
+};
+
+// --- 辅助函数：序列化处理 ---
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) return null;
     if (obj === null || typeof obj !== 'object') return obj;
-    // 【核心修復】：嚴格放行原生 Date 物件與 Firestore Timestamp，拒絕將其展平為普通字典
     if (obj instanceof Date) return obj; 
     if (obj.toDate && typeof obj.toDate === 'function') return obj; 
     if (obj._methodName) return obj; 
@@ -44,7 +57,7 @@ const replaceUndefinedWithNull = (obj: any): any => {
     return newObj;
 };
 
-// 產生 UUID
+// 产生 UUID
 function uuidv4() {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
         const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
@@ -52,15 +65,14 @@ function uuidv4() {
     });
 }
 
-// 格式化數字
+// 格式化数字
 const fmtMoney = (val: number, c: string = "") => new Intl.NumberFormat('en-US', { style: 'currency', currency: c || 'USD' }).format(val);
 
-// --- 精準過期時間推算 (HKT UTC+8) ---
+// --- 精准过期时间推算 (HKT UTC+8) ---
 const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
     if (!expDateStr) return Infinity;
     try {
         if (currency === 'USD') {
-            // 美股：到期日次日 04:00 HKT (嚴格處理月份/年份進位)
             const [y, m, d] = expDateStr.split('-').map(Number);
             const nextDay = new Date(y, m - 1, d + 1);
             const nextY = nextDay.getFullYear();
@@ -68,19 +80,16 @@ const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
             const nextD = String(nextDay.getDate()).padStart(2, '0');
             return new Date(`${nextY}-${nextM}-${nextD}T04:00:00+08:00`).getTime();
         } else if (currency === 'JPY') {
-            // 日股：到期日當天 14:00 HKT (即東京 15:00)
             return new Date(`${expDateStr}T14:00:00+08:00`).getTime();
         } else if (currency === 'CNY') {
-            // A股：到期日當天 15:00 HKT
             return new Date(`${expDateStr}T15:00:00+08:00`).getTime();
         } else {
-            // 港股 (HKD/預設)：到期日當天 16:00 HKT
             return new Date(`${expDateStr}T16:00:00+08:00`).getTime();
         }
     } catch (e) {
-        console.error("日期解析錯誤", e);
+        console.error("日期解析错误", e);
         const todayStr = new Date().toISOString().split('T')[0];
-        return todayStr >= expDateStr ? 0 : Infinity; // 容錯降級
+        return todayStr >= expDateStr ? 0 : Infinity;
     }
 };
 
@@ -106,25 +115,25 @@ export default function OptionTradePage() {
     const [user, setUser] = useState<any>(null);
 
     // ==========================================
-    // 1. 表單狀態 (State)
+    // 1. 表单状态 (State)
     // ==========================================
     const [basic, setBasic] = useState({
         account: 'EFG',
         executor: 'Team',
         currency: 'USD',
-        fxRate: '',          // 留白自動抓取
-        direction: 'BUY',    // 輔助顯示用，實際以 qty 正負為準
+        fxRate: '',          // 留白自动抓取
+        direction: 'BUY',    // 辅助显示用，实际以 qty 正负为准
         optionType: 'Call',
-        qty: 100,            // 底層股票數量 (Buy>0, Sell<0)
-        premium: 5.5,        // 期權單張價格
-        fee: 10              // 交易手續費
+        qty: 100,            // 底层股票数量 (Buy>0, Sell<0)
+        premium: 5.5,        // 期权单张价格
+        fee: 10              // 交易手续费
     });
 
     const [underlying, setUnderlying] = useState({
         ticker: 'TSLA',
         name: '特斯拉',
         strike: 200,
-        spotPrice: ''       // 留白自動抓取
+        spotPrice: ''       // 留白自动抓取
     });
 
     const [dates, setDates] = useState({
@@ -133,12 +142,12 @@ export default function OptionTradePage() {
     });
 
     // ==========================================
-    // 2. UI & 流程狀態
+    // 2. UI & 流程状态
     // ==========================================
     const [isRunning, setIsRunning] = useState(false);
-    const [fetchStatus, setFetchStatus] = useState<string>(''); // 新增：用於顯示抓取狀態
+    const [fetchStatus, setFetchStatus] = useState<string>(''); // 用于显示抓取状态
     const [isSaving, setIsSaving] = useState(false);
-    const [simResult, setSimResult] = useState<any>(null); // 測算彈窗資料
+    const [simResult, setSimResult] = useState<any>(null); // 测算弹窗数据
     const [currentTradeId, setCurrentTradeId] = useState<string>("");
 
     const [txRecords, setTxRecords] = useState<TransactionRecord[]>([]);
@@ -148,6 +157,13 @@ export default function OptionTradePage() {
     const [dbRecords, setDbRecords] = useState<any[]>([]);
     const [loadingDb, setLoadingDb] = useState(false);
     const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
+
+    // --- 批量导入 (Clipboard Paste) State ---
+    const [showPasteModal, setShowPasteModal] = useState(false);
+    const [pasteText, setPasteText] = useState('');
+    const [parsedPasteData, setParsedPasteData] = useState<any[]>([]);
+    const [isBulkProcessing, setIsBulkProcessing] = useState(false);
+    const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0, living: 0, died: 0, delivery: 0, failed: 0 });
 
     // 初始化 Auth
     useEffect(() => {
@@ -162,12 +178,12 @@ export default function OptionTradePage() {
         initAuth();
     }, []);
 
-    // 處理輸入框變更
+    // 处理输入框变更
     const handleBasicChange = (e: any) => setBasic({ ...basic, [e.target.name]: e.target.type === 'number' ? Number(e.target.value) : e.target.value });
     const handleUnderlyingChange = (e: any) => setUnderlying({ ...underlying, [e.target.name]: e.target.name === 'ticker' || e.target.name === 'name' ? e.target.value : e.target.value === '' ? '' : Number(e.target.value) });
     const handleDatesChange = (e: any) => setDates({ ...dates, [e.target.name]: e.target.value });
 
-    // 自動同步 Qty 與 Direction
+    // 自动同步 Qty 与 Direction
     useEffect(() => {
         if (basic.direction === 'BUY' && basic.qty < 0) setBasic(p => ({...p, qty: Math.abs(p.qty)}));
         if (basic.direction === 'SELL' && basic.qty > 0) setBasic(p => ({...p, qty: -Math.abs(p.qty)}));
@@ -215,59 +231,50 @@ export default function OptionTradePage() {
     };
 
     // ==========================================
-    // 4. 核心邏輯：錄入運行 (生成測算結果)
+    // 4. 核心逻辑：录入运行 (生成测算结果)
     // ==========================================
     const handleRunSimulation = async () => {
         if (!underlying.ticker || !underlying.strike || !basic.qty) {
-            alert("請填寫完整的標的代碼、執行價與交易數量！");
+            alert("请填写完整的标的代码、执行价与交易数量！");
             return;
         }
 
         setIsRunning(true);
-        setFetchStatus('參數準備中...');
+        setFetchStatus('参数准备中...');
         try {
-            // 0. 生成全局 TradeId
             const newTradeId = uuidv4();
             setCurrentTradeId(newTradeId);
 
-            // 1. 狀態流轉判斷 (使用精準過期時間)
             const expireTimeMs = getExpirationTimeMs(dates.expiryDate, basic.currency);
             const isExpired = Date.now() >= expireTimeMs;
-            const status = isExpired ? 'Expired (已失效)' : 'Living (存續中)';
+            const status = isExpired ? 'Expired (已失效)' : 'Living (存续中)';
 
-            // 2. 自動補全空缺參數
             let finalSpotNum = 0;
 
-            // 【鐵血邏輯】：只要過期，無視前端是否留白或手填，強制抓取歷史價格！拒絕現價兜底！
             if (isExpired) {
-                setFetchStatus(`獲取 ${dates.expiryDate} 歷史收盤價...`);
-                // 往前推 7 天以防止週末或國定假日導致抓不到數據
+                setFetchStatus(`获取 ${dates.expiryDate} 历史收盘价...`);
                 const d = new Date(dates.expiryDate);
                 d.setDate(d.getDate() - 7);
                 const startStr = d.toISOString().split('T')[0];
                 
                 const histPrices = await fetchHistoricalPrices(underlying.ticker, startStr, dates.expiryDate);
                 if (histPrices && histPrices.length > 0) {
-                    // 嚴格過濾，只取不大於到期日的數據
                     const validPrices = histPrices.filter((p: {date: string, close: number}) => p.date <= dates.expiryDate);
                     if (validPrices.length > 0) {
                         validPrices.sort((a: {date: string}, b: {date: string}) => a.date.localeCompare(b.date));
                         finalSpotNum = validPrices[validPrices.length - 1].close;
-                        // 強制覆寫前端的 spotPrice，保證後續入庫與計算使用真實歷史價
                         setUnderlying(p => ({...p, spotPrice: String(finalSpotNum)}));
                     } else {
-                        // 絕對拒絕降級兜底，直接阻斷報錯
-                        throw new Error(`無法獲取 ${underlying.ticker} 於到期日 ${dates.expiryDate} 之前的有效歷史收盤價，為保證結算與復盤的絕對準確性，已拒絕本次結算！`);
+                        throw new Error(`无法获取 ${underlying.ticker} 于到期日 ${dates.expiryDate} 之前的有效历史收盘价，已拒绝本次结算！`);
                     }
                 } else {
-                    throw new Error(`無法獲取 ${underlying.ticker} 於到期日 ${dates.expiryDate} 的歷史收盤價，為保證結算與復盤的絕對準確性，已拒絕本次結算！`);
+                    throw new Error(`无法获取 ${underlying.ticker} 于到期日 ${dates.expiryDate} 的历史收盘价，已拒绝本次结算！`);
                 }
             } else {
-                // 未過期：如果前端留白，則抓取最新現價；如果前端有填，尊重前端手填（用於壓力測試）
                 if (underlying.spotPrice === '') {
-                    setFetchStatus('獲取最新現價...');
+                    setFetchStatus('获取最新现价...');
                     const fetchedSpot = await fetchQuotePrice(underlying.ticker);
-                    if (fetchedSpot === null) throw new Error("無法自動獲取現價，請手動輸入");
+                    if (fetchedSpot === null) throw new Error("无法自动获取现价，请手动输入");
                     finalSpotNum = fetchedSpot;
                     setUnderlying(p => ({...p, spotPrice: String(finalSpotNum)}));
                 } else {
@@ -277,14 +284,13 @@ export default function OptionTradePage() {
 
             let finalFxNum = Number(basic.fxRate);
             if (basic.fxRate === '') {
-                setFetchStatus('獲取即時匯率...');
+                setFetchStatus('获取即时汇率...');
                 const fetchedFx = await fetchFxRate(basic.currency);
                 finalFxNum = fetchedFx || 1.0;
                 setBasic(p => ({...p, fxRate: String(finalFxNum)}));
             }
 
-            setFetchStatus('計算期權收益與分發...');
-            // 3. 核心金融計算 (嚴格遵守正負號邏輯)
+            setFetchStatus('计算期权收益与分发...');
             const qty = Number(basic.qty);
             const spot = finalSpotNum;
             const strike = Number(underlying.strike);
@@ -293,30 +299,19 @@ export default function OptionTradePage() {
             const dirStr = qty > 0 ? 'BUY' : 'SELL';
             const name = `${underlying.name} ${dirStr} ${strike} ${basic.optionType}`;
 
-            // (A) 名義金額: Call = Qty*K, Put = -Qty*K
             const notional = isCall ? qty * strike : -qty * strike;
-
-            // (B) 已实现损益: 期权金现金流 = -(Qty * 單價) - 費用
             const realizedPremium = -(qty * basic.premium) - basic.fee;
-
-            // (C) 瞬间未实现损益 (Intrinsic Value): 假设到期价=现价
             const intrinsicValue = isCall 
                 ? qty * Math.max(spot - strike, 0)
                 : qty * Math.max(strike - spot, 0);
 
-            // (D) 精准复盘逻辑处理
-            // 如果期权未到期，未实现损益即为内在价值。如果期权已到期，未实现损益归零。
             const unrealizedPnl = isExpired ? 0 : intrinsicValue;
-            
-            // 总收益 = 已经落袋的期权金 + 计算瞬间的内在价值盈亏
             const totalPnl = realizedPremium + intrinsicValue;
 
-            // 4. 接貨判斷 (僅到期且處於價內 ITM 時產生)
             const isITM = isCall ? spot > strike : spot < strike;
             const newTxRecords: TransactionRecord[] = [];
 
             if (isExpired && isITM) {
-                // 方向判斷：Buy Call / Sell Put -> 買入現貨 ; Buy Put / Sell Call -> 賣出現貨
                 const deliveryDir = ((qty > 0 && isCall) || (qty < 0 && !isCall)) ? 'BUY' : 'SELL';
                 const deliveryQty = deliveryDir === 'BUY' ? Math.abs(qty) : -Math.abs(qty);
                 const deliveryTotal = deliveryQty * strike;
@@ -341,29 +336,13 @@ export default function OptionTradePage() {
             }
             setTxRecords(newTxRecords);
 
-            // 5. 組裝彈窗所需數據
             setSimResult({
-                name,
-                status,
-                isExpired,
-                isITM,
-                notional,
-                realizedPremium,
-                unrealizedPnl,
-                totalPnl,
-                intrinsicValue,
-                spotPrice: spot,
-                hasDelivery: newTxRecords.length > 0,
-                // 原始輸入打包
-                rawData: { 
-                    basic: { ...basic, fxRate: String(finalFxNum) }, 
-                    underlying: { ...underlying, spotPrice: String(spot) }, 
-                    dates 
-                }
+                name, status, isExpired, isITM, notional, realizedPremium, unrealizedPnl, totalPnl, intrinsicValue, spotPrice: spot, hasDelivery: newTxRecords.length > 0,
+                rawData: { basic: { ...basic, fxRate: String(finalFxNum) }, underlying: { ...underlying, spotPrice: String(spot) }, dates }
             });
 
         } catch (e: any) {
-            alert("測算失敗: " + e.message);
+            alert("测算失败: " + e.message);
         } finally {
             setIsRunning(false);
             setFetchStatus('');
@@ -371,7 +350,7 @@ export default function OptionTradePage() {
     };
 
     // ==========================================
-    // 5. 執行存庫 (確認保存)
+    // 5. 执行存库 (确认保存)
     // ==========================================
     const handleConfirmSave = async () => {
         if (!simResult) return;
@@ -380,52 +359,201 @@ export default function OptionTradePage() {
             const { rawData, isExpired, hasDelivery } = simResult;
             const exactNow = new Date();
             
-            // 構建 Input 和 Output 記錄
-            const inputRecord = replaceUndefinedWithNull({
-                tradeId: currentTradeId,
-                ...rawData,
-                createdAt: exactNow,
-                updatedAt: exactNow
-            });
-
+            const inputRecord = replaceUndefinedWithNull({ tradeId: currentTradeId, ...rawData, createdAt: exactNow, updatedAt: exactNow });
             const outputRecord = replaceUndefinedWithNull({
-                tradeId: currentTradeId,
-                status: simResult.status,
-                tradeDate: rawData.dates.tradeDate,
-                name: simResult.name,
-                ticker: rawData.underlying.ticker,
-                account: rawData.basic.account,
-                currency: rawData.basic.currency,
-                notional: simResult.notional,
-                strike: rawData.underlying.strike,
-                realizedPremium: simResult.realizedPremium,
-                expectedPayoff: simResult.unrealizedPnl, // 存入严格的未实现损益 (到期为0)
-                totalPnl: simResult.totalPnl,            // 存入复盘用的总收益
-                intrinsicValueAtExpiry: simResult.isExpired ? simResult.intrinsicValue : null,
-                hasDelivery: hasDelivery,
-                createdAt: exactNow,
-                updatedAt: exactNow
+                tradeId: currentTradeId, status: simResult.status, tradeDate: rawData.dates.tradeDate, name: simResult.name, ticker: rawData.underlying.ticker,
+                account: rawData.basic.account, currency: rawData.basic.currency, notional: simResult.notional, strike: rawData.underlying.strike,
+                realizedPremium: simResult.realizedPremium, expectedPayoff: simResult.unrealizedPnl, totalPnl: simResult.totalPnl, 
+                intrinsicValueAtExpiry: simResult.isExpired ? simResult.intrinsicValue : null, hasDelivery: hasDelivery, createdAt: exactNow, updatedAt: exactNow
             });
 
-            // 根據生命週期分發入庫
             const suffix = isExpired ? 'died' : 'living';
             
             await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_option_input_${suffix}`), inputRecord);
             await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_holding_option_output_${suffix}`), outputRecord);
 
-            alert(`✅ 期權參數已成功存入 ${suffix} 庫！${hasDelivery ? '\n(請在下方的【接貨展示模塊】中，將交收記錄錄入至 Get-Stock 庫)' : ''}`);
-            setSimResult(null); // 關閉彈窗
-            if (activeDbTab.includes('option')) fetchDbRecords(activeDbTab); // 刷新底層表格
+            alert(`✅ 期权参数已成功存入 ${suffix} 库！${hasDelivery ? '\n(请在下方的【接货展示模块】中，将交收记录录入至 Get-Stock 库)' : ''}`);
+            setSimResult(null); 
+            if (activeDbTab.includes('option')) fetchDbRecords(activeDbTab); 
 
         } catch (e: any) {
-            alert("入庫失敗: " + e.message);
+            alert("入库失败: " + e.message);
         } finally {
             setIsSaving(false);
         }
     };
 
     // ==========================================
-    // 6. 交易記錄處理 (Upsert Logic)
+    // --- 批量导入 (Clipboard Paste) 解析与执行逻辑 ---
+    // ==========================================
+    const handlePasteTextChange = (e: any) => {
+        const text = e.target.value;
+        setPasteText(text);
+        
+        const rows = text.split('\n').map((r: string) => r.trim()).filter(Boolean);
+        
+        const parsed = rows.map((row: string) => {
+            const cols = row.split('\t');
+            const rawDirection = cols[8]?.trim().toUpperCase() || 'BUY';
+            const isSell = rawDirection.includes('SELL');
+            const absQty = Math.abs(parseFloat(cols[9]?.replace(/,/g, '')) || 0);
+
+            return {
+                account: cols[0]?.trim() || '',
+                executor: cols[1]?.trim() || '',
+                tradeDate: normalizeDateStr(cols[2]?.trim() || ''),
+                expiryDate: normalizeDateStr(cols[3]?.trim() || ''),
+                ticker: cols[4]?.trim().toUpperCase() || '',
+                name: cols[5]?.trim() || '',
+                currency: cols[6]?.trim().toUpperCase() || 'USD',
+                optionType: cols[7]?.trim().toLowerCase().includes('put') ? 'Put' : 'Call',
+                direction: isSell ? 'SELL' : 'BUY',
+                qty: isSell ? -absQty : absQty, 
+                strike: parseFloat(cols[10]?.replace(/,/g, '')) || 0,
+                premium: parseFloat(cols[11]?.replace(/,/g, '')) || 0,
+                fee: parseFloat(cols[12]?.replace(/,/g, '')) || 0,
+            };
+        }).filter((item: any) => item.ticker && item.account && item.expiryDate); 
+        
+        setParsedPasteData(parsed);
+    };
+
+    // --- 修改校验区数据的事件处理器 ---
+    const handleParsedDataChange = (index: number, field: string, value: any) => {
+        const newData = [...parsedPasteData];
+        newData[index] = { ...newData[index], [field]: value };
+        setParsedPasteData(newData);
+    };
+
+    const processBulkImport = async () => {
+        if (parsedPasteData.length === 0) return alert('没有解析到有效的数据！');
+        
+        setIsBulkProcessing(true);
+        let livingCount = 0, diedCount = 0, deliveryCount = 0, failedCount = 0;
+        const failedRecords: any[] = []; // 保存失败的记录
+
+        for (let i = 0; i < parsedPasteData.length; i++) {
+            setBulkProgress({ current: i + 1, total: parsedPasteData.length, living: livingCount, died: diedCount, delivery: deliveryCount, failed: failedCount });
+            const item = parsedPasteData[i];
+            
+            try {
+                const tradeId = uuidv4();
+                const expireTimeMs = getExpirationTimeMs(item.expiryDate, item.currency);
+                const isExpired = Date.now() >= expireTimeMs;
+                const status = isExpired ? 'Expired (已失效)' : 'Living (存续中)';
+                
+                let spot = 0;
+                if (isExpired) {
+                    const d = new Date(item.expiryDate); d.setDate(d.getDate() - 7);
+                    const startStr = d.toISOString().split('T')[0];
+                    const histPrices = await fetchHistoricalPrices(item.ticker, startStr, item.expiryDate);
+                    const validPrices = histPrices.filter((p: {date: string, close: number}) => p.date <= item.expiryDate);
+                    if (validPrices.length > 0) {
+                        validPrices.sort((a: {date: string}, b: {date: string}) => a.date.localeCompare(b.date));
+                        spot = validPrices[validPrices.length - 1].close;
+                    } else {
+                        throw new Error(`缺少 ${item.ticker} 在 ${item.expiryDate} 之前的有效历史收盘价`);
+                    }
+                } else {
+                    const p = await fetchQuotePrice(item.ticker);
+                    if (p !== null) spot = p;
+                    else throw new Error(`无法获取 ${item.ticker} 的现价`);
+                }
+
+                const fx = await fetchFxRate(item.currency) || 1.0;
+                
+                const isCall = item.optionType === 'Call';
+                const notional = isCall ? item.qty * item.strike : -item.qty * item.strike;
+                const realizedPremium = -(item.qty * item.premium) - item.fee;
+                const intrinsicValue = isCall ? item.qty * Math.max(spot - item.strike, 0) : item.qty * Math.max(item.strike - spot, 0);
+                const unrealizedPnl = isExpired ? 0 : intrinsicValue;
+                const totalPnl = realizedPremium + intrinsicValue;
+                
+                const isITM = isCall ? spot > item.strike : spot < item.strike;
+                let hasDelivery = false;
+                let deliveryRecord: any = null;
+
+                if (isExpired && isITM) {
+                    hasDelivery = true;
+                    const deliveryDir = ((item.qty > 0 && isCall) || (item.qty < 0 && !isCall)) ? 'BUY' : 'SELL';
+                    const deliveryQty = deliveryDir === 'BUY' ? Math.abs(item.qty) : -Math.abs(item.qty);
+                    const deliveryTotal = deliveryQty * item.strike;
+                    
+                    deliveryRecord = {
+                        tradeId: tradeId,
+                        date: item.expiryDate,
+                        account: item.account,
+                        market: item.currency === 'USD' ? 'US' : item.currency === 'JPY' ? 'JP' : item.currency === 'CNY' ? 'CH' : 'HK',
+                        executor: item.executor,
+                        type: item.optionType,
+                        direction: deliveryDir,
+                        stockCode: item.ticker,
+                        stockName: item.name,
+                        quantity: deliveryQty,
+                        priceNoFee: item.strike,
+                        fee: 0,
+                        amountNoFee: deliveryTotal,
+                        hkdAmount: deliveryTotal * fx
+                    };
+                }
+
+                const exactNow = new Date();
+                const name = `${item.name} ${item.direction} ${item.strike} ${item.optionType}`;
+                
+                const rawData = {
+                    basic: {
+                        account: item.account, executor: item.executor, currency: item.currency, fxRate: String(fx),
+                        direction: item.direction, optionType: item.optionType, qty: item.qty, premium: item.premium, fee: item.fee
+                    },
+                    underlying: { ticker: item.ticker, name: item.name, strike: item.strike, spotPrice: String(spot) },
+                    dates: { tradeDate: item.tradeDate, expiryDate: item.expiryDate }
+                };
+
+                const inputRecord = replaceUndefinedWithNull({ tradeId, ...rawData, createdAt: exactNow, updatedAt: exactNow });
+                const outputRecord = replaceUndefinedWithNull({
+                    tradeId, status, tradeDate: item.tradeDate, name, ticker: item.ticker, account: item.account, currency: item.currency,
+                    notional, strike: item.strike, realizedPremium, expectedPayoff: unrealizedPnl, totalPnl, intrinsicValueAtExpiry: isExpired ? intrinsicValue : null,
+                    hasDelivery, createdAt: exactNow, updatedAt: exactNow
+                });
+
+                const suffix = isExpired ? 'died' : 'living';
+                await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_option_input_${suffix}`), inputRecord);
+                await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_holding_option_output_${suffix}`), outputRecord);
+                
+                if (isExpired) diedCount++; else livingCount++;
+
+                if (hasDelivery && deliveryRecord) {
+                    await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_get-stock'), replaceUndefinedWithNull({
+                        ...deliveryRecord, createdAt: exactNow
+                    }));
+                    deliveryCount++;
+                }
+
+            } catch (e: any) {
+                console.error(`Batch parsing error at row ${i+1}:`, e);
+                failedCount++;
+                failedRecords.push(item); // 把失败的记录保存下来
+            }
+        }
+        
+        setIsBulkProcessing(false);
+        
+        if (failedCount > 0) {
+            // 将失败的记录覆盖回解析数据中，并提示用户
+            setParsedPasteData(failedRecords);
+            alert(`⚠️ 批量导入部分完成，但有 ${failedCount} 笔数据录入失败（原因通常为代码错误、API抓取不到现价/历史价，或日期格式有误）。\n\n✅ 成功移入 Living: ${livingCount} 笔\n✅ 成功移入 Died: ${diedCount} 笔\n✅ 自动生成现货交收(接货): ${deliveryCount} 笔\n\n失败的记录已保留在校验区，您可以直接在表单中修改错误数据后，再次点击入库。`);
+        } else {
+            setShowPasteModal(false);
+            setPasteText('');
+            setParsedPasteData([]);
+            alert(`✅ 批量测算流转与入库完成！\n\n成功移入 Living (存续) 库: ${livingCount} 笔\n成功移入 Died (已到期) 库: ${diedCount} 笔\n自动生成现货交收(接货): ${deliveryCount} 笔\n\n(提示：请在下方后台库管理或 Option Holding 页面核对明细)`);
+        }
+        
+        fetchDbRecords(activeDbTab);
+    };
+
+    // ==========================================
+    // 6. 交易记录处理 (Upsert Logic)
     // ==========================================
     const handleTxChange = (id: string, field: keyof TransactionRecord, value: any) => {
         setTxRecords(prev => prev.map(rec => {
@@ -454,42 +582,39 @@ export default function OptionTradePage() {
 
     const handleSaveDeliveriesToDB = async () => {
         if (!user || txRecords.length === 0 || !currentTradeId) return;
-        if (!confirm(`確認將這 ${txRecords.length} 筆交易記錄錄入後台庫嗎？\n(這將會自動覆蓋相同 TradeID 的舊記錄)`)) return;
+        if (!confirm(`确认将这 ${txRecords.length} 笔交易记录录入后台库吗？\n(这将会自动覆盖相同 TradeID 的旧记录)`)) return;
 
         try {
             setIsSaving(true);
             const getStockRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_get-stock');
             
-            // 1. 根據 tradeId 查找並刪除舊記錄 (保證冪等性)
             const q = query(getStockRef, where('tradeId', '==', currentTradeId));
             const snap = await getDocs(q);
             for(const d of snap.docs) {
                 await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_get-stock', d.id));
             }
 
-            // 2. 插入當前屏幕的最新記錄
             for (const record of txRecords) {
                 const cleanRecord = replaceUndefinedWithNull(record);
-                delete cleanRecord.id; // 清除前端自用臨時id
+                delete cleanRecord.id; 
                 await addDoc(getStockRef, { ...cleanRecord, createdAt: new Date() });
             }
             
-            alert("交收數據已成功精準覆寫至 get-stock 庫！");
+            alert("交收数据已成功精准覆写至 get-stock 库！");
             
-            // 【核心修正】：清空接貨展示模塊與綁定的 ID
             setTxRecords([]);
             setCurrentTradeId("");
 
             if (activeDbTab === 'sip_holding_option_output_get-stock') fetchDbRecords(activeDbTab);
         } catch(e:any) { 
-            alert("錄入交易庫失敗: " + e.message); 
+            alert("录入交易库失败: " + e.message); 
         } finally { 
             setIsSaving(false); 
         }
     };
 
     // ==========================================
-    // 7. 後台庫管理功能
+    // 7. 后台库管理功能
     // ==========================================
     const fetchDbRecords = async (collectionName: string) => {
         if (!user) return;
@@ -510,9 +635,30 @@ export default function OptionTradePage() {
     useEffect(() => { if (user) fetchDbRecords(activeDbTab); }, [user, activeDbTab]);
 
     const handleDeleteRecord = async (id: string) => {
-        if (!confirm("確定刪除嗎？")) return;
+        if (!confirm("确定要删除吗？")) return;
         await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, id));
         setDbRecords(dbRecords.filter(r => r.id !== id));
+    };
+
+    const handleClearCurrentDb = async () => {
+        if (!user) return;
+        if (!confirm(`警告：您确定要永久清空【${activeDbTab}】库中的所有数据吗？此操作不可撤销！`)) return;
+        if (!confirm(`再次确认：清空操作将删除该库的所有记录，请确认您知道自己在做什么！`)) return;
+
+        setLoadingDb(true);
+        try {
+            const q = query(collection(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab));
+            const snap = await getDocs(q);
+            const batch = writeBatch(db);
+            snap.docs.forEach(d => batch.delete(d.ref));
+            await batch.commit();
+            alert(`成功清空了 ${snap.size} 条数据！`);
+            setDbRecords([]);
+        } catch(e: any) {
+            alert("清空失败: " + e.message);
+        } finally {
+            setLoadingDb(false);
+        }
     };
 
     const handleSaveRecordEdit = async () => {
@@ -525,28 +671,27 @@ export default function OptionTradePage() {
             await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
             setEditRecordModal(null);
             fetchDbRecords(activeDbTab); 
-        } catch(e:any) { alert("修改失敗: " + e.message); }
+        } catch(e:any) { alert("修改失败: " + e.message); }
     };
 
-    // --- 动态展示记录摘要 Helper ---
     const getRecordSummary = (r: any, tab: string) => {
         try {
             if (tab.includes('input')) {
                 const b = r.basic;
                 const u = r.underlying;
-                if (!b || !u) return 'Option Input 參數';
+                if (!b || !u) return 'Option Input 参数';
                 return `[Option] ${b.account || '未知'} | ${u.ticker || ''} ${b.direction || ''} ${Math.abs(b.qty || 0)}股`;
             }
             if (tab.includes('output_living') || tab.includes('output_died')) {
                 if (r.name) return r.name;
-                return 'Option 測算結果';
+                return 'Option 测算结果';
             }
             if (tab.includes('get-stock')) {
                 return `【交收】${r.account || ''} | ${r.direction || ''} ${r.quantity || 0}股 ${r.stockName || r.stockCode || ''}`;
             }
             return JSON.stringify(r).substring(0, 100) + '...';
         } catch (e) {
-            return '解析失敗...';
+            return '解析失败...';
         }
     };
 
@@ -556,76 +701,89 @@ export default function OptionTradePage() {
     return (
         <div className="space-y-8 pb-10 max-w-[1400px] mx-auto">
             {/* Header */}
-            <div className="border-b border-gray-200 pb-4">
-                <h1 className="text-2xl font-bold text-gray-900">Option Trade (期權錄入)</h1>
-                <p className="mt-1 text-sm text-gray-500">標準化錄入期權交易，自動推算名義本金、期權金收支，並完成生命週期分發與接貨流轉。</p>
+            <div className="border-b border-gray-200 pb-4 flex justify-between items-end">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900">Option Trade (期权录入)</h1>
+                    <p className="mt-1 text-sm text-gray-500">标准化录入期权交易，自动推算名义本金、期权金收支，并完成生命周期分发与接货流转。</p>
+                </div>
+                <button
+                    onClick={() => {
+                        setPasteText('');
+                        setParsedPasteData([]);
+                        setBulkProgress({ current: 0, total: 0, living: 0, died: 0, delivery: 0, failed: 0 });
+                        setShowPasteModal(true);
+                    }}
+                    className="px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded text-sm font-bold transition-colors shadow-sm flex items-center gap-2"
+                >
+                    <ClipboardList size={16}/> 从 Excel 批量测算与导入
+                </button>
             </div>
 
-            {/* --- 模塊 1：參數輸入模塊 --- */}
+            {/* --- 模块 1：参数输入模块 --- */}
             <div className="bg-white shadow rounded-xl p-6 border border-gray-200">
                 <div className="flex items-center gap-2 mb-6 border-b pb-2">
                     <Calculator className="text-blue-600" size={20} />
-                    <h2 className="text-lg font-bold text-gray-800">【參數輸入模塊】</h2>
+                    <h2 className="text-lg font-bold text-gray-800">【参数输入模块】</h2>
                 </div>
 
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-                    {/* 左側：基礎信息 */}
+                    {/* 左侧：基础信息 */}
                     <div className="space-y-4">
-                        <h3 className="font-bold text-gray-700 bg-gray-50 p-2 rounded text-sm">1. 基礎信息</h3>
+                        <h3 className="font-bold text-gray-700 bg-gray-50 p-2 rounded text-sm">1. 基础信息</h3>
                         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                            <div><label className="block text-xs font-medium text-gray-600 mb-1">賬戶</label><input type="text" name="account" value={basic.account} onChange={handleBasicChange} className="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" /></div>
-                            <div><label className="block text-xs font-medium text-gray-600 mb-1">執行人</label><input type="text" name="executor" value={basic.executor} onChange={handleBasicChange} className="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+                            <div><label className="block text-xs font-medium text-gray-600 mb-1">账户</label><input type="text" name="account" value={basic.account} onChange={handleBasicChange} className="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+                            <div><label className="block text-xs font-medium text-gray-600 mb-1">执行人</label><input type="text" name="executor" value={basic.executor} onChange={handleBasicChange} className="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" /></div>
                             
                             <div>
-                                <label className="block text-xs font-medium text-gray-600 mb-1">計價貨幣</label>
+                                <label className="block text-xs font-medium text-gray-600 mb-1">计价货币</label>
                                 <select name="currency" value={basic.currency} onChange={handleBasicChange} className="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white">
                                     <option value="HKD">HKD</option><option value="USD">USD</option><option value="JPY">JPY</option><option value="CNY">CNY</option>
                                 </select>
                             </div>
                             <div className="col-span-2">
                                 <label className="block text-xs font-medium text-gray-600 mb-1 flex justify-between">
-                                    <span>匯率 (To HKD)</span><span className="text-[10px] text-gray-400">留白自動抓取</span>
+                                    <span>汇率 (To HKD)</span><span className="text-[10px] text-gray-400">留白自动抓取</span>
                                 </label>
                                 <input type="number" step="0.0001" name="fxRate" value={basic.fxRate} onChange={handleBasicChange} placeholder="Auto Fetch" className="w-full border rounded p-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" />
                             </div>
 
                             <div>
-                                <label className="block text-xs font-medium text-gray-600 mb-1">方向 (自動)</label>
+                                <label className="block text-xs font-medium text-gray-600 mb-1">方向 (自动)</label>
                                 <select name="direction" value={basic.direction} onChange={handleBasicChange} className={`w-full border rounded p-2 text-sm font-bold outline-none ${basic.direction === 'BUY' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
                                     <option value="BUY">BUY</option><option value="SELL">SELL</option>
                                 </select>
                             </div>
                             <div>
-                                <label className="block text-xs font-medium text-gray-600 mb-1">類型</label>
+                                <label className="block text-xs font-medium text-gray-600 mb-1">类型</label>
                                 <select name="optionType" value={basic.optionType} onChange={handleBasicChange} className="w-full border rounded p-2 text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none bg-white">
-                                    <option value="Call">Call (看漲)</option><option value="Put">Put (看跌)</option>
+                                    <option value="Call">Call (看涨)</option><option value="Put">Put (看跌)</option>
                                 </select>
                             </div>
                             <div>
                                 <label className="block text-xs font-medium text-gray-600 mb-1 flex justify-between">
-                                    <span>交易數量</span>
+                                    <span>交易数量</span>
                                     <span className="text-[10px] text-blue-500">Buy&gt;0, Sell&lt;0</span>
                                 </label>
                                 <input type="number" name="qty" value={basic.qty} onChange={handleBasicChange} className="w-full border rounded p-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none bg-blue-50/30" />
                             </div>
                             
-                            <div><label className="block text-xs font-medium text-gray-600 mb-1">期權單張價格</label><input type="number" step="0.01" name="premium" value={basic.premium} onChange={handleBasicChange} className="w-full border rounded p-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none" /></div>
-                            <div><label className="block text-xs font-medium text-gray-600 mb-1">交易手續費</label><input type="number" step="0.01" name="fee" value={basic.fee} onChange={handleBasicChange} className="w-full border rounded p-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+                            <div><label className="block text-xs font-medium text-gray-600 mb-1">期权单张价格</label><input type="number" step="0.01" name="premium" value={basic.premium} onChange={handleBasicChange} className="w-full border rounded p-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+                            <div><label className="block text-xs font-medium text-gray-600 mb-1">交易手续费</label><input type="number" step="0.01" name="fee" value={basic.fee} onChange={handleBasicChange} className="w-full border rounded p-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none" /></div>
                         </div>
                     </div>
 
-                    {/* 右側：標的與日期 */}
+                    {/* 右侧：标的与日期 */}
                     <div className="space-y-6">
-                        {/* 2. 標的信息 */}
+                        {/* 2. 标的信息 */}
                         <div className="space-y-4">
-                            <h3 className="font-bold text-gray-700 bg-gray-50 p-2 rounded text-sm">2. 標的信息</h3>
+                            <h3 className="font-bold text-gray-700 bg-gray-50 p-2 rounded text-sm">2. 标的信息</h3>
                             <div className="grid grid-cols-2 gap-3">
-                                <div><label className="block text-xs font-medium text-gray-600 mb-1">標的代碼 (Ticker)</label><input type="text" name="ticker" value={underlying.ticker} onChange={handleUnderlyingChange} className="w-full border rounded p-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase" /></div>
-                                <div><label className="block text-xs font-medium text-gray-600 mb-1">標的名稱</label><input type="text" name="name" value={underlying.name} onChange={handleUnderlyingChange} className="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" /></div>
-                                <div><label className="block text-xs font-medium text-gray-600 mb-1">執行價 (Strike)</label><input type="number" step="0.01" name="strike" value={underlying.strike} onChange={handleUnderlyingChange} className="w-full border rounded p-2 text-sm font-mono font-bold text-blue-700 focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+                                <div><label className="block text-xs font-medium text-gray-600 mb-1">标的代码 (Ticker)</label><input type="text" name="ticker" value={underlying.ticker} onChange={handleUnderlyingChange} className="w-full border rounded p-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase" /></div>
+                                <div><label className="block text-xs font-medium text-gray-600 mb-1">标的名称</label><input type="text" name="name" value={underlying.name} onChange={handleUnderlyingChange} className="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+                                <div><label className="block text-xs font-medium text-gray-600 mb-1">执行价 (Strike)</label><input type="number" step="0.01" name="strike" value={underlying.strike} onChange={handleUnderlyingChange} className="w-full border rounded p-2 text-sm font-mono font-bold text-blue-700 focus:ring-2 focus:ring-blue-500 outline-none" /></div>
                                 <div>
                                     <label className="block text-xs font-medium text-gray-600 mb-1 flex justify-between">
-                                        <span>當前價 (Spot)</span><span className="text-[10px] text-gray-400">過期無視手填</span>
+                                        <span>当前价 (Spot)</span><span className="text-[10px] text-gray-400">过期无视手填</span>
                                     </label>
                                     <input type="number" step="0.01" name="spotPrice" value={underlying.spotPrice} onChange={handleUnderlyingChange} placeholder="Auto Fetch" className="w-full border rounded p-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50" />
                                 </div>
@@ -637,7 +795,7 @@ export default function OptionTradePage() {
                             <h3 className="font-bold text-gray-700 bg-gray-50 p-2 rounded text-sm">3. 日期信息</h3>
                             <div className="grid grid-cols-2 gap-3">
                                 <div><label className="block text-xs font-medium text-gray-600 mb-1">交易日期 (Trade Date)</label><input type="date" name="tradeDate" value={dates.tradeDate} onChange={handleDatesChange} className="w-full border rounded p-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none" /></div>
-                                <div><label className="block text-xs font-medium text-gray-600 mb-1">執行/到期日 (Expiry Date)</label><input type="date" name="expiryDate" value={dates.expiryDate} onChange={handleDatesChange} className="w-full border rounded p-2 text-sm font-mono font-bold focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+                                <div><label className="block text-xs font-medium text-gray-600 mb-1">执行/到期日 (Expiry Date)</label><input type="date" name="expiryDate" value={dates.expiryDate} onChange={handleDatesChange} className="w-full border rounded p-2 text-sm font-mono font-bold focus:ring-2 focus:ring-blue-500 outline-none" /></div>
                             </div>
                         </div>
                     </div>
@@ -650,12 +808,12 @@ export default function OptionTradePage() {
                         className={`px-8 py-3 rounded-lg text-white font-bold flex items-center gap-2 shadow-lg transition-all ${isRunning ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 hover:shadow-xl transform hover:-translate-y-0.5'}`}
                     >
                         {isRunning ? <Loader2 className="animate-spin" size={20}/> : <Play size={20}/>}
-                        {isRunning ? (fetchStatus || '計算中...') : '錄入運行 (計算並預覽分發)'}
+                        {isRunning ? (fetchStatus || '计算中...') : '录入运行 (计算并预览分发)'}
                     </button>
                 </div>
             </div>
 
-            {/* === 子操作框 Modal (包含測算報告與入庫按鈕) === */}
+            {/* === 子操作框 Modal (包含测算报告与入库按钮) === */}
             {simResult && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in p-4">
                     <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col relative overflow-hidden">
@@ -664,9 +822,9 @@ export default function OptionTradePage() {
                             <div>
                                 <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
                                     <CheckCircle2 className="text-green-500" size={24} />
-                                    計算完成 - 期權定價報告
+                                    计算完成 - 期权定价报告
                                 </h3>
-                                <p className="text-sm text-gray-500 mt-1">請確認下方測算結果與狀態後，再進行保存入庫。</p>
+                                <p className="text-sm text-gray-500 mt-1">请确认下方测算结果与状态后，再进行保存入库。</p>
                             </div>
                             <button onClick={() => setSimResult(null)} className="text-gray-400 hover:text-gray-600 bg-white p-1 rounded-full shadow-sm border"><X size={24}/></button>
                         </div>
@@ -684,19 +842,19 @@ export default function OptionTradePage() {
                                 </div>
                             </div>
 
-                            {/* 核心數據面板 */}
+                            {/* 核心数据面板 */}
                             <div className="grid grid-cols-2 gap-6">
                                 <div className="bg-gray-50 p-4 rounded-lg">
-                                    <p className="text-sm text-gray-500 mb-1">名義本金 (Notional)</p>
+                                    <p className="text-sm text-gray-500 mb-1">名义本金 (Notional)</p>
                                     <p className={`text-xl font-bold font-mono ${simResult.notional > 0 ? 'text-blue-600' : 'text-orange-600'}`}>
                                         {fmtMoney(simResult.notional, basic.currency)}
                                     </p>
                                 </div>
                                 <div className="bg-gray-50 p-4 rounded-lg">
-                                    <p className="text-sm text-gray-500 mb-1">結算標的價 (Spot)</p>
+                                    <p className="text-sm text-gray-500 mb-1">结算标的价 (Spot)</p>
                                     <p className="text-xl font-bold font-mono text-indigo-700">
                                         {simResult.spotPrice.toFixed(2)}
-                                        {simResult.isExpired && <span className="text-xs text-orange-500 ml-2">(到期日真實歷史價)</span>}
+                                        {simResult.isExpired && <span className="text-xs text-orange-500 ml-2">(到期日真实历史价)</span>}
                                     </p>
                                 </div>
                             </div>
@@ -704,39 +862,39 @@ export default function OptionTradePage() {
                             {/* 收益分解面板 */}
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                                 <div className="bg-gray-50 p-4 rounded-lg border">
-                                    <h3 className="text-sm font-medium text-gray-500 mb-2">期權金 (已實現)</h3>
+                                    <h3 className="text-sm font-medium text-gray-500 mb-2">已实现盈亏 (期权金)</h3>
                                     <p className={`text-xl font-bold font-mono ${simResult.realizedPremium >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                                         {simResult.realizedPremium > 0 ? '+' : ''}{fmtMoney(simResult.realizedPremium, basic.currency)}
                                     </p>
                                 </div>
                                 <div className="bg-gray-50 p-4 rounded-lg border">
-                                    <h3 className="text-sm font-medium text-gray-500 mb-2">預期收益 (未實現)</h3>
+                                    <h3 className="text-sm font-medium text-gray-500 mb-2">预期收益 (未实现)</h3>
                                     <p className={`text-xl font-bold font-mono ${simResult.unrealizedPnl > 0 ? 'text-green-600' : simResult.unrealizedPnl < 0 ? 'text-red-600' : 'text-gray-800'}`}>
                                         {simResult.unrealizedPnl > 0 ? '+' : ''}{fmtMoney(simResult.unrealizedPnl, basic.currency)}
                                     </p>
                                 </div>
                                 <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                                    <h3 className="text-sm font-bold text-blue-800 mb-2">{simResult.isExpired ? '歷史總收益 (復盤)' : '當前總收益'}</h3>
+                                    <h3 className="text-sm font-bold text-blue-800 mb-2">{simResult.isExpired ? '历史总收益 (复盘)' : '当前总收益'}</h3>
                                     <p className={`text-xl font-bold font-mono ${simResult.totalPnl > 0 ? 'text-green-600' : simResult.totalPnl < 0 ? 'text-red-600' : 'text-gray-800'}`}>
                                         {simResult.totalPnl > 0 ? '+' : ''}{fmtMoney(simResult.totalPnl, basic.currency)}
                                     </p>
                                 </div>
                             </div>
 
-                            {/* 接貨判定 */}
+                            {/* 接货判定 */}
                             {simResult.isExpired && (
                                 <div className="mt-6 border-t pt-4">
                                     <h4 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
                                         {simResult.hasDelivery ? <AlertCircle className="text-orange-500"/> : <CheckCircle2 className="text-gray-400"/>}
-                                        到期結算判定
+                                        到期结算判定
                                     </h4>
                                     {!simResult.hasDelivery ? (
                                         <div className="bg-gray-50 border border-dashed rounded-lg p-6 text-center text-gray-500">
-                                            期權處於價外 (OTM)，未觸發行權，<strong className="text-gray-700">無交收接貨流水產生</strong>。
+                                            期权处于价外 (OTM)，未触发行权，<strong className="text-gray-700">无交收接货流水产生。</strong>
                                         </div>
                                     ) : (
                                         <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 text-orange-800 text-sm">
-                                            ⚠️ <strong>已觸發實盤交收。</strong> 具體的交收接貨流水已自動生成並加載至頁面下方的 <strong>【接貨展示模塊】</strong>。請在完成本彈窗保存後，前往下方模塊核對並點擊覆寫入庫。
+                                            ⚠️ <strong>已触发实盘交收。 具体的交收接货流水已自动生成并加载至页面下方的 【接货展示模块】。请在完成本弹窗保存后，前往下方模块核对并点击覆写入库。</strong>
                                         </div>
                                     )}
                                 </div>
@@ -745,17 +903,17 @@ export default function OptionTradePage() {
 
                         <div className="px-6 py-4 border-t bg-gray-50 flex justify-between items-center flex-shrink-0">
                             <div className="text-sm">
-                                <span className="text-gray-600 mr-2">系統判定錄入路徑: </span>
+                                <span className="text-gray-600 mr-2">系统判定录入路径: </span>
                                 {!simResult.isExpired ? (
-                                    <span className="font-bold text-green-600 flex items-center gap-1 inline-flex"><CheckCircle2 size={16}/> Living (存續庫)</span>
+                                    <span className="font-bold text-green-600 flex items-center gap-1 inline-flex"><CheckCircle2 size={16}/> Living (存续库)</span>
                                 ) : (
-                                    <span className="font-bold text-orange-600 flex items-center gap-1 inline-flex"><AlertCircle size={16}/> Died (已結束庫)</span>
+                                    <span className="font-bold text-orange-600 flex items-center gap-1 inline-flex"><AlertCircle size={16}/> Died (已结束库)</span>
                                 )}
                             </div>
                             <div className="flex gap-3">
                                 <button onClick={() => setSimResult(null)} className="px-5 py-2 rounded-md text-gray-600 font-bold bg-white border hover:bg-gray-100 transition-colors">取消</button>
                                 <button onClick={handleConfirmSave} disabled={isSaving} className={`px-6 py-2 rounded-md text-white font-bold flex items-center gap-2 transition-all shadow-md ${!simResult.isExpired ? 'bg-green-600 hover:bg-green-700' : 'bg-orange-600 hover:bg-orange-700'}`}>
-                                    {isSaving ? <Loader2 className="animate-spin" size={18}/> : <Save size={18}/>} 確認入庫 ({!simResult.isExpired ? 'Living' : 'Died'})
+                                    {isSaving ? <Loader2 className="animate-spin" size={18}/> : <Save size={18}/>} 确认入库 ({!simResult.isExpired ? 'Living' : 'Died'})
                                 </button>
                             </div>
                         </div>
@@ -764,21 +922,186 @@ export default function OptionTradePage() {
                 </div>
             )}
 
-            {/* === 模塊 2：接貨展示模塊 (獨立模塊) === */}
+            {/* --- 批量导入 (Clipboard Paste) 弹窗 --- */}
+            {showPasteModal && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[95vh] flex flex-col overflow-hidden">
+                        <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50 flex-shrink-0">
+                            <div>
+                                <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                                    <ClipboardList className="text-blue-600" size={20} /> 
+                                    批量测算与导入 (从 Excel 粘贴)
+                                </h3>
+                                <p className="text-xs text-gray-500 mt-1">系统将自动为每条记录推算生命周期、抓取 API 定价并执行分发入库。</p>
+                            </div>
+                            {!isBulkProcessing && (
+                                <button onClick={() => setShowPasteModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                                    <X size={20}/>
+                                </button>
+                            )}
+                        </div>
+                        
+                        <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col lg:flex-row gap-6 relative">
+                            {/* 遮罩层 (处理中) */}
+                            {isBulkProcessing && (
+                                <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-10 flex flex-col items-center justify-center rounded-b-xl">
+                                    <Loader2 className="animate-spin text-blue-600 mb-4" size={48} />
+                                    <h2 className="text-xl font-bold text-gray-800 mb-2">正在执行大规模并发测算...</h2>
+                                    <p className="text-gray-600 font-mono text-sm mb-6">
+                                        当前进度: {bulkProgress.current} / {bulkProgress.total}
+                                    </p>
+                                    <div className="flex gap-6 text-sm">
+                                        <div className="bg-green-50 text-green-700 px-4 py-2 rounded border border-green-200 font-bold">Living 存续: {bulkProgress.living}</div>
+                                        <div className="bg-orange-50 text-orange-700 px-4 py-2 rounded border border-orange-200 font-bold">Died 历史: {bulkProgress.died}</div>
+                                        <div className="bg-blue-50 text-blue-700 px-4 py-2 rounded border border-blue-200 font-bold">实盘交收: {bulkProgress.delivery}</div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* 左侧：粘贴区 */}
+                            <div className="flex-1 flex flex-col max-w-sm">
+                                <label className="block text-sm font-bold text-gray-700 mb-2">
+                                    1. 请在下方粘贴数据 <span className="text-xs font-normal text-gray-500">(13列严格对齐)</span>
+                                </label>
+                                <div className="bg-blue-50 border border-blue-200 text-blue-800 text-xs p-3 rounded-lg mb-3">
+                                    <span className="font-mono mt-1 block">账户 | 执行人 | 交易日 | 到期日 | 代码 | 名称 | 币种 | 类型(Call/Put) | 方向(Buy/Sell) | 数量(填绝对值) | 执行价 | 期权单价 | 手续费</span>
+                                </div>
+                                <textarea 
+                                    className="flex-1 w-full border border-gray-300 rounded-lg p-3 text-xs font-mono focus:ring-2 focus:ring-blue-500 outline-none resize-none min-h-[300px] whitespace-pre"
+                                    placeholder="在此处粘贴 Excel / Google Sheets 复制的数据..."
+                                    value={pasteText}
+                                    onChange={handlePasteTextChange}
+                                    disabled={isBulkProcessing}
+                                />
+                            </div>
+
+                            {/* 右侧：结构化可编辑预览区 */}
+                            <div className="flex-[2] flex flex-col">
+                                <label className="block text-sm font-bold text-gray-700 mb-2">
+                                    2. 结构化校验区 <span className="text-xs font-normal text-gray-500">(共识别 {parsedPasteData.length} 笔)</span>
+                                </label>
+                                <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 text-[10px] p-2 rounded-md mb-2">
+                                    💡 提示：您可以在下方表格中<b>直接修改错误的数据</b>，无需重新在 Excel 中粘贴。修改完成后点击右下角再次尝试入库。
+                                </div>
+                                <div className="flex-1 border border-gray-200 rounded-lg overflow-x-auto overflow-y-auto bg-gray-50 max-h-[500px]">
+                                    {parsedPasteData.length === 0 ? (
+                                        <div className="flex items-center justify-center h-full text-gray-400 text-sm">等待粘贴数据...</div>
+                                    ) : (
+                                        <table className="min-w-full text-xs text-left whitespace-nowrap">
+                                            <thead className="bg-gray-100 text-gray-600 sticky top-0 shadow-sm z-10">
+                                                <tr>
+                                                    <th className="px-2 py-2 font-medium">账户</th>
+                                                    <th className="px-2 py-2 font-medium">标的</th>
+                                                    <th className="px-2 py-2 font-medium">到期日</th>
+                                                    <th className="px-2 py-2 font-medium text-center">币种</th>
+                                                    <th className="px-2 py-2 font-medium text-center">方向/类型</th>
+                                                    <th className="px-2 py-2 font-medium text-right">数量</th>
+                                                    <th className="px-2 py-2 font-medium text-right">执行价</th>
+                                                    <th className="px-2 py-2 font-medium text-right">期权单价</th>
+                                                    <th className="px-2 py-2 font-medium text-center">操作</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-200 bg-white">
+                                                {parsedPasteData.map((item, idx) => (
+                                                    <tr key={idx} className="hover:bg-blue-50">
+                                                        <td className="px-2 py-1.5">
+                                                            <input type="text" value={item.account} onChange={(e) => handleParsedDataChange(idx, 'account', e.target.value)} className="w-16 p-1 border border-gray-200 rounded text-xs outline-none focus:border-blue-400" />
+                                                        </td>
+                                                        <td className="px-2 py-1.5 flex flex-col gap-1">
+                                                            <input type="text" value={item.ticker} onChange={(e) => handleParsedDataChange(idx, 'ticker', e.target.value.toUpperCase())} className="w-16 p-1 border border-gray-200 rounded text-xs font-bold outline-none focus:border-blue-400" placeholder="代码" />
+                                                            <input type="text" value={item.name} onChange={(e) => handleParsedDataChange(idx, 'name', e.target.value)} className="w-16 p-1 border border-gray-200 rounded text-[10px] text-gray-500 outline-none focus:border-blue-400" placeholder="名称" />
+                                                        </td>
+                                                        <td className="px-2 py-1.5">
+                                                            <input type="text" value={item.expiryDate} onChange={(e) => handleParsedDataChange(idx, 'expiryDate', e.target.value)} className="w-20 p-1 border border-gray-200 rounded text-xs font-mono outline-none focus:border-blue-400" placeholder="YYYY-MM-DD" />
+                                                        </td>
+                                                        <td className="px-2 py-1.5 text-center">
+                                                            <select value={item.currency} onChange={(e) => handleParsedDataChange(idx, 'currency', e.target.value)} className="w-14 p-1 border border-gray-200 rounded text-xs outline-none focus:border-blue-400 bg-white">
+                                                                <option value="USD">USD</option>
+                                                                <option value="HKD">HKD</option>
+                                                                <option value="CNY">CNY</option>
+                                                                <option value="JPY">JPY</option>
+                                                            </select>
+                                                        </td>
+                                                        <td className="px-2 py-1.5 text-center">
+                                                            <div className="flex flex-col gap-1 items-center">
+                                                                <select value={item.direction} onChange={(e) => {
+                                                                    const dir = e.target.value;
+                                                                    const absQty = Math.abs(item.qty);
+                                                                    const newData = [...parsedPasteData];
+                                                                    newData[idx] = { ...newData[idx], direction: dir, qty: dir === 'SELL' ? -absQty : absQty };
+                                                                    setParsedPasteData(newData);
+                                                                }} className={`w-14 p-1 border border-gray-200 rounded text-[10px] font-bold outline-none focus:border-blue-400 bg-white ${item.direction === 'BUY' ? 'text-green-700' : 'text-red-700'}`}>
+                                                                    <option value="BUY">BUY</option>
+                                                                    <option value="SELL">SELL</option>
+                                                                </select>
+                                                                <select value={item.optionType} onChange={(e) => handleParsedDataChange(idx, 'optionType', e.target.value)} className="w-14 p-1 border border-gray-200 rounded text-[10px] text-gray-600 outline-none focus:border-blue-400 bg-white">
+                                                                    <option value="Call">Call</option>
+                                                                    <option value="Put">Put</option>
+                                                                </select>
+                                                            </div>
+                                                        </td>
+                                                        <td className="px-2 py-1.5 text-right">
+                                                            <input type="number" min="0" value={Math.abs(item.qty)} onChange={(e) => {
+                                                                const val = parseFloat(e.target.value) || 0;
+                                                                handleParsedDataChange(idx, 'qty', item.direction === 'SELL' ? -val : val);
+                                                            }} className={`w-16 text-right p-1 border border-gray-200 rounded text-xs font-mono outline-none focus:border-blue-400 ${item.qty < 0 ? 'text-red-500' : 'text-green-600'}`} />
+                                                        </td>
+                                                        <td className="px-2 py-1.5 text-right">
+                                                            <input type="number" value={item.strike} onChange={(e) => handleParsedDataChange(idx, 'strike', parseFloat(e.target.value) || 0)} className="w-16 text-right p-1 border border-gray-200 rounded text-xs font-mono outline-none focus:border-blue-400" />
+                                                        </td>
+                                                        <td className="px-2 py-1.5 text-right">
+                                                            <input type="number" value={item.premium} onChange={(e) => handleParsedDataChange(idx, 'premium', parseFloat(e.target.value) || 0)} className="w-14 text-right p-1 border border-gray-200 rounded text-xs font-mono outline-none focus:border-blue-400 text-gray-500" />
+                                                        </td>
+                                                        <td className="px-2 py-1.5 text-center align-middle">
+                                                            <button onClick={() => {
+                                                                const newData = [...parsedPasteData];
+                                                                newData.splice(idx, 1);
+                                                                setParsedPasteData(newData);
+                                                            }} className="text-gray-400 hover:text-red-500 p-1 rounded hover:bg-red-50 transition-colors" title="移除此条">
+                                                                <Trash2 size={14}/>
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="bg-gray-50 px-6 py-4 border-t border-gray-200 flex justify-end gap-3 flex-shrink-0">
+                            <button onClick={() => setShowPasteModal(false)} disabled={isBulkProcessing} className="px-5 py-2.5 bg-gray-200 text-gray-700 text-sm font-bold rounded shadow-sm hover:bg-gray-300 transition-colors disabled:opacity-50">
+                                取消
+                            </button>
+                            <button 
+                                onClick={processBulkImport} 
+                                disabled={parsedPasteData.length === 0 || isBulkProcessing}
+                                className="px-6 py-2.5 bg-blue-600 text-white text-sm font-bold rounded shadow-sm hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+                            >
+                                {isBulkProcessing ? <Loader2 size={16} className="animate-spin"/> : <Play size={16}/>}
+                                确认开始批量解析与入库
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* === 模块 2：接货展示模块 (独立模块) === */}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
                         <Database size={20} className="text-orange-600"/>
-                        【接貨展示模塊】
+                        【接货展示模块】
                     </h2>
-                    <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">當前綁定 TradeID: <span className="font-mono font-bold text-gray-700">{currentTradeId || '暫無'}</span></span>
+                    <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">当前绑定 TradeID: <span className="font-mono font-bold text-gray-700">{currentTradeId || '暂无'}</span></span>
                 </div>
 
                 {txRecords.length === 0 ? (
                     <div className="py-12 text-center text-gray-400 bg-gray-50 rounded-lg border border-dashed border-gray-200">
                         <AlertCircle size={32} className="mx-auto mb-2 opacity-50" />
-                        <p>暫無期權交收/接貨紀錄產生</p>
-                        <p className="text-xs mt-1">當期權到期且處於價內 (ITM) 時，會在此自動生成交收流水</p>
+                        <p>暂无期权交收/接货记录产生</p>
+                        <p className="text-xs mt-1">当期权到期且处于价内 (ITM) 时，会在此自动生成交收流水</p>
                     </div>
                 ) : (
                     <div className="overflow-x-auto border border-gray-200 rounded-lg mb-6 shadow-sm">
@@ -786,13 +1109,13 @@ export default function OptionTradePage() {
                             <thead className="bg-gray-100 text-gray-600 font-medium">
                                 <tr>
                                     <th className="px-3 py-3">日期</th>
-                                    <th className="px-3 py-3">賬戶</th>
+                                    <th className="px-3 py-3">账户</th>
                                     <th className="px-3 py-3">方向</th>
-                                    <th className="px-3 py-3">標的代碼</th>
-                                    <th className="px-3 py-3 text-right">數量</th>
-                                    <th className="px-3 py-3 text-right">均價</th>
-                                    <th className="px-3 py-3 text-right">手續費</th>
-                                    <th className="px-3 py-3 text-right">總額(含費)</th>
+                                    <th className="px-3 py-3">标的代码</th>
+                                    <th className="px-3 py-3 text-right">数量</th>
+                                    <th className="px-3 py-3 text-right">均价</th>
+                                    <th className="px-3 py-3 text-right">手续费</th>
+                                    <th className="px-3 py-3 text-right">总额(含费)</th>
                                     <th className="px-3 py-3 text-center">操作</th>
                                 </tr>
                             </thead>
@@ -826,21 +1149,29 @@ export default function OptionTradePage() {
                         className={`px-8 py-3 rounded-lg font-bold text-white transition-all shadow-md flex items-center gap-2 ${isSaving || txRecords.length === 0 ? 'bg-gray-300 cursor-not-allowed' : 'bg-orange-600 hover:bg-orange-700 shadow-orange-200'}`}
                     >
                         {isSaving ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />}
-                        【錄入庫】覆蓋至 Get-Stock
+                        【录入库】覆盖至 Get-Stock
                     </button>
                 </div>
             </div>
 
-            {/* --- 模塊 3：後台庫管理模塊 --- */}
+            {/* --- 模块 3：后台库管理模块 --- */}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200 mt-8">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
                         <Database size={20} className="text-purple-600"/>
-                        【後台庫管理模塊】
+                        【后台库管理模块】
                     </h2>
-                    <button onClick={() => fetchDbRecords(activeDbTab)} className="text-sm text-purple-600 hover:text-purple-800 flex items-center gap-1">
-                        <RefreshCw size={14}/> 刷新數據
-                    </button>
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => fetchDbRecords(activeDbTab)} className="text-sm text-purple-600 hover:text-purple-800 flex items-center gap-1">
+                            <RefreshCw size={14}/> 刷新数据
+                        </button>
+                        <button 
+                            onClick={handleClearCurrentDb} 
+                            className="text-sm text-red-500 hover:text-red-700 flex items-center gap-1 bg-red-50 px-2 py-1 rounded transition-colors"
+                        >
+                            <Trash2 size={14}/> 一键清空当前库
+                        </button>
+                    </div>
                 </div>
 
                 <div className="flex gap-2 mb-4 border-b pb-2 overflow-x-auto">
@@ -857,15 +1188,15 @@ export default function OptionTradePage() {
                 {loadingDb ? (
                     <div className="py-10 text-center"><Loader2 className="animate-spin mx-auto text-purple-600 mb-2" size={30}/></div>
                 ) : dbRecords.length === 0 ? (
-                    <div className="py-10 text-center text-gray-400 bg-gray-50 rounded border border-dashed">該庫中暫無數據</div>
+                    <div className="py-10 text-center text-gray-400 bg-gray-50 rounded border border-dashed">该库中暂无数据</div>
                 ) : (
                     <div className="overflow-x-auto border rounded">
                         <table className="min-w-full text-sm text-left divide-y divide-gray-200">
                             <thead className="bg-gray-50 text-gray-500">
                                 <tr>
-                                    <th className="px-3 py-2 whitespace-nowrap">ID / 確切修改時間</th>
-                                    <th className="px-3 py-2">綁定 TradeID</th>
-                                    <th className="px-3 py-2">內容摘要 / 產品名稱</th>
+                                    <th className="px-3 py-2 whitespace-nowrap">ID / 确切修改时间</th>
+                                    <th className="px-3 py-2">绑定 TradeID</th>
+                                    <th className="px-3 py-2">内容摘要 / 产品名称</th>
                                     <th className="px-3 py-2 text-center whitespace-nowrap">操作</th>
                                 </tr>
                             </thead>
@@ -886,7 +1217,7 @@ export default function OptionTradePage() {
                                         </td>
                                         <td className="px-3 py-2 text-center whitespace-nowrap">
                                             <button onClick={() => setEditRecordModal({show: true, record: r, rawJson: JSON.stringify(r, null, 4)})} className="text-blue-600 hover:text-blue-800 mx-1 p-1 hover:bg-blue-50 rounded transition-colors" title="修改 JSON"><FileJson size={16}/></button>
-                                            <button onClick={() => handleDeleteRecord(r.id)} className="text-red-600 hover:text-red-800 mx-1 p-1 hover:bg-red-50 rounded transition-colors" title="永久刪除"><Trash2 size={16}/></button>
+                                            <button onClick={() => handleDeleteRecord(r.id)} className="text-red-600 hover:text-red-800 mx-1 p-1 hover:bg-red-50 rounded transition-colors" title="永久删除"><Trash2 size={16}/></button>
                                         </td>
                                     </tr>
                                 ))}
@@ -896,21 +1227,21 @@ export default function OptionTradePage() {
                 )}
             </div>
 
-            {/* 修改 Raw JSON 彈窗 */}
+            {/* 修改 Raw JSON 弹窗 */}
             {editRecordModal && (
                 <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
                     <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-5xl flex flex-col h-[85vh]">
                         <div className="flex justify-between items-center mb-4 border-b pb-4">
-                            <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700"><FileJson size={20}/> 進階修改記錄 - {editRecordModal.record?.id}</h3>
+                            <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700"><FileJson size={20}/> 进阶修改记录 - {editRecordModal.record?.id}</h3>
                             <button onClick={() => setEditRecordModal(null)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
                         </div>
                         <p className="text-xs text-gray-500 mb-2 border-l-2 border-orange-400 pl-2">
-                            警告：直接修改 Raw JSON 屬於高階操作，請確保 JSON 格式合法且結構正確，否則可能會導致頁面崩潰或邏輯錯誤。
+                            警告：直接修改 Raw JSON 属于高阶操作，请确保 JSON 格式合法且结构正确，否则可能会导致页面崩溃或逻辑错误。
                         </p>
-                        <textarea className="flex-1 w-full border rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none" value={editRecordModal.rawJson} onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)} />
+                        <textarea className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none bg-gray-50" value={editRecordModal.rawJson} onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)} />
                         <div className="flex justify-end gap-3 pt-2 border-t">
-                            <button onClick={() => setEditRecordModal(null)} className="px-5 py-2 bg-gray-100 text-gray-700 rounded-md text-sm font-medium">取消</button>
-                            <button onClick={handleSaveRecordEdit} className="px-5 py-2 bg-purple-600 text-white rounded-md text-sm font-bold flex gap-2"><Save size={16}/> 保存覆蓋</button>
+                            <button onClick={() => setEditRecordModal(null)} className="px-5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-medium transition-colors">取消</button>
+                            <button onClick={handleSaveRecordEdit} className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-sm font-bold flex items-center gap-2 transition-colors"><Save size={16}/> 保存强制覆盖</button>
                         </div>
                     </div>
                 </div>

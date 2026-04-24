@@ -17,9 +17,11 @@ import {
   Clock,
   X,
   FileJson,
-  Edit2
+  Edit2,
+  ClipboardList,
+  Settings2
 } from 'lucide-react';
-import { collection, getDocs, query, onSnapshot, addDoc, deleteDoc, setDoc, doc, updateDoc } from 'firebase/firestore';
+import { collection, getDocs, query, onSnapshot, addDoc, deleteDoc, setDoc, doc, updateDoc, writeBatch } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
@@ -165,6 +167,11 @@ export default function SpotHoldingsPage() {
   const [submittingInit, setSubmittingInit] = useState(false);
   const [editingInitId, setEditingInitId] = useState<string | null>(null);
   const [initCodeFilter, setInitCodeFilter] = useState('');
+
+  // --- 批量导入 (Clipboard Paste) State ---
+  const [showPasteModal, setShowPasteModal] = useState(false);
+  const [pasteText, setPasteText] = useState('');
+  const [parsedPasteData, setParsedPasteData] = useState<any[]>([]);
 
   // --- 汇率锁定 State ---
   const [baseFxRates, setBaseFxRates] = useState<Record<string, number>>({});
@@ -800,6 +807,50 @@ export default function SpotHoldingsPage() {
       }, 0);
   }, [initialHoldings, baseFxRates, globalFxRates]);
 
+  // --- 批量导入 (剪贴板) 解析与入库逻辑 ---
+  const handlePasteTextChange = (e: any) => {
+      const text = e.target.value;
+      setPasteText(text);
+      
+      // 按行切分，过滤空行
+      const rows = text.split('\n').map((r: string) => r.trim()).filter(Boolean);
+      
+      const parsed = rows.map((row: string) => {
+          const cols = row.split('\t');
+          return {
+              code: cols[0]?.trim().toUpperCase() || '',
+              market: cols[1]?.trim().toUpperCase() || 'HKD',
+              account: cols[2]?.trim() || '',
+              quantity: parseFloat(cols[3]) || 0,
+              costPrice: parseFloat(cols[4]) || 0,
+          };
+      }).filter((item: any) => item.code); // 至少需要有代码
+      
+      setParsedPasteData(parsed);
+  };
+
+  const handleConfirmBulkPaste = async () => {
+      if (parsedPasteData.length === 0) return alert('没有解析到有效的数据！');
+      setSubmittingInit(true);
+      try {
+          const batch = writeBatch(db);
+          parsedPasteData.forEach(item => {
+              const docRef = doc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start'));
+              batch.set(docRef, { ...item, createdAt: new Date().toISOString() });
+          });
+          await batch.commit();
+          
+          setShowPasteModal(false);
+          setPasteText('');
+          setParsedPasteData([]);
+          alert(`成功批量导入 ${parsedPasteData.length} 条期初数据！`);
+      } catch (e: any) {
+          alert('批量导入失败: ' + e.message);
+      } finally {
+          setSubmittingInit(false);
+      }
+  };
+
   // --- 资金净买入数据入库逻辑 ---
   const handleSaveCashStats = async (isAuto = false) => {
       if (!user) return;
@@ -811,7 +862,6 @@ export default function SpotHoldingsPage() {
               rawMatrix: netBuyStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          // 【更新】金蟬脫殼：將入庫路徑改為 sip_holding_cash_stock，避開幽靈進程的污染
           await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_stock', 'latest_summary'), payload);
           if (!isAuto) {
               setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
@@ -922,7 +972,7 @@ export default function SpotHoldingsPage() {
           setEditRecordModal(null);
           fetchDbRecords(activeDbTab);
       } catch(e: any) {
-          alert("修改失败 (请检查 JSON 格式是否正确): \n" + e.message);
+          alert("修改失败 (请检查格式): \n" + e.message);
       }
   };
 
@@ -1082,11 +1132,11 @@ export default function SpotHoldingsPage() {
                 <span className="text-xs text-gray-500 bg-white px-2 py-1 border rounded shadow-sm">数值统一为 <b>HKD</b> 且按先入先出算法结算</span>
             </div>
             
-            <div className="overflow-x-auto relative">
+            <div className="overflow-x-auto overflow-y-auto max-h-[500px] relative scrollbar-thin">
                 <table className="min-w-full text-xs text-left">
-                    <thead className="text-gray-500 font-medium bg-gray-50">
+                    <thead className="text-gray-500 font-medium bg-gray-50 sticky top-0 z-20 shadow-sm">
                         <tr>
-                            <Th label="代码/名称" sortKey="code" filterKey="code" currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} width="160px"/>
+                            <Th label="名称/代码" sortKey="code" filterKey="code" currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} width="160px"/>
                             <Th label="币种" sortKey="market" filterKey="market" currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="center"/>
                             <Th label="行业 (一/二级)" sortKey="sector_level_1" filterKey="sector_level_1" currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} />
                             <Th label="持仓数量" sortKey="quantity" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
@@ -1113,8 +1163,8 @@ export default function SpotHoldingsPage() {
                             return (
                                 <tr key={h.code} className="hover:bg-indigo-50/30 transition-colors">
                                     <td className="px-3 py-2 whitespace-nowrap">
-                                        <div className="font-bold text-gray-900 text-sm">{h.code}</div>
-                                        <div className="text-[10px] text-gray-500">{h.name}</div>
+                                        <div className="font-bold text-gray-900 text-sm">{h.name}</div>
+                                        <div className="text-[10px] text-gray-500 font-mono">{h.code}</div>
                                     </td>
                                     <td className="px-3 py-2 text-center font-mono text-gray-500">{h.market}</td>
                                     <td className="px-3 py-2 whitespace-nowrap">
@@ -1149,7 +1199,7 @@ export default function SpotHoldingsPage() {
                         })}
                     </tbody>
                     {displayHoldings.length > 0 && (
-                        <tfoot className="bg-indigo-50 border-t-2 border-indigo-200">
+                        <tfoot className="bg-indigo-50 border-t-2 border-indigo-200 sticky bottom-0 z-20 shadow-[0_-1px_2px_rgba(0,0,0,0.05)]">
                             <tr>
                                 <td colSpan={7} className="px-3 py-3 text-center font-bold text-indigo-900 tracking-widest">SUM</td>
                                 <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatMoney(holdingSums.totalCostHKD, true)}</td>
@@ -1469,7 +1519,7 @@ export default function SpotHoldingsPage() {
                     <thead className="text-gray-500 font-medium bg-gray-50">
                         <tr>
                             <Th label="交易日期" sortKey="date" filterKey="date" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="100px" />
-                            <Th label="代码/名称" sortKey="code" filterKey="code" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="160px" />
+                            <Th label="名称/代码" sortKey="code" filterKey="code" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="160px" />
                             <Th label="账户" sortKey="account" filterKey="account" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="80px"/>
                             <Th label="币种" sortKey="market" filterKey="market" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="70px" />
                             <Th label="交易类型" sortKey="source" filterKey="source" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="120px" />
@@ -1491,8 +1541,8 @@ export default function SpotHoldingsPage() {
                                 <tr key={t.id} className="hover:bg-blue-50/30 transition-colors">
                                     <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{t.date}</td>
                                     <td className="px-3 py-2 whitespace-nowrap">
-                                        <div className="font-bold text-gray-800">{t.code}</div>
-                                        <div className="text-[10px] text-gray-400">{t.name}</div>
+                                        <div className="font-bold text-gray-800">{t.name}</div>
+                                        <div className="text-[10px] text-gray-400 font-mono">{t.code}</div>
                                     </td>
                                     <td className="px-3 py-2 text-center text-gray-600">{t.account}</td>
                                     <td className="px-3 py-2 text-center font-mono text-gray-500">{displayCurrency}</td>
@@ -1631,16 +1681,26 @@ export default function SpotHoldingsPage() {
                             setDraftBaseFx(drafts);
                             setShowBaseFxModal(true);
                         }}
-                        className="px-3 py-1.5 bg-purple-100 text-purple-700 hover:bg-purple-200 rounded text-xs font-bold transition-colors border border-purple-200 shadow-sm"
+                        className="px-3 py-1.5 bg-purple-100 text-purple-700 hover:bg-purple-200 rounded text-xs font-bold transition-colors border border-purple-200 shadow-sm flex items-center gap-1"
                     >
-                        ⚙️ 设置建账汇率
+                        <Settings2 size={14}/> 设置建账汇率
+                    </button>
+                    <button
+                        onClick={() => {
+                            setPasteText('');
+                            setParsedPasteData([]);
+                            setShowPasteModal(true);
+                        }}
+                        className="px-3 py-1.5 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded text-xs font-bold transition-colors border border-blue-200 shadow-sm flex items-center gap-1"
+                    >
+                        <ClipboardList size={14}/> 批量粘贴导入
                     </button>
                 </div>
             </div>
             
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto overflow-y-auto max-h-[500px] relative">
                 <table className="min-w-full text-xs text-left">
-                    <thead className="bg-gray-50 text-gray-500 font-medium border-b border-gray-200">
+                    <thead className="bg-gray-50 text-gray-500 font-medium border-b border-gray-200 sticky top-0 z-20 shadow-sm">
                         <tr>
                             <th className="px-4 py-3 whitespace-nowrap align-top">
                                 <div className="flex flex-col gap-1">
@@ -1691,7 +1751,7 @@ export default function SpotHoldingsPage() {
                         )})}
                         
                         {/* 录入/编辑空行 */}
-                        <tr className={`${editingInitId ? 'bg-blue-50/50 border-t-2 border-blue-200 shadow-inner' : 'bg-purple-50/50 border-t-2 border-purple-100'}`}>
+                        <tr className={`${editingInitId ? 'bg-blue-50 border-t-2 border-blue-200 shadow-inner' : 'bg-purple-50 border-t-2 border-purple-100'} sticky bottom-0 z-10 shadow-[0_-1px_2px_rgba(0,0,0,0.05)]`}>
                             <td className="px-4 py-2">
                                 <input type="text" placeholder="如 AAPL" value={newInit.code} onChange={e => setNewInit({...newInit, code: e.target.value.toUpperCase().trim()})} className={`w-full p-1.5 border rounded text-xs outline-none focus:ring-1 ${editingInitId ? 'border-blue-300 focus:ring-blue-500' : 'border-purple-200 focus:ring-purple-400'}`} />
                             </td>
@@ -1873,7 +1933,13 @@ export default function SpotHoldingsPage() {
                                         </div>
                                     </td>
                                     <td className="px-3 py-2 text-center whitespace-nowrap">
-                                        <button onClick={() => setEditRecordModal({show: true, record: r, rawJson: JSON.stringify(r, null, 4)})} className="text-blue-600 hover:text-blue-800 mx-1 p-1 hover:bg-blue-50 rounded transition-colors" title="修改 JSON"><FileJson size={16}/></button>
+                                        <button 
+                                            onClick={() => setEditRecordModal({show: true, record: r, rawJson: JSON.stringify(r, null, 4)})} 
+                                            className="text-blue-600 hover:text-blue-800 mx-1 p-1 hover:bg-blue-50 rounded transition-colors" 
+                                            title="修改 JSON"
+                                        >
+                                            <FileJson size={16}/>
+                                        </button>
                                         <button onClick={() => handleDeleteRecord(r.id)} className="text-red-600 hover:text-red-800 mx-1 p-1 hover:bg-red-50 rounded transition-colors" title="永久删除"><Trash2 size={16}/></button>
                                     </td>
                                 </tr>
@@ -1982,18 +2048,107 @@ export default function SpotHoldingsPage() {
             </div>
         )}
 
-        {/* 修改 Raw JSON 弹窗 */}
+        {/* --- 批量导入粘贴弹窗 --- */}
+        {showPasteModal && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+                    <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50">
+                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                            <ClipboardList className="text-blue-600" size={20} /> 从 Excel 批量粘贴导入 (期初底座)
+                        </h3>
+                        <button onClick={() => setShowPasteModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors"><X size={20}/></button>
+                    </div>
+                    
+                    <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col lg:flex-row gap-6">
+                        {/* 左侧：粘贴区 */}
+                        <div className="flex-1 flex flex-col">
+                            <label className="block text-sm font-bold text-gray-700 mb-2">
+                                1. 请在下方粘贴数据 <span className="text-xs font-normal text-gray-500">(支持直接从 Excel/Numbers 复制)</span>
+                            </label>
+                            <div className="bg-blue-50 border border-blue-200 text-blue-800 text-xs p-3 rounded-lg mb-3">
+                                <b>⚠️ 必须严格按照以下列顺序：</b><br/>
+                                <span className="font-mono mt-1 block">标的代码 | 结算币种 | 账户名称 | 数量 | 成本均价</span>
+                                <span className="text-gray-500 block mt-1">例如: AAPL &lt;Tab&gt; USD &lt;Tab&gt; 华泰 &lt;Tab&gt; 100 &lt;Tab&gt; 150.5</span>
+                            </div>
+                            <textarea 
+                                className="flex-1 w-full border border-gray-300 rounded-lg p-3 text-xs font-mono focus:ring-2 focus:ring-blue-500 outline-none resize-none min-h-[200px] whitespace-pre"
+                                placeholder="在此处粘贴..."
+                                value={pasteText}
+                                onChange={handlePasteTextChange}
+                            />
+                        </div>
+
+                        {/* 右侧：预览区 */}
+                        <div className="flex-1 flex flex-col">
+                            <label className="block text-sm font-bold text-gray-700 mb-2">
+                                2. 数据预览区 <span className="text-xs font-normal text-gray-500">(共解析到 {parsedPasteData.length} 条有效数据)</span>
+                            </label>
+                            <div className="flex-1 border border-gray-200 rounded-lg overflow-y-auto bg-gray-50 max-h-[350px]">
+                                {parsedPasteData.length === 0 ? (
+                                    <div className="flex items-center justify-center h-full text-gray-400 text-sm">等待粘贴数据...</div>
+                                ) : (
+                                    <table className="min-w-full text-xs text-left">
+                                        <thead className="bg-gray-100 text-gray-600 sticky top-0 shadow-sm">
+                                            <tr>
+                                                <th className="px-3 py-2 font-medium">代码</th>
+                                                <th className="px-3 py-2 font-medium">币种</th>
+                                                <th className="px-3 py-2 font-medium">账户</th>
+                                                <th className="px-3 py-2 font-medium text-right">数量</th>
+                                                <th className="px-3 py-2 font-medium text-right">成本均价</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-200 bg-white">
+                                            {parsedPasteData.map((item, idx) => (
+                                                <tr key={idx} className="hover:bg-blue-50">
+                                                    <td className="px-3 py-2 font-bold">{item.code}</td>
+                                                    <td className="px-3 py-2 text-gray-500">{item.market}</td>
+                                                    <td className="px-3 py-2 text-gray-700">{item.account}</td>
+                                                    <td className="px-3 py-2 text-right font-mono">{item.quantity}</td>
+                                                    <td className="px-3 py-2 text-right font-mono">{item.costPrice}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="bg-gray-50 px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+                        <button onClick={() => setShowPasteModal(false)} className="px-5 py-2.5 bg-gray-200 text-gray-700 text-sm font-bold rounded shadow-sm hover:bg-gray-300 transition-colors">
+                            取消
+                        </button>
+                        <button 
+                            onClick={handleConfirmBulkPaste} 
+                            disabled={parsedPasteData.length === 0 || submittingInit}
+                            className="px-5 py-2.5 bg-blue-600 text-white text-sm font-bold rounded shadow-sm hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+                        >
+                            {submittingInit ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>}
+                            确认全部入库
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* 修改 Raw JSON 弹窗 (精简为高阶模式) */}
         {editRecordModal && (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
                 <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-5xl flex flex-col h-[85vh]">
                     <div className="flex justify-between items-center mb-4 border-b pb-4">
-                        <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700"><FileJson size={20}/> 进阶修改记录 - {editRecordModal.record?.id}</h3>
+                        <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700">
+                            <FileJson size={20}/> 进阶修改记录 - {editRecordModal.record?.id}
+                        </h3>
                         <button onClick={() => setEditRecordModal(null)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
                     </div>
                     <p className="text-xs text-gray-500 mb-2 border-l-2 border-orange-400 pl-2">
                         警告：直接修改 Raw JSON 属于高阶操作，请确保 JSON 格式合法且结构正确，否则可能会导致页面崩溃或逻辑错误。
                     </p>
-                    <textarea className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none" value={editRecordModal.rawJson} onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)} />
+                    <textarea 
+                        className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none bg-gray-50" 
+                        value={editRecordModal.rawJson} 
+                        onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)} 
+                    />
                     <div className="flex justify-end gap-3 pt-2 border-t">
                         <button onClick={() => setEditRecordModal(null)} className="px-5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-medium transition-colors">取消</button>
                         <button onClick={handleSaveRecordEdit} className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-sm font-bold flex items-center gap-2 transition-colors"><Save size={16}/> 保存强制覆盖</button>
