@@ -198,7 +198,7 @@ export default function SpotHoldingsPage() {
   const [chartType, setChartType] = useState<'BEST' | 'WORST'>('BEST');
 
   // --- 数据库管理模块状态 ---
-  const [activeDbTab, setActiveDbTab] = useState('spot_trades');
+  const [activeDbTab, setActiveDbTab] = useState('sip_spot_trade');
   const [dbRecords, setDbRecords] = useState<any[]>([]);
   const [loadingDb, setLoadingDb] = useState(false);
   const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
@@ -297,7 +297,7 @@ export default function SpotHoldingsPage() {
 
             // 2. 抓取：四个增量流水库的数据
             try {
-               const spotSnap = await getDocs(query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'spot_trades')));
+               const spotSnap = await getDocs(query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_spot_trade')));
                const fcnSnap = await getDocs(query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_get-stock')));
                const dqaqSnap = await getDocs(query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_dqaq_output_get-stock')));
                const optionSnap = await getDocs(query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_get-stock')));
@@ -978,7 +978,7 @@ export default function SpotHoldingsPage() {
 
   const getRecordSummary = (r: any, tab: string) => {
       try {
-          if (tab === 'spot_trades') {
+          if (tab === 'sip_spot_trade') {
               return `[${r.direction}] ${Math.abs(r.quantity)}股 ${r.code} | ${r.account}`;
           }
           if (tab === 'sip_holding_spot_start') {
@@ -1885,7 +1885,7 @@ export default function SpotHoldingsPage() {
 
             <div className="flex gap-2 mb-4 border-b pb-2 overflow-x-auto">
                 {[
-                    'spot_trades',
+                    'sip_spot_trade',
                     'sip_holding_spot_start',
                     'sip_holding_fcn_output_get-stock',
                     'sip_holding_dqaq_output_get-stock',

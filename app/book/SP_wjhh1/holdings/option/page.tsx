@@ -36,25 +36,36 @@ const formatTime = (val: any) => {
     return new Date(val).toLocaleString();
 };
 
-const formatSum = (val: number) => {
-    return `${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// ==========================================
+// 终极修复：绝对纯净的数值与颜色格式化工具
+// 彻底剥离 JSX 中的尖括号逻辑，防爆绝杀
+// ==========================================
+const fmtMoney = (val: number) => {
+    return val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
-const formatSumWithSign = (val: number) => {
-    const sign = val > 0 ? '+' : '';
-    return `${sign}${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtSign = (val: number) => {
+    if (val === 0 || Math.abs(val) < 0.00001) return '-';
+    return `${val > 0 ? '+' : ''}${fmtMoney(val)}`;
 };
 
-const formatMoney = (val: number, isHkdContext = false) => {
-    const v = isHkdContext ? val : val; 
-    return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtPctWithSign = (val: number) => {
+    if (val === 0 || Math.abs(val) < 0.00001) return '-';
+    return `${val > 0 ? '+' : ''}${(val * 100).toFixed(2)}%`;
 };
+
+const cColor = (val: number, posClass: string, negClass: string, zeroClass: string) => {
+    if (val > 0.00001) return posClass;
+    if (val < -0.00001) return negClass;
+    return zeroClass;
+};
+
 
 // --- 補助関数：シリアライズ処理 ---
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) return null;
     if (obj === null || typeof obj !== 'object') return obj;
-    // 【コア修正】：ネイティブのDateオブジェクトとFirestoreのTimestampをそのまま通す
+    // ネイティブのDateオブジェクトとFirestoreのTimestampをそのまま通す
     if (obj instanceof Date) return obj; 
     if (obj.toDate && typeof obj.toDate === 'function') return obj; 
     if (obj._methodName) return obj; 
@@ -73,7 +84,6 @@ const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
     if (!expDateStr) return Infinity;
     try {
         if (currency === 'USD') {
-            // 米国株：満期日の翌日 04:00 HKT
             const [y, m, d] = expDateStr.split('-').map(Number);
             const nextDay = new Date(y, m - 1, d + 1);
             const nextY = nextDay.getFullYear();
@@ -81,19 +91,16 @@ const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
             const nextD = String(nextDay.getDate()).padStart(2, '0');
             return new Date(`${nextY}-${nextM}-${nextD}T04:00:00+08:00`).getTime();
         } else if (currency === 'JPY') {
-            // 日本株：満期日の当日 14:00 HKT (東京 15:00)
             return new Date(`${expDateStr}T14:00:00+08:00`).getTime();
         } else if (currency === 'CNY') {
-            // A株：満期日の当日 15:00 HKT
             return new Date(`${expDateStr}T15:00:00+08:00`).getTime();
         } else {
-            // 香港株 (HKD/デフォルト)：満期日の当日 16:00 HKT
             return new Date(`${expDateStr}T16:00:00+08:00`).getTime();
         }
     } catch (e) {
         console.error("日付解析エラー", e);
         const todayStr = new Date().toISOString().split('T')[0];
-        return todayStr >= expDateStr ? 0 : Infinity; // フォールバック
+        return todayStr >= expDateStr ? 0 : Infinity; 
     }
 };
 
@@ -133,9 +140,6 @@ const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onF
         </th>
     );
 };
-
-// 数値のフォーマット
-const fmtMoneyDisplay = (val: number, c: string = "") => new Intl.NumberFormat('en-US', { style: 'currency', currency: c || 'USD' }).format(val);
 
 interface MergedRecord {
     tradeId: string;
@@ -404,7 +408,6 @@ export default function OptionHoldingPage() {
         const { inputData, outputData } = mergedRecord;
         const { basic, underlying, dates } = inputData;
         
-        // 【厳格なロジック】：時間単位での市場期限判定を使用
         const expireTimeMs = getExpirationTimeMs(dates.expiryDate, basic.currency);
         const isExpired = Date.now() >= expireTimeMs;
         const status = isExpired ? 'Expired (已失效)' : 'Living (存续中)';
@@ -420,15 +423,14 @@ export default function OptionHoldingPage() {
             
             if (histPrices && histPrices.length > 0) {
                 const validPrices = histPrices.filter((p: {date: string, close: number}) => p.date <= dates.expiryDate);
-                
                 if (validPrices.length > 0) {
                     validPrices.sort((a: {date: string}, b: {date: string}) => a.date.localeCompare(b.date));
                     spot = validPrices[validPrices.length - 1].close;
                 } else {
-                    throw new Error(`无法获取 ${underlying.ticker} 于到期日 ${dates.expiryDate} 之前的有效历史收盘价，为保证复盘准确性，拒绝结算！`);
+                    throw new Error(`无法获取 ${underlying.ticker} 之前的历史价格。`);
                 }
             } else {
-                throw new Error(`无法获取 ${underlying.ticker} 于到期日 ${dates.expiryDate} 的历史收盘价，为保证复盘准确性，拒绝结算！`);
+                throw new Error(`无法获取 ${underlying.ticker} 的历史收盘价。`);
             }
         } else {
             const p = await fetchQuotePrice(underlying.ticker);
@@ -437,7 +439,6 @@ export default function OptionHoldingPage() {
             }
         }
 
-        // 財務計算
         const qty = Number(basic.qty);
         const strike = Number(underlying.strike);
         const isCall = basic.optionType === 'Call';
@@ -452,7 +453,6 @@ export default function OptionHoldingPage() {
         const unrealizedPnl = isExpired ? 0 : intrinsicValue;
         const totalPnl = realizedPremium + intrinsicValue;
         
-        // デリバリー（受渡）の判定
         const isITM = isCall ? spot > strike : spot < strike;
         let hasDelivery = false;
         let deliveryRecord: any = null;
@@ -481,7 +481,6 @@ export default function OptionHoldingPage() {
             };
         }
 
-        // 【タイムスタンプの厳格なロジック】：正確な絶対時間を使用
         const exactNow = new Date();
 
         return {
@@ -507,7 +506,6 @@ export default function OptionHoldingPage() {
         };
     };
 
-    // --- 現在の保有状況を更新 (Living) ---
     const handleRefreshLiving = async () => {
         setLoadingLiving(true);
         let expiredCount = 0;
@@ -525,18 +523,16 @@ export default function OptionHoldingPage() {
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_option_input_living', mergedRecord.inputId), res.cleanInput);
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_living', mergedRecord.outputId), res.cleanOutput);
                 } else {
-                    // 期限切れ -> Died へ移動
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_option_input_died', mergedRecord.inputId), res.cleanInput);
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_died', mergedRecord.outputId), res.cleanOutput);
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_option_input_living', mergedRecord.inputId));
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_living', mergedRecord.outputId));
                     expiredCount++;
 
-                    // 受渡記録の書き込み
                     if (res.hasDelivery && res.deliveryRecord) {
                         const cleanDelivery = replaceUndefinedWithNull(res.deliveryRecord);
                         await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_get-stock'), {
-                            ...cleanDelivery, createdAt: new Date() // 絶対時間を使用
+                            ...cleanDelivery, createdAt: new Date()
                         });
                     }
                 }
@@ -545,13 +541,12 @@ export default function OptionHoldingPage() {
             await loadRecords();
             if (activeDbTab.includes('living')) fetchDbRecords(activeDbTab);
 
-            if (expiredCount > 0) alert(`刷新完毕！有 ${expiredCount} 笔期权已到期并移至历史库。对应的接货记录已自动存入 Get-Stock 库。`);
+            if (expiredCount > 0) alert(`刷新完毕！有 ${expiredCount} 笔期权已到期并移至历史库。`);
             else alert('刷新完毕，已更新最新持仓与现价值。');
         } catch(e: any) { alert("刷新当前持仓失败: " + e.message); } 
         finally { setLoadingLiving(false); }
     };
 
-    // --- 過去の保有状況を更新 (Died) ---
     const handleRefreshDied = async () => {
         setLoadingDied(true);
         let errorHealedCount = 0;
@@ -566,14 +561,12 @@ export default function OptionHoldingPage() {
                 delete res.cleanInput.id; delete res.cleanOutput.id;
 
                 if (!res.isExpired) {
-                    // 自動修復 (Self-Healing)：期限切れではないと判明した場合、Living へ戻す
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_option_input_living', mergedRecord.inputId), res.cleanInput);
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_living', mergedRecord.outputId), res.cleanOutput);
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_option_input_died', mergedRecord.inputId));
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_died', mergedRecord.outputId));
                     errorHealedCount++;
                 } else {
-                    // やはり期限切れの場合は上書き調整
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_option_input_died', mergedRecord.inputId), res.cleanInput);
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_died', mergedRecord.outputId), res.cleanOutput);
                 }
@@ -582,8 +575,8 @@ export default function OptionHoldingPage() {
             await loadRecords();
             if (activeDbTab.includes('died')) fetchDbRecords(activeDbTab);
 
-            if (errorHealedCount > 0) alert(`出错纠正！有 ${errorHealedCount} 笔数据重新计算后发现仍在存续期中（可能修改了到期日）！系统已将其自动修复并转移回 Living 存续库！`);
-            else alert('历史持仓刷新完毕！数据已基于到期日历史价格精准校验覆盖。');
+            if (errorHealedCount > 0) alert(`纠正 ${errorHealedCount} 笔数据，已移回存续库！`);
+            else alert('历史持仓刷新完毕！');
         } catch(e: any) { alert("刷新历史持仓失败: " + e.message); } 
         finally { setLoadingDied(false); }
     };
@@ -648,7 +641,7 @@ export default function OptionHoldingPage() {
                 strike: Number(und.strike) || 0,
                 spotPrice: Number(und.spotPrice) || 0,
                 realizedPremium: out.realizedPremium || 0,
-                unrealizedPnl: out.expectedPayoff || 0, // Option Trade は expectedPayoff に保存。即市值。
+                unrealizedPnl: out.expectedPayoff || 0, 
                 totalPnl: out.totalPnl || 0,
                 fx_rate: basic.fxRate || 1
             };
@@ -735,8 +728,8 @@ export default function OptionHoldingPage() {
                     market: mkt,
                     notionalTotal: 0,
                     notionalLiving: 0,
-                    realizedTotal: 0, // 已实现期权金(含历史)
-                    unrealized: 0,    // 当前预期收益(未实现)
+                    realizedTotal: 0,
+                    unrealized: 0, 
                     totalPnl: 0,
                     fxRate: 1
                 };
@@ -779,7 +772,7 @@ export default function OptionHoldingPage() {
         return { marketList, hkdSum };
     }, [finalLiving, finalDied, globalFxRates]);
 
-    // --- 【新增】当前市值二维统计矩阵 ---
+    // --- 当前市值二维统计矩阵 ---
     const currentMktStats = useMemo(() => {
         const accountsSet = new Set<string>();
         const marketsSet = new Set<string>();
@@ -800,7 +793,6 @@ export default function OptionHoldingPage() {
 
         processedLiving.forEach(item => {
             if (item.currency && item.account) {
-                // Option 的市值等于当前预期收益(未实现)
                 rawMatrix[item.currency][item.account] += (item.unrealizedPnl || 0);
             }
         });
@@ -808,30 +800,30 @@ export default function OptionHoldingPage() {
         return { accounts, markets, rawMatrix };
     }, [processedLiving]);
 
-    // --- 【新增】当前收益统计矩阵 ---
+    // --- 当前收益统计矩阵 ---
     const currentPlStats = useMemo(() => {
         const markets = globalStats.marketList.map(m => m.market).sort();
         const rawMatrix: Record<string, { realized: number, unrealized: number, total: number }> = {};
         
         globalStats.marketList.forEach(m => {
             rawMatrix[m.market] = {
-                realized: m.realizedTotal, // 已实现期权金(含历史)
-                unrealized: m.unrealized,  // 当前预期收益(未实现)
-                total: m.totalPnl
+                realized: m.realizedTotal,
+                unrealized: m.unrealized,
+                total: m.realizedTotal + m.unrealized // 强制使用表面的已实现+表面浮动
             };
         });
 
         return { markets, rawMatrix };
     }, [globalStats]);
 
-    // --- 【追加】資金純買付統計データ (資金浄買入 = -已実現期権金) ---
+    // --- 資金純買付統計データ (資金浄買入 = -已実現期権金) ---
     const cashStats = useMemo(() => {
         const accountsSet = new Set<string>();
         const marketsSet = new Set<string>();
 
         processedLiving.forEach(item => {
             if (item.account) accountsSet.add(item.account);
-            if (item.currency) marketsSet.add(item.currency); // Option は currency を使用
+            if (item.currency) marketsSet.add(item.currency); 
         });
         processedDied.forEach(item => {
             if (item.account) accountsSet.add(item.account);
@@ -847,10 +839,8 @@ export default function OptionHoldingPage() {
             accounts.forEach(a => rawMatrix[m][a] = 0);
         });
 
-        // 資金純買付 = - 実現したオプションプレミアム (Living + Died)
         const addPremium = (item: any) => {
             if (item.currency && item.account) {
-                // premiumがマイナス(支払済)ならプラスに、プラス(受取済)ならマイナスにする
                 rawMatrix[item.currency][item.account] += -(item.realizedPremium || 0);
             }
         };
@@ -861,7 +851,6 @@ export default function OptionHoldingPage() {
         return { accounts, markets, rawMatrix };
     }, [processedLiving, processedDied]);
 
-    // UI表示用のHKD総合算（データベースには保存しない）
     const totalCashNetBuyHKD = useMemo(() => {
         let total = 0;
         cashStats.markets.forEach(mkt => {
@@ -911,7 +900,7 @@ export default function OptionHoldingPage() {
         }
     };
 
-    // --- 【追加】資金純買付データの保存ロジック ---
+    // --- 資金純買付データの保存ロジック ---
     const handleSaveCashStats = async (isAuto = false) => {
         if (!user) return;
         if (!isAuto) setIsSavingCash(true);
@@ -945,13 +934,6 @@ export default function OptionHoldingPage() {
     }, [user, currentMktStats, currentPlStats, cashStats]);
 
     // --- ヘルパー関数 ---
-    const formatMoneyWithUnit = (val: number, ccy: string, fxRate: number = 1) => {
-        const effectiveRate = globalFxRates[ccy] || fxRate || 1;
-        const value = isHKDView ? val * effectiveRate : val;
-        const displayCcy = isHKDView ? 'HKD' : (ccy || 'USD');
-        return `${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${displayCcy}`;
-    };
-
     const getRecordSummary = (r: any, tab: string) => {
         try {
             if (tab.includes('input')) {
@@ -993,6 +975,108 @@ export default function OptionHoldingPage() {
         } catch(e:any) { alert("修改失败 (请检查 JSON 格式是否正确): \n" + e.message); }
     };
 
+    // --- Footer Render Helpers ---
+    const renderMktSumHKD = () => {
+        if (currentMktStats.markets.length === 0) return null;
+        return (
+            <tfoot className="bg-indigo-100 text-indigo-900 border-t-2 border-indigo-200 shadow-inner">
+                <tr>
+                    <td className="px-3 py-3 text-center font-bold border-r border-indigo-200">SUM (HKD)</td>
+                    {currentMktStats.accounts.map(acc => {
+                        let colSumHKD = 0;
+                        currentMktStats.markets.forEach(mkt => {
+                            const rawVal = currentMktStats.rawMatrix[mkt][acc] || 0;
+                            colSumHKD += rawVal * (globalFxRates[mkt] || 1);
+                        });
+                        return (
+                            <td key={acc} className={"px-3 py-3 font-mono font-bold " + cColor(colSumHKD, 'text-indigo-900', 'text-red-600', 'text-gray-500')}>
+                                {colSumHKD === 0 ? '-' : fmtMoney(colSumHKD)}
+                            </td>
+                        );
+                    })}
+                    <td className={"px-3 py-3 font-mono font-bold text-sm border-l border-indigo-200 " + cColor(globalStats.hkdSum.unrealized, 'text-indigo-900', 'text-red-600', 'text-gray-500')}>
+                        {fmtMoney(globalStats.hkdSum.unrealized)} HKD
+                    </td>
+                </tr>
+            </tfoot>
+        );
+    };
+
+    const renderPlSumHKD = () => {
+        if (currentPlStats.markets.length === 0) return null;
+        if (!isHKDView) {
+            return (
+                <tfoot className="bg-rose-100 text-rose-900 border-t-2 border-rose-200 shadow-inner">
+                    <tr>
+                        <td className="px-3 py-4 text-center font-bold border-r border-rose-200">SUM (无效)</td>
+                        <td className="px-3 py-4 font-mono font-bold text-gray-400">-</td>
+                        <td className="px-3 py-4 font-mono font-bold text-gray-400">-</td>
+                        <td className="px-3 py-4 font-mono font-bold text-sm border-l border-rose-200 bg-rose-200/50 text-rose-900">-</td>
+                    </tr>
+                </tfoot>
+            );
+        }
+        
+        const rSum = globalStats.hkdSum.realizedTotal;
+        const uSum = globalStats.hkdSum.unrealized;
+        const tSum = rSum + uSum;
+
+        return (
+            <tfoot className="bg-rose-100 text-rose-900 border-t-2 border-rose-200 shadow-inner">
+                <tr>
+                    <td className="px-3 py-4 text-center font-bold border-r border-rose-200">SUM (HKD)</td>
+                    <td className={"px-3 py-4 font-mono font-bold " + cColor(rSum, 'text-red-600', 'text-green-600', 'text-gray-500')}>
+                        {fmtSign(rSum)}
+                    </td>
+                    <td className={"px-3 py-4 font-mono font-bold " + cColor(uSum, 'text-red-600', 'text-green-600', 'text-gray-500')}>
+                        {fmtSign(uSum)}
+                    </td>
+                    <td className={"px-3 py-4 font-mono font-bold text-sm border-l border-rose-200 bg-rose-200/50 " + cColor(tSum, 'text-red-700', 'text-green-700', 'text-gray-700')}>
+                        {fmtSign(tSum)} HKD
+                    </td>
+                </tr>
+            </tfoot>
+        );
+    };
+
+    const renderCashSumHKD = () => {
+        if (cashStats.markets.length === 0) return null;
+        return (
+            <tfoot className="bg-teal-100 text-teal-900 border-t-2 border-teal-200 shadow-inner">
+                <tr>
+                    <td className="px-3 py-3 text-center font-bold border-r border-teal-200">SUM (HKD)</td>
+                    {cashStats.accounts.map(acc => {
+                        let colSumHKD = 0;
+                        cashStats.markets.forEach(mkt => {
+                            const rawVal = cashStats.rawMatrix[mkt][acc] || 0;
+                            colSumHKD += rawVal * (globalFxRates[mkt] || 1);
+                        });
+                        return (
+                            <td key={acc} className={"px-3 py-3 font-mono font-bold " + cColor(colSumHKD, 'text-red-600', 'text-green-600', 'text-teal-900')}>
+                                {fmtSign(colSumHKD)}
+                            </td>
+                        );
+                    })}
+                    <td className={"px-3 py-3 font-mono font-bold text-sm border-l border-teal-200 " + cColor(totalCashNetBuyHKD, 'text-red-600', 'text-green-600', 'text-teal-900')}>
+                        {fmtSign(totalCashNetBuyHKD)} HKD
+                    </td>
+                </tr>
+            </tfoot>
+        );
+    };
+
+    const livingSumPnlRatio = globalStats.hkdSum.notionalLiving > 0 ? (globalStats.hkdSum.totalPnl / globalStats.hkdSum.notionalLiving) : 0;
+    
+    const riskSums = useMemo(() => {
+        return finalRisk.reduce((acc, item) => {
+            const rate = globalFxRates[item.market] || item.fx_rate || 1;
+            acc.cost += (item.exposureCost || 0) * rate;
+            acc.mktVal += (item.exposureMktVal || 0) * rate;
+            return acc;
+        }, { cost: 0, mktVal: 0 });
+    }, [finalRisk, globalFxRates]);
+    const riskSumPnlRatio = riskSums.cost > 0.0001 ? (riskSums.mktVal / riskSums.cost) - 1 : 0;
+
     return (
         <div className="space-y-8 pb-10">
             {/* Header */}
@@ -1019,9 +1103,9 @@ export default function OptionHoldingPage() {
                     <span className="text-sm text-gray-500">Living 库总计: {livingRecords.length} 笔</span>
                 </div>
                 
-                <div className="overflow-x-auto border rounded-lg mb-4 shadow-sm pb-16">
+                <div className="overflow-x-auto overflow-y-auto max-h-[500px] border rounded-lg mb-4 shadow-sm relative scrollbar-thin">
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200">
-                        <thead className="bg-gray-50 text-gray-600 font-medium">
+                        <thead className="bg-gray-50 text-gray-600 font-medium sticky top-0 z-20 shadow-sm [&>tr>th]:bg-gray-50">
                             <tr>
                                 <Th label="状态" sortKey="status" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
                                 <Th label="交易日期" sortKey="tradeDate" filterKey="tradeDate" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
@@ -1048,15 +1132,36 @@ export default function OptionHoldingPage() {
                                     <td className="px-3 py-2 text-center font-mono text-blue-600">{item.ticker}</td>
                                     <td className="px-3 py-2 text-center text-gray-600">{item.account}</td>
                                     <td className="px-3 py-2 text-center font-mono text-gray-500">{item.currency}</td>
-                                    <td className={`px-3 py-2 text-right font-mono ${item.notional > 0 ? 'text-blue-600' : 'text-orange-600'}`}>{formatMoneyWithUnit(item.notional, item.currency, item.fx_rate)}</td>
+                                    <td className={"px-3 py-2 text-right font-mono " + cColor(item.notional, 'text-blue-600', 'text-orange-600', 'text-gray-500')}>
+                                        {item.notional === 0 ? '-' : fmtMoney(isHKDView ? item.notional * (globalFxRates[item.currency] || item.fx_rate || 1) : item.notional)}
+                                    </td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-600">{item.strike.toFixed(2)}</td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-900">{item.spotPrice.toFixed(2)}</td>
-                                    <td className={`px-3 py-2 text-right font-mono ${item.realizedPremium >= 0 ? 'text-green-600' : 'text-red-600'}`}>{item.realizedPremium > 0 ? '+' : ''}{formatMoneyWithUnit(item.realizedPremium, item.currency, item.fx_rate)}</td>
-                                    <td className={`px-3 py-2 text-right font-mono ${item.unrealizedPnl > 0 ? 'text-green-600' : item.unrealizedPnl < 0 ? 'text-red-600' : 'text-gray-500'}`}>{item.unrealizedPnl > 0 ? '+' : ''}{formatMoneyWithUnit(item.unrealizedPnl, item.currency, item.fx_rate)}</td>
-                                    <td className={`px-3 py-2 text-right font-mono font-bold ${item.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>{item.totalPnl > 0 ? '+' : ''}{formatMoneyWithUnit(item.totalPnl, item.currency, item.fx_rate)}</td>
+                                    <td className={"px-3 py-2 text-right font-mono " + cColor(item.realizedPremium, 'text-green-600', 'text-red-600', 'text-gray-400')}>
+                                        {fmtSign(isHKDView ? item.realizedPremium * (globalFxRates[item.currency] || item.fx_rate || 1) : item.realizedPremium)}
+                                    </td>
+                                    <td className={"px-3 py-2 text-right font-mono " + cColor(item.unrealizedPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>
+                                        {fmtSign(isHKDView ? item.unrealizedPnl * (globalFxRates[item.currency] || item.fx_rate || 1) : item.unrealizedPnl)}
+                                    </td>
+                                    <td className={"px-3 py-2 text-right font-mono font-bold " + cColor(item.totalPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>
+                                        {fmtSign(isHKDView ? item.totalPnl * (globalFxRates[item.currency] || item.fx_rate || 1) : item.totalPnl)}
+                                    </td>
                                 </tr>
                             ))}
                         </tbody>
+                        {finalLiving.length > 0 && (
+                            <tfoot className="bg-gray-100 border-t-2 border-gray-300 shadow-inner sticky bottom-0 z-20 [&>tr>td]:bg-gray-100">
+                                <tr>
+                                    <td colSpan={5} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{fmtMoney(globalStats.hkdSum.notionalLiving)}</td>
+                                    <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(livingSumPnlRatio, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtPctWithSign(livingSumPnlRatio)}</td>
+                                    <td colSpan={2}></td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{fmtMoney(globalStats.hkdSum.realizedTotal)}</td>
+                                    <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(globalStats.hkdSum.unrealized, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(globalStats.hkdSum.unrealized)}</td>
+                                    <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(globalStats.hkdSum.totalPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(globalStats.hkdSum.totalPnl)}</td>
+                                </tr>
+                            </tfoot>
+                        )}
                     </table>
                 </div>
 
@@ -1098,17 +1203,29 @@ export default function OptionHoldingPage() {
                                     <td className="px-3 py-2 text-gray-800">{row.name}</td>
                                     <td className="px-3 py-2 text-center text-gray-600">{row.account}</td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-600">{row.strike.toFixed(2)}</td>
-                                    <td className={`px-3 py-2 text-right font-mono ${row.exposureShares > 0 ? 'text-green-600' : row.exposureShares < 0 ? 'text-red-600' : 'text-gray-400'}`}>
+                                    <td className={"px-3 py-2 text-right font-mono " + cColor(row.exposureShares, 'text-green-600', 'text-red-600', 'text-gray-400')}>
                                         {row.exposureShares === 0 ? '-' : row.exposureShares.toLocaleString()}
                                     </td>
-                                    <td className="px-3 py-2 text-right font-mono text-gray-700">{row.exposureCost === 0 ? '-' : formatMoneyWithUnit(row.exposureCost, row.currency, row.fx_rate)}</td>
-                                    <td className="px-3 py-2 text-right font-mono text-gray-900">{row.exposureMktVal === 0 ? '-' : formatMoneyWithUnit(row.exposureMktVal, row.currency, row.fx_rate)}</td>
-                                    <td className={`px-3 py-2 text-right font-mono font-bold ${row.pnlRatio > 0 ? 'text-green-600' : row.pnlRatio < 0 ? 'text-red-600' : 'text-gray-400'}`}>
-                                        {row.pnlRatio === 0 ? '-' : `${row.pnlRatio > 0 ? '+' : ''}${(row.pnlRatio * 100).toFixed(2)}%`}
+                                    <td className="px-3 py-2 text-right font-mono text-gray-700">{row.exposureCost === 0 ? '-' : fmtMoney(isHKDView ? row.exposureCost * (globalFxRates[row.currency] || row.fx_rate || 1) : row.exposureCost)}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-900">{row.exposureMktVal === 0 ? '-' : fmtMoney(isHKDView ? row.exposureMktVal * (globalFxRates[row.currency] || row.fx_rate || 1) : row.exposureMktVal)}</td>
+                                    <td className={"px-3 py-2 text-right font-mono font-bold " + cColor(row.pnlRatio, 'text-green-600', 'text-red-600', 'text-gray-400')}>
+                                        {fmtPctWithSign(row.pnlRatio)}
                                     </td>
                                 </tr>
                             ))}
                         </tbody>
+                        {finalRisk.filter(r => r.exposureShares !== 0).length > 0 && (
+                            <tfoot className="bg-red-50 border-t-2 border-red-200 shadow-inner">
+                                <tr>
+                                    <td colSpan={5} className="px-3 py-3 text-center font-bold text-red-800 tracking-wider">SUM (折合 HKD)</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-red-900">{fmtMoney(riskSums.cost)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-red-900">{fmtMoney(riskSums.mktVal)}</td>
+                                    <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(riskSumPnlRatio, 'text-green-600', 'text-red-600', 'text-gray-500')}>
+                                        {fmtPctWithSign(riskSumPnlRatio)}
+                                    </td>
+                                </tr>
+                            </tfoot>
+                        )}
                     </table>
                 </div>
             </div>
@@ -1122,9 +1239,9 @@ export default function OptionHoldingPage() {
                     <span className="text-sm text-gray-500">Died 库总计: {diedRecords.length} 笔</span>
                 </div>
                 
-                <div className="overflow-x-auto border rounded-lg mb-4 shadow-sm pb-16">
+                <div className="overflow-x-auto overflow-y-auto max-h-[500px] border rounded-lg mb-4 shadow-sm relative scrollbar-thin">
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200">
-                        <thead className="bg-gray-50 text-gray-600 font-medium">
+                        <thead className="bg-gray-50 text-gray-600 font-medium sticky top-0 z-20 shadow-sm [&>tr>th]:bg-gray-50">
                             <tr>
                                 <Th label="状态" sortKey="status" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
                                 <Th label="交易日期" sortKey="tradeDate" filterKey="tradeDate" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
@@ -1150,11 +1267,17 @@ export default function OptionHoldingPage() {
                                     <td className="px-3 py-2 text-center font-mono text-blue-600">{item.ticker}</td>
                                     <td className="px-3 py-2 text-center text-gray-600">{item.account}</td>
                                     <td className="px-3 py-2 text-center font-mono text-gray-500">{item.currency}</td>
-                                    <td className={`px-3 py-2 text-right font-mono ${item.notional > 0 ? 'text-blue-600' : 'text-orange-600'}`}>{formatMoneyWithUnit(item.notional, item.currency, item.fx_rate)}</td>
+                                    <td className={"px-3 py-2 text-right font-mono " + cColor(item.notional, 'text-blue-600', 'text-orange-600', 'text-gray-500')}>
+                                        {item.notional === 0 ? '-' : fmtMoney(isHKDView ? item.notional * (globalFxRates[item.currency] || item.fx_rate || 1) : item.notional)}
+                                    </td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-600">{item.strike.toFixed(2)}</td>
                                     <td className="px-3 py-2 text-right font-mono font-bold text-indigo-700">{item.spotPrice.toFixed(2)}</td>
-                                    <td className={`px-3 py-2 text-right font-mono ${item.realizedPremium >= 0 ? 'text-green-600' : 'text-red-600'}`}>{item.realizedPremium > 0 ? '+' : ''}{formatMoneyWithUnit(item.realizedPremium, item.currency, item.fx_rate)}</td>
-                                    <td className={`px-3 py-2 text-right font-mono font-bold ${item.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>{item.totalPnl > 0 ? '+' : ''}{formatMoneyWithUnit(item.totalPnl, item.currency, item.fx_rate)}</td>
+                                    <td className={"px-3 py-2 text-right font-mono " + cColor(item.realizedPremium, 'text-green-600', 'text-red-600', 'text-gray-400')}>
+                                        {fmtSign(isHKDView ? item.realizedPremium * (globalFxRates[item.currency] || item.fx_rate || 1) : item.realizedPremium)}
+                                    </td>
+                                    <td className={"px-3 py-2 text-right font-mono font-bold " + cColor(item.totalPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>
+                                        {fmtSign(isHKDView ? item.totalPnl * (globalFxRates[item.currency] || item.fx_rate || 1) : item.totalPnl)}
+                                    </td>
                                 </tr>
                             ))}
                         </tbody>
@@ -1221,11 +1344,11 @@ export default function OptionHoldingPage() {
                                         <td className="px-3 py-2 text-right font-mono text-gray-800">{m.notionalTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                                         <td className="px-3 py-2 text-right font-mono text-gray-800">{m.notionalLiving.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                                         <td className="px-3 py-2 text-right font-mono text-gray-800">{m.realizedTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                        <td className={`px-3 py-2 text-right font-mono font-medium ${m.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                            {m.unrealized > 0 ? '+' : ''}{m.unrealized.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                        <td className={"px-3 py-2 text-right font-mono font-medium " + cColor(m.unrealized, 'text-green-600', 'text-red-600', 'text-gray-500')}>
+                                            {fmtSign(m.unrealized)}
                                         </td>
-                                        <td className={`px-3 py-2 text-right font-mono font-bold ${m.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                            {m.totalPnl > 0 ? '+' : ''}{m.totalPnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                        <td className={"px-3 py-2 text-right font-mono font-bold " + cColor(m.totalPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>
+                                            {fmtSign(m.totalPnl)}
                                         </td>
                                     </tr>
                                 ))}
@@ -1234,14 +1357,14 @@ export default function OptionHoldingPage() {
                                 <tfoot className="bg-indigo-100 border-t-2 border-indigo-200 shadow-inner">
                                     <tr>
                                         <td className="px-3 py-3 text-center font-bold text-indigo-900 tracking-wider">全局大盘 SUM</td>
-                                        <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.notionalTotal)}</td>
-                                        <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.notionalLiving)}</td>
-                                        <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatSum(globalStats.hkdSum.realizedTotal)}</td>
-                                        <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.hkdSum.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                            {formatSumWithSign(globalStats.hkdSum.unrealized)}
+                                        <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{fmtMoney(globalStats.hkdSum.notionalTotal)}</td>
+                                        <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{fmtMoney(globalStats.hkdSum.notionalLiving)}</td>
+                                        <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{fmtMoney(globalStats.hkdSum.realizedTotal)}</td>
+                                        <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(globalStats.hkdSum.unrealized, 'text-green-600', 'text-red-600', 'text-gray-500')}>
+                                            {fmtSign(globalStats.hkdSum.unrealized)}
                                         </td>
-                                        <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.hkdSum.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                            {formatSumWithSign(globalStats.hkdSum.totalPnl)}
+                                        <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(globalStats.hkdSum.totalPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>
+                                            {fmtSign(globalStats.hkdSum.totalPnl)}
                                         </td>
                                     </tr>
                                 </tfoot>
@@ -1287,13 +1410,13 @@ export default function OptionHoldingPage() {
                                                     rawRowSum += rawVal;
                                                     const displayVal = rawVal * rate;
                                                     return (
-                                                        <td key={acc} className={`px-3 py-2 font-mono ${displayVal >= 0 ? 'text-gray-700' : 'text-red-600'}`}>
-                                                            {displayVal === 0 ? '-' : formatMoney(displayVal, isHKDView)}
+                                                        <td key={acc} className={"px-3 py-2 font-mono " + cColor(displayVal, 'text-gray-700', 'text-red-600', 'text-gray-400')}>
+                                                            {displayVal === 0 ? '-' : fmtMoney(displayVal)}
                                                         </td>
                                                     );
                                                 })}
-                                                <td className={`px-3 py-2 font-mono font-bold border-l border-indigo-50 bg-indigo-50/20 ${rawRowSum * actualRate >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
-                                                    {rawRowSum * actualRate === 0 ? '-' : formatMoney(rawRowSum * actualRate, true)}
+                                                <td className={"px-3 py-2 font-mono font-bold border-l border-indigo-50 bg-indigo-50/20 " + cColor(rawRowSum * actualRate, 'text-indigo-900', 'text-red-600', 'text-gray-500')}>
+                                                    {rawRowSum * actualRate === 0 ? '-' : fmtMoney(rawRowSum * actualRate)}
                                                 </td>
                                             </tr>
                                         );
@@ -1302,28 +1425,7 @@ export default function OptionHoldingPage() {
                                         <tr><td colSpan={currentMktStats.accounts.length + 2} className="px-3 py-4 text-center text-gray-400">暂无数据</td></tr>
                                     )}
                                 </tbody>
-                                {currentMktStats.markets.length > 0 && (
-                                    <tfoot className="bg-indigo-100 text-indigo-900 border-t-2 border-indigo-200 shadow-inner">
-                                        <tr>
-                                            <td className="px-3 py-3 text-center font-bold border-r border-indigo-200">SUM (HKD)</td>
-                                            {currentMktStats.accounts.map(acc => {
-                                                let colSumHKD = 0;
-                                                currentMktStats.markets.forEach(mkt => {
-                                                    const rawVal = currentMktStats.rawMatrix[mkt][acc] || 0;
-                                                    colSumHKD += rawVal * (globalFxRates[mkt] || 1);
-                                                });
-                                                return (
-                                                    <td key={acc} className={`px-3 py-3 font-mono font-bold ${colSumHKD >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
-                                                        {colSumHKD === 0 ? '-' : formatMoney(colSumHKD, true)}
-                                                    </td>
-                                                );
-                                            })}
-                                            <td className={`px-3 py-3 font-mono font-bold text-sm border-l border-indigo-200 ${globalStats.hkdSum.unrealized >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
-                                                {formatMoney(globalStats.hkdSum.unrealized, true)} HKD
-                                            </td>
-                                        </tr>
-                                    </tfoot>
-                                )}
+                                {currentMktStats.markets.length > 0 && renderMktSumHKD()}
                             </table>
                         </div>
 
@@ -1377,14 +1479,14 @@ export default function OptionHoldingPage() {
                                         return (
                                             <tr key={mkt} className="hover:bg-rose-50/30">
                                                 <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-rose-50 bg-rose-50/20">{mkt}</td>
-                                                <td className={`px-3 py-3 font-mono ${displayRealized > 0 ? 'text-red-600' : displayRealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                                    {displayRealized > 0 ? '+' : ''}{displayRealized === 0 ? '-' : formatMoney(displayRealized, isHKDView)}
+                                                <td className={"px-3 py-3 font-mono " + cColor(displayRealized, 'text-red-600', 'text-green-600', 'text-gray-400')}>
+                                                    {fmtSign(displayRealized)}
                                                 </td>
-                                                <td className={`px-3 py-3 font-mono ${displayUnrealized > 0 ? 'text-red-600' : displayUnrealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                                    {displayUnrealized > 0 ? '+' : ''}{displayUnrealized === 0 ? '-' : formatMoney(displayUnrealized, isHKDView)}
+                                                <td className={"px-3 py-3 font-mono " + cColor(displayUnrealized, 'text-red-600', 'text-green-600', 'text-gray-400')}>
+                                                    {fmtSign(displayUnrealized)}
                                                 </td>
-                                                <td className={`px-3 py-3 font-mono font-bold border-l border-rose-50 bg-rose-50/20 ${displayTotal > 0 ? 'text-red-700' : displayTotal < 0 ? 'text-green-700' : 'text-gray-500'}`}>
-                                                    {displayTotal > 0 ? '+' : ''}{displayTotal === 0 ? '-' : formatMoney(displayTotal, isHKDView)}
+                                                <td className={"px-3 py-3 font-mono font-bold border-l border-rose-50 bg-rose-50/20 " + cColor(displayTotal, 'text-red-700', 'text-green-700', 'text-gray-500')}>
+                                                    {fmtSign(displayTotal)}
                                                 </td>
                                             </tr>
                                         );
@@ -1393,151 +1495,27 @@ export default function OptionHoldingPage() {
                                         <tr><td colSpan={4} className="px-3 py-6 text-center text-gray-400">暂无数据</td></tr>
                                     )}
                                 </tbody>
-                                {currentPlStats.markets.length > 0 && (
-                                    <tfoot className="bg-rose-100 text-rose-900 border-t-2 border-rose-200 shadow-inner">
-                                        <tr>
-                                            <td className="px-3 py-4 text-center font-bold border-r border-rose-200">
-                                                {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
-                                            </td>
-                                            <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (globalStats.hkdSum.realizedTotal > 0 ? 'text-red-600' : globalStats.hkdSum.realizedTotal < 0 ? 'text-green-600' : 'text-gray-500')}`}>
-                                                {!isHKDView ? '-' : (globalStats.hkdSum.realizedTotal > 0 ? '+' : '') + (globalStats.hkdSum.realizedTotal === 0 ? '-' : formatSum(globalStats.hkdSum.realizedTotal))}
-                                            </td>
-                                            <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (globalStats.hkdSum.unrealized > 0 ? 'text-red-600' : globalStats.hkdSum.unrealized < 0 ? 'text-green-600' : 'text-gray-500')}`}>
-                                                {!isHKDView ? '-' : (globalStats.hkdSum.unrealized > 0 ? '+' : '') + (globalStats.hkdSum.unrealized === 0 ? '-' : formatSum(globalStats.hkdSum.unrealized))}
-                                            </td>
-                                            <td className="px-3 py-4 font-mono font-bold text-sm border-l border-rose-200 bg-rose-200/50 text-rose-900">
-                                                {!isHKDView ? <span className="text-gray-400">-</span> : (
-                                                    (globalStats.hkdSum.totalPnl > 0 ? '+' : '') + formatSum(globalStats.hkdSum.totalPnl) + ' HKD'
-                                                )}
-                                            </td>
-                                        </tr>
-                                    </tfoot>
-                                )}
+                                {currentPlStats.markets.length > 0 && renderPlSumHKD()}
                             </table>
                         </div>
-
-                        <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-rose-100 shadow-sm">
+                        
+                        {/* 资金统计底部功能区 */}
+                        <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-teal-100 shadow-sm">
                             <div className="flex items-center gap-4 text-xs text-gray-500">
-                                <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
-                                <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">※每分钟自动入库</span>
+                                <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
+                                <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">※每分钟自动入库</span>
                             </div>
                             <div className="flex items-center gap-3">
-                                <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-rose-600 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-teal-600 text-teal-600 hover:bg-teal-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                     <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                                 </button>
-                                <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                    {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                                <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                    {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                                 </button>
                             </div>
                         </div>
                     </div>
                 )}
-            </div>
-
-            {/* === モジュール 5：资金净买入统计表 (資金浄買入統計表) === */}
-            <div className="bg-white shadow rounded-lg p-6 border border-gray-200 mt-8">
-                <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                        <Database size={20} className="text-teal-600"/>
-                        【资金净买入统计表】
-                        <span className="text-sm font-normal text-gray-500 ml-2">净买入 = - 已实现期权金 (含历史)</span>
-                    </h2>
-                    <div className="flex items-center gap-4">
-                        <span className="text-xs text-gray-400">数据每分钟自动存入 sip_holding_cash_option 库</span>
-                    </div>
-                </div>
-
-                <div className="bg-teal-50 border-t border-teal-100 p-5 rounded-lg">
-                    <div className="flex justify-between items-center mb-3">
-                        <h3 className="font-bold text-teal-800 text-sm">资金净买入矩阵</h3>
-                        <button 
-                            onClick={handleToggleHKDView}
-                            disabled={isFetchingFx}
-                            className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-teal-600 text-white border-teal-600 shadow-inner' : 'bg-white text-teal-700 border-teal-200 hover:bg-teal-100 shadow-sm'}`}
-                        >
-                            {isFetchingFx && <Loader2 size={12} className="animate-spin inline mr-1" />}
-                            {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
-                        </button>
-                    </div>
-                    <div className="overflow-x-auto rounded border border-teal-200 bg-white">
-                        <table className="min-w-full text-xs text-right">
-                            <thead className="bg-teal-100/50 text-teal-900 font-medium">
-                                <tr>
-                                    <th className="px-3 py-2 text-center border-b border-r border-teal-100 bg-teal-50/50">币种 \ 账户</th>
-                                    {cashStats.accounts.map(acc => (
-                                        <th key={acc} className="px-3 py-2 border-b border-teal-100">{acc}</th>
-                                    ))}
-                                    <th className="px-3 py-2 border-b border-l border-teal-100 bg-teal-50/50">SUM (HKD)</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-teal-50">
-                                {cashStats.markets.map(mkt => {
-                                    const actualRate = globalFxRates[mkt] || 1;
-                                    let rawRowSum = 0;
-                                    return (
-                                        <tr key={mkt} className="hover:bg-teal-50/30">
-                                            <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-teal-50 bg-teal-50/20">{mkt}</td>
-                                            {cashStats.accounts.map(acc => {
-                                                const rawVal = cashStats.rawMatrix[mkt][acc] || 0;
-                                                rawRowSum += rawVal;
-                                                const displayVal = isHKDView ? rawVal * actualRate : rawVal;
-                                                return (
-                                                    <td key={acc} className={`px-3 py-2 font-mono ${displayVal > 0 ? 'text-red-600' : displayVal < 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                                        {displayVal > 0 ? '+' : ''}{displayVal === 0 ? '-' : formatMoney(displayVal, isHKDView)}
-                                                    </td>
-                                                );
-                                            })}
-                                            <td className={`px-3 py-2 font-mono font-bold border-l border-teal-50 bg-teal-50/20 ${rawRowSum * actualRate > 0 ? 'text-red-600' : rawRowSum * actualRate < 0 ? 'text-green-600' : 'text-gray-500'}`}>
-                                                {rawRowSum * actualRate > 0 ? '+' : ''}{rawRowSum === 0 ? '-' : formatMoney(rawRowSum * actualRate, true)}
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                                {cashStats.markets.length === 0 && (
-                                    <tr><td colSpan={cashStats.accounts.length + 2} className="px-3 py-4 text-center text-gray-400">暂无数据</td></tr>
-                                )}
-                            </tbody>
-                            {cashStats.markets.length > 0 && (
-                                <tfoot className="bg-teal-100 text-teal-900 border-t-2 border-teal-200 shadow-inner">
-                                    <tr>
-                                        <td className="px-3 py-3 text-center font-bold border-r border-teal-200">SUM (HKD)</td>
-                                        {cashStats.accounts.map(acc => {
-                                            let colSumHKD = 0;
-                                            cashStats.markets.forEach(mkt => {
-                                                const rawVal = cashStats.rawMatrix[mkt][acc] || 0;
-                                                colSumHKD += rawVal * (globalFxRates[mkt] || 1);
-                                            });
-                                            return (
-                                                <td key={acc} className={`px-3 py-3 font-mono font-bold ${colSumHKD > 0 ? 'text-red-600' : colSumHKD < 0 ? 'text-green-600' : 'text-teal-900'}`}>
-                                                    {colSumHKD > 0 ? '+' : ''}{colSumHKD === 0 ? '-' : formatMoney(colSumHKD, true)}
-                                                </td>
-                                            );
-                                        })}
-                                        <td className={`px-3 py-3 font-mono font-bold text-sm border-l border-teal-200 ${totalCashNetBuyHKD > 0 ? 'text-red-600' : totalCashNetBuyHKD < 0 ? 'text-green-600' : 'text-teal-900'}`}>
-                                            {totalCashNetBuyHKD > 0 ? '+' : ''}{formatMoney(totalCashNetBuyHKD, true)} HKD
-                                        </td>
-                                    </tr>
-                                </tfoot>
-                            )}
-                        </table>
-                    </div>
-                    
-                    {/* 资金统计底部功能区 */}
-                    <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-teal-100 shadow-sm">
-                        <div className="flex items-center gap-4 text-xs text-gray-500">
-                            <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
-                            <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">※每分钟自动入库</span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                            <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-teal-600 text-teal-600 hover:bg-teal-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
-                            </button>
-                            <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
-                            </button>
-                        </div>
-                    </div>
-                </div>
             </div>
 
             {/* --- モジュール 6：后台库管理模块 --- */}
@@ -1572,9 +1550,9 @@ export default function OptionHoldingPage() {
                 ) : dbRecords.length === 0 ? (
                     <div className="py-10 text-center text-gray-400 bg-gray-50 rounded border border-dashed">该库中暂无数据</div>
                 ) : (
-                    <div className="overflow-x-auto border rounded">
+                    <div className="overflow-x-auto overflow-y-auto max-h-[450px] border rounded relative scrollbar-thin">
                         <table className="min-w-full text-sm text-left divide-y divide-gray-200">
-                            <thead className="bg-gray-50 text-gray-500">
+                            <thead className="bg-gray-50 text-gray-500 sticky top-0 z-10 shadow-sm [&>tr>th]:bg-gray-50">
                                 <tr>
                                     <th className="px-3 py-2 whitespace-nowrap">ID / 确切修改时间</th>
                                     <th className="px-3 py-2">绑定 TradeID</th>
@@ -1620,7 +1598,7 @@ export default function OptionHoldingPage() {
                         <p className="text-xs text-gray-500 mb-2 border-l-2 border-orange-400 pl-2">
                             警告：直接修改 Raw JSON 属于高阶操作，请确保 JSON 格式合法且结构正确，否则可能会导致页面崩溃或逻辑错误。
                         </p>
-                        <textarea className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none" value={editRecordModal.rawJson} onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)} />
+                        <textarea className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none bg-gray-50" value={editRecordModal.rawJson} onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)} />
                         <div className="flex justify-end gap-3 pt-2 border-t">
                             <button onClick={() => setEditRecordModal(null)} className="px-5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-medium transition-colors">取消</button>
                             <button onClick={handleSaveRecordEdit} className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-sm font-bold flex items-center gap-2 transition-colors"><Save size={16}/> 保存强制覆盖</button>

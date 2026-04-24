@@ -25,6 +25,30 @@ const formatTime = (val: any) => {
     return new Date(val).toLocaleString();
 };
 
+// ==========================================
+// 终极修复：纯净版数值与颜色格式化工具
+// 彻底解决 JSX 模板字符串中因包含 < 或 > 符号导致的编译器解析 Bug
+// ==========================================
+const formatSum = (val: number) => {
+    return `${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+const formatSumWithSign = (val: number) => {
+    const sign = val > 0 ? '+' : '';
+    return `${sign}${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+const formatMoney = (val: number) => {
+    return val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+const fmtSign = (val: number) => {
+    if (val === 0 || Math.abs(val) < 0.00001) return '-';
+    return `${val > 0 ? '+' : ''}${formatMoney(val)}`;
+};
+const cColor = (val: number, posClass: string, negClass: string, zeroClass: string) => {
+    if (val > 0.00001) return posClass;
+    if (val < -0.00001) return negClass;
+    return zeroClass;
+};
+
 // --- 类型定义 ---
 interface MergedRecord {
     tradeId: string;
@@ -93,15 +117,6 @@ const replaceNullWithUndefined = (obj: any): any => {
         newObj[key] = replaceNullWithUndefined(obj[key]);
     }
     return newObj;
-};
-
-// --- 汇总数值格式化工具 ---
-const formatSum = (val: number) => {
-    return `${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-};
-const formatSumWithSign = (val: number) => {
-    const sign = val > 0 ? '+' : '';
-    return `${sign}${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 // --- 可排序筛选表头组件 ---
@@ -456,7 +471,7 @@ export default function DQAQHoldingPage() {
                 if (rec.status === 'Settled' || rec.status === 'Knocked Out') {
                     const direction = basic.contract_type === 'AQ' ? "Buy" : "Sell";
                     let qty = Math.abs(rec.shares);
-                    if (direction === 'Sell') qty = -Math.abs(qty);
+                    if (direction.toUpperCase() === 'SELL') qty = -Math.abs(qty);
                     const sPrice = underlying.spot_price * basic.strike_pct;
                     const amtNoFee = qty * sPrice;
                     const marketCode = basic.currency === 'USD' ? 'US' : basic.currency === 'JPY' ? 'JP' : basic.currency === 'CNY' ? 'CH' : 'HK';
@@ -902,9 +917,9 @@ export default function DQAQHoldingPage() {
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2"><Database size={20} className="text-blue-600"/>【DQ-AQ 持仓板块 (存续中)】</h2>
                 </div>
-                <div className="overflow-x-auto border rounded-lg mb-4 shadow-sm">
+                <div className="overflow-x-auto overflow-y-auto max-h-[500px] border rounded-lg mb-4 shadow-sm relative scrollbar-thin">
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200">
-                        <thead className="bg-gray-50 text-gray-600 font-medium">
+                        <thead className="bg-gray-50 text-gray-600 font-medium sticky top-0 z-20 shadow-sm [&>tr>th]:bg-gray-50">
                             <tr>
                                 <Th label="名称" sortKey="name" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="当前状态" sortKey="status" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
@@ -1013,9 +1028,9 @@ export default function DQAQHoldingPage() {
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2"><Database size={20} className="text-orange-600"/>【DQ-AQ 持仓板块 (历史)】</h2>
                 </div>
-                <div className="overflow-x-auto border rounded-lg mb-4 shadow-sm">
+                <div className="overflow-x-auto overflow-y-auto max-h-[500px] border rounded-lg mb-4 shadow-sm relative scrollbar-thin">
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200">
-                        <thead className="bg-gray-50 text-gray-600 font-medium">
+                        <thead className="bg-gray-50 text-gray-600 font-medium sticky top-0 z-20 shadow-sm [&>tr>th]:bg-gray-50">
                             <tr>
                                 <Th label="名称" sortKey="name" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="历史状态" sortKey="status" align="center" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
@@ -1100,11 +1115,11 @@ export default function DQAQHoldingPage() {
                                 ) : globalStats.marketList.map((m: any) => (
                                     <tr key={m.market} className="hover:bg-indigo-50/30">
                                         <td className="px-3 py-2 text-center font-bold text-gray-700">{m.market}</td>
-                                        <td className={`px-3 py-2 text-right font-mono font-medium ${m.netVal >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                            {m.netVal > 0 ? '+' : ''}{m.netVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                        <td className={`px-3 py-2 text-right font-mono font-medium ${cColor(m.netVal, 'text-green-600', 'text-red-600', 'text-gray-500')}`}>
+                                            {fmtSign(m.netVal)}
                                         </td>
-                                        <td className={`px-3 py-2 text-right font-mono font-bold ${m.fullVal >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                            {m.fullVal > 0 ? '+' : ''}{m.fullVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                        <td className={`px-3 py-2 text-right font-mono font-bold ${cColor(m.fullVal, 'text-green-600', 'text-red-600', 'text-gray-500')}`}>
+                                            {fmtSign(m.fullVal)}
                                         </td>
                                     </tr>
                                 ))}
@@ -1113,11 +1128,11 @@ export default function DQAQHoldingPage() {
                                 <tfoot className="bg-indigo-100 border-t-2 border-indigo-200 shadow-inner">
                                     <tr>
                                         <td className="px-3 py-3 text-center font-bold text-indigo-900 tracking-wider">全局大盘 SUM</td>
-                                        <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.hkdSum.netVal >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                            {formatSumWithSign(globalStats.hkdSum.netVal)}
+                                        <td className={`px-3 py-3 text-right font-mono font-bold ${cColor(globalStats.hkdSum.netVal, 'text-green-600', 'text-red-600', 'text-gray-500')}`}>
+                                            {fmtSign(globalStats.hkdSum.netVal)}
                                         </td>
-                                        <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.hkdSum.fullVal >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                            {formatSumWithSign(globalStats.hkdSum.fullVal)}
+                                        <td className={`px-3 py-3 text-right font-mono font-bold ${cColor(globalStats.hkdSum.fullVal, 'text-green-600', 'text-red-600', 'text-gray-500')}`}>
+                                            {fmtSign(globalStats.hkdSum.fullVal)}
                                         </td>
                                     </tr>
                                 </tfoot>
@@ -1163,13 +1178,13 @@ export default function DQAQHoldingPage() {
                                                     rawRowSum += rawVal;
                                                     const displayVal = rawVal * rate;
                                                     return (
-                                                        <td key={acc} className="px-3 py-2 font-mono text-gray-700">
-                                                            {displayVal === 0 ? '-' : fmtMoney(displayVal, isHKDView ? 'HKD' : mkt).replace(' HKD','').replace(` ${mkt}`,'')}
+                                                        <td key={acc} className={"px-3 py-2 font-mono " + cColor(displayVal, 'text-gray-700', 'text-red-600', 'text-gray-400')}>
+                                                            {displayVal === 0 ? '-' : formatMoney(displayVal)}
                                                         </td>
                                                     );
                                                 })}
-                                                <td className="px-3 py-2 font-mono font-bold text-indigo-900 border-l border-indigo-50 bg-indigo-50/20">
-                                                    {rawRowSum * actualRate === 0 ? '-' : fmtMoney(rawRowSum * actualRate, 'HKD').replace(' HKD','')}
+                                                <td className={"px-3 py-2 font-mono font-bold border-l border-indigo-50 bg-indigo-50/20 " + cColor(rawRowSum * actualRate, 'text-indigo-900', 'text-red-600', 'text-gray-500')}>
+                                                    {rawRowSum * actualRate === 0 ? '-' : formatMoney(rawRowSum * actualRate)}
                                                 </td>
                                             </tr>
                                         );
@@ -1189,19 +1204,19 @@ export default function DQAQHoldingPage() {
                                                     colSumHKD += rawVal * (globalFxRates[mkt] || 1);
                                                 });
                                                 return (
-                                                    <td key={acc} className="px-3 py-3 font-mono font-bold text-indigo-900">
-                                                        {colSumHKD === 0 ? '-' : fmtMoney(colSumHKD, 'HKD').replace(' HKD','')}
+                                                    <td key={acc} className={"px-3 py-3 font-mono font-bold " + cColor(colSumHKD, 'text-indigo-900', 'text-red-600', 'text-gray-500')}>
+                                                        {colSumHKD === 0 ? '-' : formatMoney(colSumHKD)}
                                                     </td>
                                                 );
                                             })}
                                             <td className="px-3 py-3 font-mono font-bold text-sm border-l border-indigo-200 text-indigo-900">
-                                                {fmtMoney(
+                                                {formatMoney(
                                                     currentMktStats.markets.reduce((sum, mkt) => {
                                                         let rSum = 0;
                                                         currentMktStats.accounts.forEach(a => rSum += currentMktStats.rawMatrix[mkt][a] || 0);
                                                         return sum + rSum * (globalFxRates[mkt] || 1);
-                                                    }, 0), 'HKD'
-                                                ).replace(' HKD','')} HKD
+                                                    }, 0)
+                                                )} HKD
                                             </td>
                                         </tr>
                                     </tfoot>
@@ -1259,14 +1274,14 @@ export default function DQAQHoldingPage() {
                                         return (
                                             <tr key={mkt} className="hover:bg-rose-50/30">
                                                 <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-rose-50 bg-rose-50/20">{mkt}</td>
-                                                <td className={`px-3 py-3 font-mono ${displayRealized > 0 ? 'text-red-600' : displayRealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                                    {displayRealized === 0 ? '-' : displayRealized > 0 ? '+' + fmtMoney(displayRealized, isHKDView ? 'HKD' : mkt).replace(' HKD','').replace(` ${mkt}`,'') : fmtMoney(displayRealized, isHKDView ? 'HKD' : mkt).replace(' HKD','').replace(` ${mkt}`,'')}
+                                                <td className={"px-3 py-3 font-mono " + cColor(displayRealized, 'text-red-600', 'text-green-600', 'text-gray-400')}>
+                                                    {fmtSign(displayRealized)}
                                                 </td>
-                                                <td className={`px-3 py-3 font-mono ${displayUnrealized > 0 ? 'text-red-600' : displayUnrealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                                    {displayUnrealized === 0 ? '-' : displayUnrealized > 0 ? '+' + fmtMoney(displayUnrealized, isHKDView ? 'HKD' : mkt).replace(' HKD','').replace(` ${mkt}`,'') : fmtMoney(displayUnrealized, isHKDView ? 'HKD' : mkt).replace(' HKD','').replace(` ${mkt}`,'')}
+                                                <td className={"px-3 py-3 font-mono " + cColor(displayUnrealized, 'text-red-600', 'text-green-600', 'text-gray-400')}>
+                                                    {fmtSign(displayUnrealized)}
                                                 </td>
-                                                <td className={`px-3 py-3 font-mono font-bold border-l border-rose-50 bg-rose-50/20 ${displayTotal > 0 ? 'text-red-700' : displayTotal < 0 ? 'text-green-700' : 'text-gray-500'}`}>
-                                                    {displayTotal === 0 ? '-' : displayTotal > 0 ? '+' + fmtMoney(displayTotal, isHKDView ? 'HKD' : mkt).replace(' HKD','').replace(` ${mkt}`,'') : fmtMoney(displayTotal, isHKDView ? 'HKD' : mkt).replace(' HKD','').replace(` ${mkt}`,'')}
+                                                <td className={"px-3 py-3 font-mono font-bold border-l border-rose-50 bg-rose-50/20 " + cColor(displayTotal, 'text-red-700', 'text-green-700', 'text-gray-500')}>
+                                                    {fmtSign(displayTotal)}
                                                 </td>
                                             </tr>
                                         );
@@ -1281,14 +1296,14 @@ export default function DQAQHoldingPage() {
                                             <td className="px-3 py-4 text-center font-bold border-r border-rose-200">
                                                 {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
                                             </td>
-                                            <td className="px-3 py-4 font-mono font-bold text-gray-400">-</td>
-                                            <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (globalStats.hkdSum.netVal > 0 ? 'text-red-600' : globalStats.hkdSum.netVal < 0 ? 'text-green-600' : 'text-gray-500')}`}>
-                                                {!isHKDView ? '-' : (globalStats.hkdSum.netVal > 0 ? '+' : '') + (globalStats.hkdSum.netVal === 0 ? '-' : formatSum(globalStats.hkdSum.netVal))}
+                                            <td className={"px-3 py-4 font-mono font-bold " + (!isHKDView ? 'text-gray-400' : cColor(globalStats.hkdSum.realizedTotal, 'text-red-600', 'text-green-600', 'text-gray-500'))}>
+                                                {!isHKDView ? '-' : fmtSign(globalStats.hkdSum.realizedTotal)}
                                             </td>
-                                            <td className="px-3 py-4 font-mono font-bold text-sm border-l border-rose-200 bg-rose-200/50 text-rose-900">
-                                                {!isHKDView ? <span className="text-gray-400">-</span> : (
-                                                    (globalStats.hkdSum.netVal > 0 ? '+' : '') + formatSum(globalStats.hkdSum.netVal) + ' HKD'
-                                                )}
+                                            <td className={"px-3 py-4 font-mono font-bold " + (!isHKDView ? 'text-gray-400' : cColor(globalStats.hkdSum.unrealized, 'text-red-600', 'text-green-600', 'text-gray-500'))}>
+                                                {!isHKDView ? '-' : fmtSign(globalStats.hkdSum.unrealized)}
+                                            </td>
+                                            <td className={"px-3 py-4 font-mono font-bold text-sm border-l border-rose-200 bg-rose-200/50 " + (!isHKDView ? 'text-rose-900' : cColor(globalStats.hkdSum.totalPnl, 'text-red-700', 'text-green-700', 'text-gray-700'))}>
+                                                {!isHKDView ? <span className="text-gray-400">-</span> : `${fmtSign(globalStats.hkdSum.totalPnl)} HKD`}
                                             </td>
                                         </tr>
                                     </tfoot>
@@ -1353,9 +1368,9 @@ export default function DQAQHoldingPage() {
                 ) : dbRecords.length === 0 ? (
                     <div className="py-10 text-center text-gray-400 bg-gray-50 rounded border border-dashed">该合集中暂无数据</div>
                 ) : (
-                    <div className="overflow-x-auto border rounded">
+                    <div className="overflow-x-auto overflow-y-auto max-h-[450px] border rounded relative scrollbar-thin">
                         <table className="min-w-full text-sm text-left divide-y divide-gray-200">
-                            <thead className="bg-gray-50 text-gray-500">
+                            <thead className="bg-gray-50 text-gray-500 sticky top-0 z-10 shadow-sm [&>tr>th]:bg-gray-50">
                                 <tr>
                                     <th className="px-3 py-2 whitespace-nowrap">ID / 确切修改时间</th>
                                     <th className="px-3 py-2">绑定 TradeID</th>
@@ -1363,7 +1378,7 @@ export default function DQAQHoldingPage() {
                                     <th className="px-3 py-2 text-center whitespace-nowrap">操作</th>
                                 </tr>
                             </thead>
-                            <tbody className="divide-y divide-gray-100">
+                            <tbody className="divide-y divide-gray-100 bg-white">
                                 {dbRecords.map(r => (
                                     <tr key={r.id} className="hover:bg-gray-50 transition-colors">
                                         <td className="px-3 py-2 text-xs text-gray-500 whitespace-nowrap font-mono">
@@ -1418,86 +1433,68 @@ export default function DQAQHoldingPage() {
                 </div>
             )}
 
-            {/* 股价点位图 Modal (安全重构) */}
-            {chartData && (
+            {/* 实盘交收记录确认 Modal */}
+            {showDeliveryModal && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col relative overflow-hidden">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col relative overflow-hidden">
                         <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50 flex-shrink-0">
                             <div>
                                 <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                                    <LineChart className="text-blue-500" size={24} />
-                                    股价点位图
+                                    <AlertCircle className="text-orange-500" size={24} />
+                                    检测到实盘交收记录
                                 </h3>
-                                <p className="text-sm text-gray-500 mt-1">{chartData.name}</p>
+                                <p className="text-sm text-gray-500 mt-1">本次刷新触发了以下 DQ-AQ 的到期或敲出结算，请确认并推送到交收库。</p>
                             </div>
-                            <button onClick={() => setChartData(null)} className="text-gray-400 hover:text-gray-600 bg-white p-1 rounded-full shadow-sm border transition-colors"><X size={24}/></button>
+                            <button onClick={() => { setShowDeliveryModal(false); setPendingDeliveries([]); }} className="text-gray-400 hover:text-gray-600 bg-white p-1 rounded-full shadow-sm border transition-colors"><X size={24}/></button>
                         </div>
-                        <div className="p-6 overflow-y-auto flex-1 bg-white space-y-6">
-                            {(() => {
-                                const { current, strike, ko, ticker, name } = chartData;
-                                const leftPct = current > 0 ? (strike / current) - 1 : 0;
-                                const rightPct = current > 0 ? (ko / current) - 1 : 0;
+                        
+                        <div className="p-6 overflow-y-auto flex-1 bg-white">
+                            <div className="border border-gray-200 rounded-lg overflow-x-auto shadow-sm">
+                                <table className="min-w-full text-sm text-left">
+                                    <thead className="bg-gray-100 text-gray-600 font-medium sticky top-0 shadow-sm">
+                                        <tr>
+                                            <th className="px-4 py-3">交收日期</th>
+                                            <th className="px-4 py-3">账户</th>
+                                            <th className="px-4 py-3 text-center">方向</th>
+                                            <th className="px-4 py-3">标的</th>
+                                            <th className="px-4 py-3 text-right">股数</th>
+                                            <th className="px-4 py-3 text-right">结算价</th>
+                                            <th className="px-4 py-3 text-right">总额(含费)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-100">
+                                        {pendingDeliveries.map((d, i) => (
+                                            <tr key={i} className="hover:bg-orange-50 transition-colors">
+                                                <td className="px-4 py-3 text-gray-600">{d.date}</td>
+                                                <td className="px-4 py-3 font-medium text-gray-800">{d.account}</td>
+                                                <td className="px-4 py-3 text-center">
+                                                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${d.direction.toUpperCase() === 'BUY' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                                                        {d.direction}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <div className="font-bold text-gray-800">{d.stockName}</div>
+                                                    <div className="text-[10px] font-mono text-gray-400">{d.stockCode}</div>
+                                                </td>
+                                                <td className={`px-4 py-3 text-right font-mono font-bold ${d.direction.toUpperCase() === 'BUY' ? 'text-red-600' : 'text-green-600'}`}>
+                                                    {d.direction.toUpperCase() === 'BUY' ? '+' : ''}{d.quantity.toLocaleString()}
+                                                </td>
+                                                <td className="px-4 py-3 text-right font-mono text-gray-600">{d.priceNoFee.toFixed(4)}</td>
+                                                <td className="px-4 py-3 text-right font-mono font-bold text-orange-700 bg-orange-50/30">
+                                                    {d.amountNoFee.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
 
-                                const values = [strike, current, ko];
-                                const minVal = Math.min(...values) * 0.85;
-                                const maxVal = Math.max(...values) * 1.15;
-                                const range = maxVal - minVal;
-
-                                const getPos = (val: number) => range === 0 ? 50 : ((val - minVal) / range) * 100;
-
-                                return (
-                                    <div className="bg-white p-5 rounded-lg border border-gray-200 shadow-sm">
-                                        <div className="flex justify-between items-end mb-4">
-                                            <div>
-                                                <span className="text-lg font-bold text-gray-800 mr-2">{name}</span>
-                                                <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{ticker}</span>
-                                            </div>
-                                            <div className="text-right">
-                                                <span className="text-xs text-gray-500 mr-1">现价</span>
-                                                <span className="text-base font-semibold text-gray-900">{current.toFixed(2)}</span>
-                                            </div>
-                                        </div>
-
-                                        <div className="flex items-center gap-4">
-                                            <div className={`flex flex-col items-center justify-center w-24 h-16 rounded-lg border-2 transition-colors ${leftPct > 0 ? 'bg-red-50 border-red-500 text-red-700' : 'bg-white border-gray-100 text-gray-400'}`}>
-                                                <span className="text-[10px] font-semibold uppercase tracking-wider">距敲入</span>
-                                                <span className="text-lg font-bold">{fmtPct(leftPct)}</span>
-                                            </div>
-
-                                            <div className="flex-1 relative h-16 mx-4 select-none">
-                                                <div className="absolute top-1/2 left-0 right-0 h-1.5 bg-gray-100 rounded-full transform -translate-y-1/2"></div>
-                                                <div className="absolute top-1/2 h-1.5 bg-blue-50 transform -translate-y-1/2" style={{ left: `${getPos(Math.min(strike, ko))}%`, width: `${Math.abs(getPos(ko) - getPos(strike))}%` }}></div>
-                                                
-                                                <div className="absolute top-1/2" style={{ left: `${getPos(strike)}%` }}>
-                                                    <div className="absolute transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-red-500 border-2 border-white rounded-full shadow z-10"></div>
-                                                    <div className="absolute transform -translate-x-1/2 translate-y-3 flex flex-col items-center w-max">
-                                                        <span className="text-[10px] text-red-600 font-bold">Strike</span>
-                                                        <span className="text-[9px] text-gray-400">{strike.toFixed(2)}</span>
-                                                    </div>
-                                                </div>
-                                                <div className="absolute top-1/2" style={{ left: `${getPos(ko)}%` }}>
-                                                    <div className="absolute transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-green-500 border-2 border-white rounded-full shadow z-10"></div>
-                                                    <div className="absolute transform -translate-x-1/2 translate-y-3 flex flex-col items-center w-max">
-                                                        <span className="text-[10px] text-green-600 font-bold">KO</span>
-                                                        <span className="text-[9px] text-gray-400">{ko.toFixed(2)}</span>
-                                                    </div>
-                                                </div>
-                                                <div className="absolute top-1/2" style={{ left: `${getPos(current)}%` }}>
-                                                    <div className="absolute transform -translate-x-1/2 -translate-y-1/2 w-4 h-4 bg-purple-600 border-2 border-white rounded-full shadow-lg z-20 ring-4 ring-purple-100"></div>
-                                                    <div className="absolute transform -translate-x-1/2 -translate-y-full -top-3 flex flex-col items-center w-max">
-                                                        <span className="bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded shadow-sm font-bold">Now</span>
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                            <div className={`flex flex-col items-center justify-center w-24 h-16 rounded-lg border-2 transition-colors ${rightPct < 0 ? 'bg-yellow-50 border-yellow-400 text-yellow-700' : 'bg-white border-gray-100 text-gray-400'}`}>
-                                                <span className="text-[10px] font-semibold uppercase tracking-wider">距敲出</span>
-                                                <span className="text-lg font-bold">{fmtPct(rightPct)}</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                );
-                            })()}
+                        <div className="px-6 py-4 border-t bg-gray-50 flex justify-end gap-3 flex-shrink-0">
+                            <button onClick={() => { setShowDeliveryModal(false); setPendingDeliveries([]); }} className="px-5 py-2.5 rounded-md text-gray-700 font-bold bg-white border border-gray-300 hover:bg-gray-100 transition-colors shadow-sm">取消并跳过</button>
+                            <button onClick={handleConfirmDeliveries} disabled={syncingDeliveries} className="px-6 py-2.5 rounded-md text-white font-bold flex items-center gap-2 transition-all shadow-md bg-orange-600 hover:bg-orange-700 disabled:opacity-50">
+                                {syncingDeliveries ? <Loader2 className="animate-spin" size={18}/> : <Save size={18}/>} 确认覆盖至 Get-Stock 交收库
+                            </button>
                         </div>
                     </div>
                 </div>
