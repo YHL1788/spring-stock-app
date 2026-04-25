@@ -49,7 +49,7 @@ interface UnifiedTrade {
   direction: 'BUY' | 'SELL';
   quantity: number; // 买正卖负
   price: number; // 含费均价
-  amount: number; // 含费金额
+  amount: number; // 含费总额（严格数学符号：买入净流入为正，卖出净回笼为负）
   fee: number;
   updatedAt: number;
   executor: string;
@@ -73,17 +73,17 @@ interface StockHolding {
   sector_level_1: string;
   sector_level_2: string;
   quantity: number;
-  avgCost: number; // 加权均价 (期初底座 + 增量买入)
-  totalCostHKD: number; // 总成本 (HKD)
-  currentPrice: number; // 实时现价
-  dailyChangePct: number; // 今日涨跌幅
-  mktValHKD: number; // 现市值 (HKD)
-  unrealizedPnlHKD: number; // 浮动盈亏 (HKD)
-  realizedPnlHKD: number; // 已实现盈亏 (HKD)
-  unrealizedPnlLocal: number; // 浮动盈亏 (原币种)
-  realizedPnlLocal: number; // 已实现盈亏 (原币种)
-  pnlRatio: number; // 盈亏比
-  accounts: Record<string, number>; // 各账户持仓股数
+  avgCost: number; 
+  totalCostHKD: number; 
+  currentPrice: number; 
+  dailyChangePct: number; 
+  mktValHKD: number; 
+  unrealizedPnlHKD: number; 
+  realizedPnlHKD: number; 
+  unrealizedPnlLocal: number; 
+  realizedPnlLocal: number; 
+  pnlRatio: number; 
+  accounts: Record<string, number>; 
 }
 
 // --- 辅助函数：统一币种映射 (数据清洗) ---
@@ -249,7 +249,7 @@ export default function SpotHoldingsPage() {
           setUser(currentUser);
           
           if (currentUser) {
-            // 1. 订阅：期初持仓底座库 (实时监听，方便编辑时立即反映)
+            // 1. 订阅：期初持仓底座库
             const qStart = query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start'));
             unsubStart = onSnapshot(qStart, (snapshot) => {
                 const starts: InitialHolding[] = [];
@@ -304,63 +304,78 @@ export default function SpotHoldingsPage() {
 
                let merged: UnifiedTrade[] = [];
 
+               // 【终极修复 1】SPOT 库清洗：完全信任底层传来的正负号，取消过度重写
                spotSnap.forEach(doc => {
                  const d = doc.data();
                  const direction = d.direction?.toUpperCase() || 'BUY';
                  const qty = Math.abs(Number(d.quantity));
+                 // 信任底层已经计算好的金额，直接提取（对于手动录入的SELL，它本身已经是负数了）
+                 const rawAmt = Number(d.amount_incl_fee || d.amount_excl_fee || 0); 
                  merged.push({
                    id: doc.id, source: 'SPOT', date: d.date, account: d.account || '', 
                    market: mapMarket(d.market, 'HKD'),
                    code: d.code, name: d.name, direction,
                    quantity: direction === 'BUY' ? qty : -qty,
                    price: Number(d.avg_price_incl_fee || d.price_excl_fee || 0),
-                   amount: Number(d.amount_incl_fee || d.amount_excl_fee || 0), fee: Number(d.fee || 0),
+                   amount: rawAmt, // 取消自作聪明的翻转，直接赋值
+                   fee: Number(d.fee || 0),
                    updatedAt: getTime(d.createdAt), executor: d.executor || ''
                  });
                });
 
+               // FCN 库清洗：FCN 都是到期被动接货 (BUY)
                fcnSnap.forEach(doc => {
                  const d = doc.data();
                  const direction = d.direction?.toUpperCase() || 'BUY';
                  const qty = Math.abs(Number(d.quantity));
+                 const rawAmt = Number(d.amountWithFee || d.amountNoFee || 0); // 原始正数绝对值
                  merged.push({
                    id: doc.id, source: 'FCN', date: d.date, account: d.account || '', 
                    market: mapMarket(d.market, 'HKD'),
                    code: d.stockCode, name: d.stockName, direction,
                    quantity: direction === 'BUY' ? qty : -qty,
                    price: Number(d.priceWithFee || d.priceNoFee || 0),
-                   amount: Number(d.amountWithFee || d.amountNoFee || 0), fee: Number(d.fee || 0),
+                   amount: direction === 'BUY' ? rawAmt : -rawAmt, 
+                   fee: Number(d.fee || 0),
                    updatedAt: getTime(d.createdAt), executor: d.executor || ''
                  });
                });
 
+               // DQ/AQ 库清洗：信任底层的原生正负号
                dqaqSnap.forEach(doc => {
                  const d = doc.data();
                  const direction = d.direction?.toUpperCase() || 'BUY';
                  const qty = Math.abs(Number(d.quantity));
+                 const amountNoFee = Number(d.amountNoFee || 0);
+                 const fee = Number(d.fee || 0);
                  merged.push({
                    id: doc.id, source: 'DQ/AQ', date: d.date, account: d.account || '', 
                    market: mapMarket(d.market, 'USD'),
                    code: d.stockCode, name: d.stockName, direction,
                    quantity: direction === 'BUY' ? qty : -qty,
-                   price: Number(d.priceNoFee || 0), // 假设 DQ/AQ 无费
-                   amount: Number(d.amountNoFee || 0), fee: Number(d.fee || 0),
+                   price: Number(d.priceNoFee || 0), 
+                   amount: amountNoFee + fee, 
+                   fee,
                    updatedAt: getTime(d.createdAt), executor: d.executor || ''
                  });
                });
 
+               // OPTION 库清洗：信任底层的原生正负号
                optionSnap.forEach(doc => {
                  const d = doc.data();
                  const direction = d.direction?.toUpperCase() || 'SELL';
                  const qty = Math.abs(Number(d.quantity));
                  const sourceType = (d.type || '').toLowerCase().includes('put') ? 'OPTION_PUT' : 'OPTION_CALL';
+                 const amountNoFee = Number(d.amountNoFee || 0); 
+                 const fee = Number(d.fee || 0);
                  merged.push({
                    id: doc.id, source: sourceType as any, date: d.date, account: d.account || '', 
                    market: mapMarket(d.market, 'USD'),
                    code: d.stockCode, name: d.stockName, direction,
                    quantity: direction === 'BUY' ? qty : -qty,
                    price: Number(d.priceNoFee || 0), 
-                   amount: Math.abs(Number(d.amountNoFee || 0)), fee: Number(d.fee || 0),
+                   amount: amountNoFee + fee, 
+                   fee,
                    updatedAt: getTime(d.createdAt), executor: d.executor || ''
                  });
                });
@@ -395,7 +410,6 @@ export default function SpotHoldingsPage() {
 
   // --- 基于全局“基准日期”过滤有效的增量流水 ---
   const activeTrades = useMemo(() => {
-      // 核心时间截断：如果设定了基准日期，严格过滤掉该日期（含）之前的流水，只取增量
       return allTrades.filter(t => !baseDate || t.date > baseDate);
   }, [allTrades, baseDate]);
 
@@ -412,7 +426,6 @@ export default function SpotHoldingsPage() {
     setIsFetchingRealTime(true);
     
     try {
-      // 1. 收集所有需要的标准币种和代码 (结合底座和流水)
       const markets = new Set<string>();
       const symbols = new Set<string>();
       
@@ -426,7 +439,6 @@ export default function SpotHoldingsPage() {
       activeTrades.forEach(t => collect(t.code, t.market));
       initialHoldings.forEach(h => collect(h.code, h.market));
 
-      // 2. 并发抓取标准币种汇率
       const newRates: Record<string, number> = { 'HKD': 1.0 };
       await Promise.all(Array.from(markets).map(async (currency) => {
           try {
@@ -441,7 +453,6 @@ export default function SpotHoldingsPage() {
       }));
       setGlobalFxRates(newRates);
 
-      // 3. 并发抓取实时行情 (直接读取 API 返回的 changePercent)
       const newQuotes: Record<string, { price: number, changePercent: number }> = {};
       
       await Promise.all(Array.from(symbols).map(async (symbol) => {
@@ -476,7 +487,6 @@ export default function SpotHoldingsPage() {
   const calculatedHoldings = useMemo(() => {
       const holdingsMap: Record<string, StockHolding> = {};
 
-      // 步骤 1：铺设“期初底座”
       initialHoldings.forEach(init => {
           const key = init.code;
           if (!holdingsMap[key]) {
@@ -506,14 +516,12 @@ export default function SpotHoldingsPage() {
           if (!h.accounts[init.account]) h.accounts[init.account] = 0;
           h.accounts[init.account] += init.quantity;
 
-          // 合并期初的均价与数量
           const currentTotalCost = h.quantity * h.avgCost;
           const addedCost = init.quantity * init.costPrice;
           h.quantity += init.quantity;
           h.avgCost = h.quantity > 0 ? (currentTotalCost + addedCost) / h.quantity : 0;
       });
 
-      // 步骤 2：按时间正序处理增量流水
       const chronological = [...activeTrades].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
       chronological.forEach(t => {
@@ -533,7 +541,7 @@ export default function SpotHoldingsPage() {
                   dailyChangePct: 0,
                   mktValHKD: 0,
                   unrealizedPnlHKD: 0,
-                  realizedPnlHKD: 0, // 注意：已实现盈亏只计算基准日之后的增量部分
+                  realizedPnlHKD: 0, 
                   unrealizedPnlLocal: 0,
                   realizedPnlLocal: 0,
                   pnlRatio: 0,
@@ -554,7 +562,8 @@ export default function SpotHoldingsPage() {
           } else if (t.direction === 'SELL') {
               const sellQty = Math.abs(t.quantity);
               const costOfGoodsSold = sellQty * h.avgCost; 
-              const sellProceeds = t.amount; 
+              // 计算落袋：卖出的 t.amount 是带负号的，因此回笼资金 = Math.abs(t.amount)
+              const sellProceeds = Math.abs(t.amount); 
               const realizedPnlLocal = sellProceeds - costOfGoodsSold;
               h.realizedPnlLocal += realizedPnlLocal;
               h.realizedPnlHKD += (realizedPnlLocal * rate);
@@ -567,7 +576,6 @@ export default function SpotHoldingsPage() {
           }
       });
 
-      // 步骤 3：结算实时市值数据
       Object.values(holdingsMap).forEach(h => {
           const rate = globalFxRates[h.market] || 1;
           const quote = realTimeQuotes[h.code];
@@ -585,7 +593,7 @@ export default function SpotHoldingsPage() {
       return Object.values(holdingsMap).filter(h => h.quantity > 0 || Math.abs(h.realizedPnlHKD) > 0.01);
   }, [activeTrades, initialHoldings, stockPool, globalFxRates, realTimeQuotes]);
 
-  // --- 模块 1: 持仓统计处理 (排序/筛选) ---
+  // --- 模块 1: 持仓统计处理 ---
   const displayHoldings = useMemo(() => {
       let result = [...calculatedHoldings].filter(h => h.quantity > 0); 
       
@@ -620,7 +628,7 @@ export default function SpotHoldingsPage() {
 
   const totalUnrealizedPct = holdingSums.totalCostHKD > 0 ? holdingSums.unrealizedPnlHKD / holdingSums.totalCostHKD : 0;
 
-  // --- 【新增】当前市值二维统计数据 ---
+  // --- 当前市值二维统计矩阵 ---
   const currentMktStats = useMemo(() => {
       const accountsSet = new Set<string>();
       const marketsSet = new Set<string>();
@@ -642,7 +650,6 @@ export default function SpotHoldingsPage() {
       displayHoldings.forEach(h => {
           if (h.market) {
               Object.entries(h.accounts).forEach(([acc, qty]) => {
-                  // 计算各账户分配的现市值（原币种）
                   rawMatrix[h.market][acc] += qty * h.currentPrice;
               });
           }
@@ -651,7 +658,7 @@ export default function SpotHoldingsPage() {
       return { accounts, markets, rawMatrix };
   }, [displayHoldings]);
 
-  // --- 【新增】当前收益统计表数据 ---
+  // --- 当前收益统计表数据 ---
   const currentPlStats = useMemo(() => {
       const marketsSet = new Set<string>();
       calculatedHoldings.forEach(h => {
@@ -708,7 +715,7 @@ export default function SpotHoldingsPage() {
 
   // --- 模块 3: 交易流水处理 ---
   const displayTrades = useMemo(() => {
-      let result = [...activeTrades]; // 注意：这里使用了严格截断后的 activeTrades
+      let result = [...activeTrades];
       
       Object.keys(tradeFilters).forEach(key => {
           const val = tradeFilters[key]?.toLowerCase();
@@ -739,8 +746,7 @@ export default function SpotHoldingsPage() {
   const totalNetBuyHKD = useMemo(() => {
       return displayTrades.reduce((sum, t) => {
           const rate = globalFxRates[t.market] || 1;
-          const signedAmount = t.direction === 'BUY' ? t.amount : -t.amount;
-          return sum + (signedAmount * rate);
+          return sum + (t.amount * rate);
       }, 0);
   }, [displayTrades, globalFxRates]);
 
@@ -764,8 +770,7 @@ export default function SpotHoldingsPage() {
       
       displayTrades.forEach(t => {
           if (t.market && t.account) {
-              const signedAmount = t.direction === 'BUY' ? t.amount : -t.amount;
-              rawMatrix[t.market][t.account] += signedAmount;
+              rawMatrix[t.market][t.account] += t.amount;
           }
       });
       
@@ -812,7 +817,6 @@ export default function SpotHoldingsPage() {
       const text = e.target.value;
       setPasteText(text);
       
-      // 按行切分，过滤空行
       const rows = text.split('\n').map((r: string) => r.trim()).filter(Boolean);
       
       const parsed = rows.map((row: string) => {
@@ -824,7 +828,7 @@ export default function SpotHoldingsPage() {
               quantity: parseFloat(cols[3]) || 0,
               costPrice: parseFloat(cols[4]) || 0,
           };
-      }).filter((item: any) => item.code); // 至少需要有代码
+      }).filter((item: any) => item.code); 
       
       setParsedPasteData(parsed);
   };
@@ -931,7 +935,7 @@ export default function SpotHoldingsPage() {
           let records: any[] = [];
           querySnapshot.forEach((docSnap) => {
               const data = docSnap.data();
-              delete data.id; // 防止污染
+              delete data.id; 
               records.push({ ...data, id: docSnap.id });
           });
           records.sort((a, b) => {
@@ -965,15 +969,13 @@ export default function SpotHoldingsPage() {
       try {
           const parsedData = JSON.parse(editRecordModal.rawJson);
           const docId = parsedData.id || editRecordModal.record.id;
-          delete parsedData.id;
+          delete parsedData.id; 
           parsedData.updatedAt = new Date().toISOString();
           await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
           alert("数据修改成功！");
           setEditRecordModal(null);
-          fetchDbRecords(activeDbTab);
-      } catch(e: any) {
-          alert("修改失败 (请检查格式): \n" + e.message);
-      }
+          fetchDbRecords(activeDbTab); 
+      } catch(e:any) { alert("修改失败 (请检查 JSON 格式是否正确): \n" + e.message); }
   };
 
   const getRecordSummary = (r: any, tab: string) => {
@@ -988,14 +990,12 @@ export default function SpotHoldingsPage() {
           if (tab.includes('get-stock')) {
               return `【交收】${r.account || ''} | ${r.direction || ''} ${Math.abs(r.quantity || 0)}股 ${r.stockName || r.stockCode || ''}`;
           }
-          if (tab.includes('mktvalue') || tab.includes('pl') || tab.includes('cash')) {
+          if (tab.includes('mktvalue') || tab.includes('pl') || tab.includes('sum')) {
               const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
               return `全局大盘统计快照 (更新于: ${time})`;
           }
           return JSON.stringify(r).substring(0, 100) + '...';
-      } catch (e) {
-          return '解析失败...';
-      }
+      } catch (e) { return '解析失败...'; }
   };
 
   // --- 初始持仓增删改查事件 ---
@@ -1222,13 +1222,15 @@ export default function SpotHoldingsPage() {
             </div>
 
             {/* 当前市值二维统计表 */}
-            <div className="bg-indigo-50 border-t border-indigo-100 p-5">
+            <div className="bg-indigo-50 border-t border-indigo-100 p-5 rounded-lg">
                 <div className="flex justify-between items-center mb-3">
-                    <h3 className="font-bold text-indigo-800 text-sm">当前市值统计表</h3>
+                    <h3 className="font-bold text-indigo-800 text-sm">当前市值二维统计矩阵</h3>
                     <button 
                         onClick={() => setIsHKDView(!isHKDView)}
+                        disabled={isFetchingRealTime}
                         className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-indigo-600 text-white border-indigo-600 shadow-inner' : 'bg-white text-indigo-700 border-indigo-200 hover:bg-indigo-100 shadow-sm'}`}
                     >
+                        {isFetchingRealTime && <Loader2 size={12} className="animate-spin inline mr-1" />}
                         {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
                     </button>
                 </div>
@@ -1240,66 +1242,55 @@ export default function SpotHoldingsPage() {
                                 {currentMktStats.accounts.map(acc => (
                                     <th key={acc} className="px-3 py-2 border-b border-indigo-100">{acc}</th>
                                 ))}
-                                <th className="px-3 py-2 border-b border-l border-indigo-100 bg-indigo-50/50">SUM {isHKDView ? '(HKD)' : '(原币种)'}</th>
+                                <th className="px-3 py-2 border-b border-l border-indigo-100 bg-indigo-50/50">SUM (HKD)</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-indigo-50">
                             {currentMktStats.markets.map(mkt => {
                                 const rate = isHKDView ? (globalFxRates[mkt] || 1) : 1;
-                                let rowSum = 0;
+                                const actualRate = globalFxRates[mkt] || 1;
+                                let rawRowSum = 0;
                                 return (
                                     <tr key={mkt} className="hover:bg-indigo-50/30">
                                         <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-indigo-50 bg-indigo-50/20">{mkt}</td>
                                         {currentMktStats.accounts.map(acc => {
                                             const rawVal = currentMktStats.rawMatrix[mkt][acc] || 0;
+                                            rawRowSum += rawVal;
                                             const displayVal = rawVal * rate;
-                                            rowSum += displayVal;
                                             return (
-                                                <td key={acc} className={`px-3 py-3 font-mono ${displayVal > 0 ? 'text-gray-900' : displayVal < 0 ? 'text-red-600' : 'text-gray-400'}`}>
-                                                    {displayVal === 0 ? '-' : formatMoney(displayVal)}
+                                                <td key={acc} className={`px-3 py-2 font-mono ${displayVal >= 0 ? 'text-gray-700' : 'text-red-600'}`}>
+                                                    {displayVal === 0 ? '-' : formatMoney(displayVal, isHKDView)}
                                                 </td>
                                             );
                                         })}
-                                        <td className={`px-3 py-3 font-mono font-bold border-l border-indigo-50 bg-indigo-50/20 ${rowSum > 0 ? 'text-indigo-900' : rowSum < 0 ? 'text-red-700' : 'text-gray-500'}`}>
-                                            {rowSum === 0 ? '-' : formatMoney(rowSum)}
+                                        <td className={`px-3 py-2 font-mono font-bold border-l border-indigo-50 bg-indigo-50/20 ${rawRowSum * actualRate >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
+                                            {rawRowSum * actualRate === 0 ? '-' : formatMoney(rawRowSum * actualRate, true)}
                                         </td>
                                     </tr>
                                 );
                             })}
                             {currentMktStats.markets.length === 0 && (
-                                <tr><td colSpan={currentMktStats.accounts.length + 2} className="px-3 py-6 text-center text-gray-400">暂无数据</td></tr>
+                                <tr><td colSpan={currentMktStats.accounts.length + 2} className="px-3 py-4 text-center text-gray-400">暂无数据</td></tr>
                             )}
                         </tbody>
                         {currentMktStats.markets.length > 0 && (
                             <tfoot className="bg-indigo-100 text-indigo-900 border-t-2 border-indigo-200 shadow-inner">
                                 <tr>
-                                    <td className="px-3 py-4 text-center font-bold border-r border-indigo-200">
-                                        {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
-                                    </td>
+                                    <td className="px-3 py-3 text-center font-bold border-r border-indigo-200">SUM (HKD)</td>
                                     {currentMktStats.accounts.map(acc => {
-                                        if (!isHKDView) return <td key={acc} className="px-3 py-4 text-center font-mono text-gray-400">-</td>;
-                                        
                                         let colSumHKD = 0;
                                         currentMktStats.markets.forEach(mkt => {
                                             const rawVal = currentMktStats.rawMatrix[mkt][acc] || 0;
                                             colSumHKD += rawVal * (globalFxRates[mkt] || 1);
                                         });
                                         return (
-                                            <td key={acc} className={`px-3 py-4 font-mono font-bold ${colSumHKD > 0 ? 'text-indigo-900' : colSumHKD < 0 ? 'text-red-700' : 'text-gray-500'}`}>
-                                                {colSumHKD === 0 ? '-' : formatMoney(colSumHKD)}
+                                            <td key={acc} className={`px-3 py-3 font-mono font-bold ${colSumHKD >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
+                                                {colSumHKD === 0 ? '-' : formatMoney(colSumHKD, true)}
                                             </td>
                                         );
                                     })}
-                                    <td className="px-3 py-4 font-mono font-bold text-sm border-l border-indigo-200 bg-indigo-200/50 text-indigo-900">
-                                        {!isHKDView ? <span className="text-gray-400">-</span> : (
-                                            formatMoney(
-                                                currentMktStats.markets.reduce((sum, mkt) => {
-                                                    let rSum = 0;
-                                                    currentMktStats.accounts.forEach(a => rSum += currentMktStats.rawMatrix[mkt][a] || 0);
-                                                    return sum + rSum * (globalFxRates[mkt] || 1);
-                                                }, 0)
-                                            ) + ' HKD'
-                                        )}
+                                    <td className={`px-3 py-3 font-mono font-bold text-sm border-l border-indigo-200 ${holdingSums.mktValHKD >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
+                                        {formatMoney(holdingSums.mktValHKD, true)} HKD
                                     </td>
                                 </tr>
                             </tfoot>
@@ -1307,7 +1298,6 @@ export default function SpotHoldingsPage() {
                     </table>
                 </div>
 
-                {/* 当前市值底部功能区 */}
                 <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-indigo-100 shadow-sm">
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
@@ -1363,18 +1353,18 @@ export default function SpotHoldingsPage() {
                             {pnlData.map(p => (
                                 <tr key={p.code} className="hover:bg-gray-50">
                                     <td className="px-4 py-2 font-bold text-gray-800">{p.code}</td>
-                                    <td className={`px-4 py-2 text-right font-mono ${p.unrealized > 0 ? 'text-red-500' : p.unrealized < 0 ? 'text-green-500' : 'text-gray-400'}`}>{formatMoney(p.unrealized, true)}</td>
-                                    <td className={`px-4 py-2 text-right font-mono ${p.realized > 0 ? 'text-red-500' : p.realized < 0 ? 'text-green-500' : 'text-gray-400'}`}>{formatMoney(p.realized, true)}</td>
-                                    <td className={`px-4 py-2 text-right font-mono font-bold ${p.totalPnl > 0 ? 'text-red-600' : p.totalPnl < 0 ? 'text-green-600' : 'text-gray-500'}`}>{formatMoney(p.totalPnl, true)}</td>
+                                    <td className={`px-4 py-2 text-right font-mono ${p.unrealized > 0 ? 'text-red-500' : p.unrealized < 0 ? 'text-green-500' : 'text-gray-400'}`}>{p.unrealized > 0 ? '+' : ''}{formatMoney(p.unrealized, true)}</td>
+                                    <td className={`px-4 py-2 text-right font-mono ${p.realized > 0 ? 'text-red-500' : p.realized < 0 ? 'text-green-500' : 'text-gray-400'}`}>{p.realized > 0 ? '+' : ''}{formatMoney(p.realized, true)}</td>
+                                    <td className={`px-4 py-2 text-right font-mono font-bold ${p.totalPnl > 0 ? 'text-red-600' : p.totalPnl < 0 ? 'text-green-600' : 'text-gray-500'}`}>{p.totalPnl > 0 ? '+' : ''}{formatMoney(p.totalPnl, true)}</td>
                                 </tr>
                             ))}
                         </tbody>
                         <tfoot className="bg-rose-50 border-t-2 border-rose-200 sticky bottom-0">
                             <tr>
                                 <td className="px-4 py-3 font-bold text-rose-900">总计 SUM</td>
-                                <td className={`px-4 py-3 text-right font-mono font-bold ${pnlSums.unrealized >= 0 ? 'text-red-600' : 'text-green-600'}`}>{formatMoney(pnlSums.unrealized, true)}</td>
-                                <td className={`px-4 py-3 text-right font-mono font-bold ${pnlSums.realized >= 0 ? 'text-red-600' : 'text-green-600'}`}>{formatMoney(pnlSums.realized, true)}</td>
-                                <td className={`px-4 py-3 text-right font-mono font-bold text-lg ${pnlSums.total >= 0 ? 'text-red-600' : 'text-green-600'}`}>{formatMoney(pnlSums.total, true)}</td>
+                                <td className={`px-4 py-3 text-right font-mono font-bold ${pnlSums.unrealized >= 0 ? 'text-red-600' : 'text-green-600'}`}>{pnlSums.unrealized > 0 ? '+' : ''}{formatMoney(pnlSums.unrealized, true)}</td>
+                                <td className={`px-4 py-3 text-right font-mono font-bold ${pnlSums.realized >= 0 ? 'text-red-600' : 'text-green-600'}`}>{pnlSums.realized > 0 ? '+' : ''}{formatMoney(pnlSums.realized, true)}</td>
+                                <td className={`px-4 py-3 text-right font-mono font-bold text-lg ${pnlSums.total >= 0 ? 'text-red-600' : 'text-green-600'}`}>{pnlSums.total > 0 ? '+' : ''}{formatMoney(pnlSums.total, true)}</td>
                             </tr>
                         </tfoot>
                     </table>
@@ -1411,13 +1401,15 @@ export default function SpotHoldingsPage() {
             </div>
 
             {/* 当前收益统计表 */}
-            <div className="bg-rose-50 border-t border-rose-100 p-5">
+            <div className="bg-rose-50 border-t border-rose-100 p-5 rounded-lg">
                 <div className="flex justify-between items-center mb-3">
                     <h3 className="font-bold text-rose-800 text-sm">当前收益统计表</h3>
                     <button 
                         onClick={() => setIsHKDView(!isHKDView)}
+                        disabled={isFetchingRealTime}
                         className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-rose-600 text-white border-rose-600 shadow-inner' : 'bg-white text-rose-700 border-rose-200 hover:bg-rose-100 shadow-sm'}`}
                     >
+                        {isFetchingRealTime && <Loader2 size={12} className="animate-spin inline mr-1" />}
                         {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
                     </button>
                 </div>
@@ -1442,13 +1434,13 @@ export default function SpotHoldingsPage() {
                                     <tr key={mkt} className="hover:bg-rose-50/30">
                                         <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-rose-50 bg-rose-50/20">{mkt}</td>
                                         <td className={`px-3 py-3 font-mono ${displayRealized > 0 ? 'text-red-600' : displayRealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                            {displayRealized > 0 ? '+' : ''}{displayRealized === 0 ? '-' : formatMoney(displayRealized)}
+                                            {displayRealized > 0 ? '+' : ''}{displayRealized === 0 ? '-' : formatMoney(displayRealized, isHKDView)}
                                         </td>
                                         <td className={`px-3 py-3 font-mono ${displayUnrealized > 0 ? 'text-red-600' : displayUnrealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                            {displayUnrealized > 0 ? '+' : ''}{displayUnrealized === 0 ? '-' : formatMoney(displayUnrealized)}
+                                            {displayUnrealized > 0 ? '+' : ''}{displayUnrealized === 0 ? '-' : formatMoney(displayUnrealized, isHKDView)}
                                         </td>
                                         <td className={`px-3 py-3 font-mono font-bold border-l border-rose-50 bg-rose-50/20 ${displayTotal > 0 ? 'text-red-700' : displayTotal < 0 ? 'text-green-700' : 'text-gray-500'}`}>
-                                            {displayTotal > 0 ? '+' : ''}{displayTotal === 0 ? '-' : formatMoney(displayTotal)}
+                                            {displayTotal > 0 ? '+' : ''}{displayTotal === 0 ? '-' : formatMoney(displayTotal, isHKDView)}
                                         </td>
                                     </tr>
                                 );
@@ -1464,14 +1456,14 @@ export default function SpotHoldingsPage() {
                                         {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
                                     </td>
                                     <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (pnlSums.realized > 0 ? 'text-red-600' : pnlSums.realized < 0 ? 'text-green-600' : 'text-gray-500')}`}>
-                                        {!isHKDView ? '-' : (pnlSums.realized > 0 ? '+' : '') + (pnlSums.realized === 0 ? '-' : formatMoney(pnlSums.realized))}
+                                        {!isHKDView ? '-' : (pnlSums.realized > 0 ? '+' : '') + (pnlSums.realized === 0 ? '-' : formatMoney(pnlSums.realized, true))}
                                     </td>
                                     <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (pnlSums.unrealized > 0 ? 'text-red-600' : pnlSums.unrealized < 0 ? 'text-green-600' : 'text-gray-500')}`}>
-                                        {!isHKDView ? '-' : (pnlSums.unrealized > 0 ? '+' : '') + (pnlSums.unrealized === 0 ? '-' : formatMoney(pnlSums.unrealized))}
+                                        {!isHKDView ? '-' : (pnlSums.unrealized > 0 ? '+' : '') + (pnlSums.unrealized === 0 ? '-' : formatMoney(pnlSums.unrealized, true))}
                                     </td>
                                     <td className="px-3 py-4 font-mono font-bold text-sm border-l border-rose-200 bg-rose-200/50 text-rose-900">
                                         {!isHKDView ? <span className="text-gray-400">-</span> : (
-                                            (pnlSums.total > 0 ? '+' : '') + formatMoney(pnlSums.total) + ' HKD'
+                                            (pnlSums.total > 0 ? '+' : '') + formatMoney(pnlSums.total, true) + ' HKD'
                                         )}
                                     </td>
                                 </tr>
@@ -1480,7 +1472,6 @@ export default function SpotHoldingsPage() {
                     </table>
                 </div>
 
-                {/* 当前收益底部功能区 */}
                 <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-rose-100 shadow-sm">
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
@@ -1514,13 +1505,13 @@ export default function SpotHoldingsPage() {
                 </div>
             </div>
             
-            <div className="max-h-[800px] overflow-y-auto relative">
+            <div className="max-h-[800px] overflow-y-auto relative scrollbar-thin">
                 <table className="min-w-full text-xs text-left">
                     <thead className="text-gray-500 font-medium bg-gray-50">
                         <tr>
                             <Th label="交易日期" sortKey="date" filterKey="date" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="100px" />
+                            <Th label="账户" sortKey="account" filterKey="account" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="100px"/>
                             <Th label="名称/代码" sortKey="code" filterKey="code" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="160px" />
-                            <Th label="账户" sortKey="account" filterKey="account" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="80px"/>
                             <Th label="币种" sortKey="market" filterKey="market" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="70px" />
                             <Th label="交易类型" sortKey="source" filterKey="source" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="120px" />
                             <Th label="方向" sortKey="direction" filterKey="direction" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="80px" />
@@ -1540,11 +1531,11 @@ export default function SpotHoldingsPage() {
                             return (
                                 <tr key={t.id} className="hover:bg-blue-50/30 transition-colors">
                                     <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{t.date}</td>
+                                    <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{t.account}</td>
                                     <td className="px-3 py-2 whitespace-nowrap">
                                         <div className="font-bold text-gray-800">{t.name}</div>
                                         <div className="text-[10px] text-gray-400 font-mono">{t.code}</div>
                                     </td>
-                                    <td className="px-3 py-2 text-center text-gray-600">{t.account}</td>
                                     <td className="px-3 py-2 text-center font-mono text-gray-500">{displayCurrency}</td>
                                     <td className="px-3 py-2 text-center">
                                         <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${getSourceBadge(t.source)}`}>{t.source}</span>
@@ -1556,7 +1547,9 @@ export default function SpotHoldingsPage() {
                                         {t.quantity > 0 ? '+' : ''}{t.quantity.toLocaleString()}
                                     </td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-600">{(t.price * rate).toFixed(4)}</td>
-                                    <td className="px-3 py-2 text-right font-mono text-gray-900 font-medium">{formatMoney(t.amount * rate)}</td>
+                                    <td className={`px-3 py-2 text-right font-mono font-medium ${t.amount > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                        {t.amount > 0 ? '+' : ''}{formatMoney(t.amount * rate)}
+                                    </td>
                                     <td className="px-3 py-2 text-center text-gray-400 text-[10px] whitespace-nowrap">{formatTime(t.updatedAt)}</td>
                                     <td className="px-3 py-2 text-center text-gray-500 text-[10px]">{t.executor}</td>
                                 </tr>
@@ -1571,8 +1564,10 @@ export default function SpotHoldingsPage() {
                     <h3 className="font-bold text-blue-800 text-sm">资金净买入统计表</h3>
                     <button 
                         onClick={() => setIsHKDView(!isHKDView)}
+                        disabled={isFetchingRealTime}
                         className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-blue-600 text-white border-blue-600 shadow-inner' : 'bg-white text-blue-700 border-blue-200 hover:bg-blue-100 shadow-sm'}`}
                     >
+                        {isFetchingRealTime && <Loader2 size={12} className="animate-spin inline mr-1" />}
                         {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
                     </button>
                 </div>
@@ -1791,13 +1786,15 @@ export default function SpotHoldingsPage() {
             </div>
 
             {/* 期初成本二维统计表 */}
-            <div className="bg-purple-50 border-t border-purple-100 p-5">
+            <div className="bg-purple-50 border-t border-purple-100 p-5 rounded-lg mt-6">
                 <div className="flex justify-between items-center mb-3">
                     <h3 className="font-bold text-purple-800 text-sm">期初投入统计表</h3>
                     <button 
                         onClick={() => setIsHKDView(!isHKDView)}
+                        disabled={isFetchingRealTime}
                         className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-purple-600 text-white border-purple-600 shadow-inner' : 'bg-white text-purple-700 border-purple-200 hover:bg-purple-100 shadow-sm'}`}
                     >
+                        {isFetchingRealTime && <Loader2 size={12} className="animate-spin inline mr-1" />}
                         {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
                     </button>
                 </div>
@@ -1933,13 +1930,7 @@ export default function SpotHoldingsPage() {
                                         </div>
                                     </td>
                                     <td className="px-3 py-2 text-center whitespace-nowrap">
-                                        <button 
-                                            onClick={() => setEditRecordModal({show: true, record: r, rawJson: JSON.stringify(r, null, 4)})} 
-                                            className="text-blue-600 hover:text-blue-800 mx-1 p-1 hover:bg-blue-50 rounded transition-colors" 
-                                            title="修改 JSON"
-                                        >
-                                            <FileJson size={16}/>
-                                        </button>
+                                        <button onClick={() => setEditRecordModal({show: true, record: r, rawJson: JSON.stringify(r, null, 4)})} className="text-blue-600 hover:text-blue-800 mx-1 p-1 hover:bg-blue-50 rounded transition-colors" title="修改 JSON"><FileJson size={16}/></button>
                                         <button onClick={() => handleDeleteRecord(r.id)} className="text-red-600 hover:text-red-800 mx-1 p-1 hover:bg-red-50 rounded transition-colors" title="永久删除"><Trash2 size={16}/></button>
                                     </td>
                                 </tr>
@@ -2051,60 +2042,76 @@ export default function SpotHoldingsPage() {
         {/* --- 批量导入粘贴弹窗 --- */}
         {showPasteModal && (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-                <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
-                    <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50">
-                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
-                            <ClipboardList className="text-blue-600" size={20} /> 从 Excel 批量粘贴导入 (期初底座)
-                        </h3>
-                        <button onClick={() => setShowPasteModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors"><X size={20}/></button>
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-7xl max-h-[95vh] flex flex-col overflow-hidden">
+                    <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50 flex-shrink-0">
+                        <div>
+                            <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                                <ClipboardList className="text-blue-600" size={20} /> 
+                                批量测算与导入 (从 Excel 粘贴)
+                            </h3>
+                            <p className="text-xs text-gray-500 mt-1">系统将自动为每条记录结算财务金额，并实时计算含费总额与最终成本价。</p>
+                        </div>
+                        <button onClick={() => setShowPasteModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                            <X size={20}/>
+                        </button>
                     </div>
                     
-                    <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col lg:flex-row gap-6">
+                    <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col lg:flex-row gap-6 relative">
                         {/* 左侧：粘贴区 */}
-                        <div className="flex-1 flex flex-col">
+                        <div className="flex-1 flex flex-col max-w-[280px]">
                             <label className="block text-sm font-bold text-gray-700 mb-2">
-                                1. 请在下方粘贴数据 <span className="text-xs font-normal text-gray-500">(支持直接从 Excel/Numbers 复制)</span>
+                                1. 请在下方粘贴数据 <span className="text-xs font-normal text-gray-500">(严格按 5 列对齐)</span>
                             </label>
-                            <div className="bg-blue-50 border border-blue-200 text-blue-800 text-xs p-3 rounded-lg mb-3">
-                                <b>⚠️ 必须严格按照以下列顺序：</b><br/>
+                            <div className="bg-blue-50 border border-blue-200 text-blue-800 text-[10px] p-3 rounded-lg mb-3">
                                 <span className="font-mono mt-1 block">标的代码 | 结算币种 | 账户名称 | 数量 | 成本均价</span>
-                                <span className="text-gray-500 block mt-1">例如: AAPL &lt;Tab&gt; USD &lt;Tab&gt; 华泰 &lt;Tab&gt; 100 &lt;Tab&gt; 150.5</span>
                             </div>
                             <textarea 
-                                className="flex-1 w-full border border-gray-300 rounded-lg p-3 text-xs font-mono focus:ring-2 focus:ring-blue-500 outline-none resize-none min-h-[200px] whitespace-pre"
-                                placeholder="在此处粘贴..."
+                                className="flex-1 w-full border border-gray-300 rounded-lg p-3 text-[10px] font-mono focus:ring-2 focus:ring-blue-500 outline-none resize-none min-h-[300px] whitespace-pre bg-gray-50"
+                                placeholder="在此处粘贴 Excel / Google Sheets 复制的数据..."
                                 value={pasteText}
                                 onChange={handlePasteTextChange}
+                                disabled={submittingInit}
                             />
                         </div>
 
                         {/* 右侧：预览区 */}
-                        <div className="flex-1 flex flex-col">
-                            <label className="block text-sm font-bold text-gray-700 mb-2">
-                                2. 数据预览区 <span className="text-xs font-normal text-gray-500">(共解析到 {parsedPasteData.length} 条有效数据)</span>
+                        <div className="flex-[3] flex flex-col">
+                            <label className="block text-sm font-bold text-gray-700 mb-2 flex justify-between items-end">
+                                <span>2. 数据预览区</span>
+                                <span className="text-xs font-normal text-gray-500">共识别 {parsedPasteData.length} 笔</span>
                             </label>
-                            <div className="flex-1 border border-gray-200 rounded-lg overflow-y-auto bg-gray-50 max-h-[350px]">
+                            <div className="flex-1 border border-gray-200 rounded-lg overflow-x-auto overflow-y-auto bg-gray-50 max-h-[600px] relative scrollbar-thin">
                                 {parsedPasteData.length === 0 ? (
-                                    <div className="flex items-center justify-center h-full text-gray-400 text-sm">等待粘贴数据...</div>
+                                    <div className="flex items-center justify-center h-full text-gray-400 text-sm py-10">等待粘贴数据...</div>
                                 ) : (
-                                    <table className="min-w-full text-xs text-left">
-                                        <thead className="bg-gray-100 text-gray-600 sticky top-0 shadow-sm">
+                                    <table className="min-w-full text-xs text-left whitespace-nowrap">
+                                        <thead className="bg-gray-100 text-gray-600 sticky top-0 shadow-sm z-10 [&>tr>th]:bg-gray-100">
                                             <tr>
-                                                <th className="px-3 py-2 font-medium">代码</th>
-                                                <th className="px-3 py-2 font-medium">币种</th>
-                                                <th className="px-3 py-2 font-medium">账户</th>
-                                                <th className="px-3 py-2 font-medium text-right">数量</th>
-                                                <th className="px-3 py-2 font-medium text-right">成本均价</th>
+                                                <th className="px-2 py-2 font-medium">代码</th>
+                                                <th className="px-2 py-2 font-medium text-center">市场</th>
+                                                <th className="px-2 py-2 font-medium">账户</th>
+                                                <th className="px-2 py-2 font-medium text-right">数量</th>
+                                                <th className="px-2 py-2 font-medium text-right">成本均价</th>
+                                                <th className="px-2 py-2 font-medium text-center">操作</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-gray-200 bg-white">
                                             {parsedPasteData.map((item, idx) => (
-                                                <tr key={idx} className="hover:bg-blue-50">
-                                                    <td className="px-3 py-2 font-bold">{item.code}</td>
-                                                    <td className="px-3 py-2 text-gray-500">{item.market}</td>
-                                                    <td className="px-3 py-2 text-gray-700">{item.account}</td>
-                                                    <td className="px-3 py-2 text-right font-mono">{item.quantity}</td>
-                                                    <td className="px-3 py-2 text-right font-mono">{item.costPrice}</td>
+                                                <tr key={idx} className="hover:bg-blue-50/30 transition-colors">
+                                                    <td className="px-2 py-1.5 font-bold font-mono">{item.code}</td>
+                                                    <td className="px-2 py-1.5 text-center font-mono text-gray-500">{item.market}</td>
+                                                    <td className="px-2 py-1.5 text-gray-700">{item.account}</td>
+                                                    <td className="px-2 py-1.5 text-right font-mono">{item.quantity}</td>
+                                                    <td className="px-2 py-1.5 text-right font-mono">{item.costPrice}</td>
+                                                    <td className="px-2 py-1.5 text-center align-middle">
+                                                        <button onClick={() => {
+                                                            const newData = [...parsedPasteData];
+                                                            newData.splice(idx, 1);
+                                                            setParsedPasteData(newData);
+                                                        }} className="text-gray-400 hover:text-red-500 p-1.5 rounded hover:bg-red-50 transition-colors" title="移除此条">
+                                                            <Trash2 size={16}/>
+                                                        </button>
+                                                    </td>
                                                 </tr>
                                             ))}
                                         </tbody>
@@ -2114,14 +2121,14 @@ export default function SpotHoldingsPage() {
                         </div>
                     </div>
 
-                    <div className="bg-gray-50 px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
-                        <button onClick={() => setShowPasteModal(false)} className="px-5 py-2.5 bg-gray-200 text-gray-700 text-sm font-bold rounded shadow-sm hover:bg-gray-300 transition-colors">
+                    <div className="bg-gray-50 px-6 py-4 border-t border-gray-200 flex justify-end gap-3 flex-shrink-0">
+                        <button onClick={() => setShowPasteModal(false)} disabled={submittingInit} className="px-5 py-2.5 bg-gray-200 text-gray-700 text-sm font-bold rounded shadow-sm hover:bg-gray-300 transition-colors disabled:opacity-50">
                             取消
                         </button>
                         <button 
                             onClick={handleConfirmBulkPaste} 
                             disabled={parsedPasteData.length === 0 || submittingInit}
-                            className="px-5 py-2.5 bg-blue-600 text-white text-sm font-bold rounded shadow-sm hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+                            className="px-6 py-2.5 bg-blue-600 text-white text-sm font-bold rounded shadow-sm hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2"
                         >
                             {submittingInit ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>}
                             确认全部入库

@@ -766,6 +766,7 @@ export default function SpotTradePage() {
             <thead className="bg-gray-50 text-gray-500 font-medium border-b border-gray-200 sticky top-0 z-10 shadow-sm [&>tr>th]:bg-gray-50">
               <tr>
                 <Th label="日期" sortKey="date" filterKey="date" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="110px"/>
+                <Th label="账户" sortKey="account" filterKey="account" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="100px"/>
                 <Th label="代码/名称" filterKey="codeOrName" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="160px"/>
                 <Th label="方向" align="center" />
                 <Th label="数量" align="right" />
@@ -779,7 +780,7 @@ export default function SpotTradePage() {
             <tbody className="divide-y divide-gray-100">
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
                     <div className="flex justify-center items-center gap-2">
                       <Loader2 className="animate-spin" size={16} /> 加载数据中...
                     </div>
@@ -787,7 +788,7 @@ export default function SpotTradePage() {
                 </tr>
               ) : displayTransactions.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-gray-400 flex flex-col items-center">
+                  <td colSpan={10} className="px-4 py-8 text-center text-gray-400 flex flex-col items-center">
                     <AlertCircle size={24} className="mb-2 opacity-50" />
                     暂无匹配交易记录
                   </td>
@@ -799,6 +800,7 @@ export default function SpotTradePage() {
                     className={`hover:bg-gray-50 transition-colors group ${currentEditId === t.id ? 'bg-blue-50/50' : ''}`}
                   >
                     <td className="px-3 py-2 whitespace-nowrap text-gray-600">{t.date}</td>
+                    <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{t.account}</td>
                     <td className="px-3 py-2 whitespace-nowrap">
                       <div className="font-medium text-gray-900">{t.code}</div>
                       <div className="text-xs text-gray-500">{t.name}</div>
