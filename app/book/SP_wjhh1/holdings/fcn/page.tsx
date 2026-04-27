@@ -183,7 +183,7 @@ export default function FCNHoldingPage() {
     const [loadingDb, setLoadingDb] = useState(false);
     const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
 
-    // --- 股价点位图 Modal 状态 (安全重構) ---
+    // --- 股价点位图 Modal 状态 ---
     const [chartModalData, setChartModalData] = useState<{ title: string, charts: FCNChartData[] } | null>(null);
 
     // --- 排序与筛选 State ---
@@ -452,6 +452,77 @@ export default function FCNHoldingPage() {
         setIsHKDView(!isHKDView);
     };
 
+    // --- 核心工具 (融合全局实时汇率逻辑) ---
+    const formatMoneyWithUnit = (val: number, market: string, fxRate: number = 1) => {
+        const effectiveRate = globalFxRates[market] || fxRate || 1;
+        const value = isHKDView ? val * effectiveRate : val;
+        const currency = isHKDView ? 'HKD' : (market || 'HKD');
+        const numStr = value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return `${numStr} ${currency}`;
+    };
+
+    const formatNotionalWithUnit = (val: number, market: string, fxRate: number = 1) => {
+        const effectiveRate = globalFxRates[market] || fxRate || 1;
+        const value = isHKDView ? val * effectiveRate : val;
+        const currency = isHKDView ? 'HKD' : (market || 'HKD');
+        const numStr = Math.round(value).toLocaleString('en-US');
+        return `${numStr} ${currency}`;
+    };
+
+    const renderName = (params: FCNParams) => {
+        if (!params) return 'N/A';
+        const tNames = params.ticker_name && params.ticker_name.length > 0 
+            ? params.ticker_name.join('~') 
+            : params.tickers?.join('~') || '';
+        return `${params.broker_name || '未知券商'} 【${tNames}】`;
+    };
+    
+    const fmtPct = (val: number) => (val * 100).toFixed(2) + '%';
+    
+    const getStatusText = (status: string) => {
+        switch (status) {
+            case 'Active': return 'A (存续中)';
+            case 'Settling_NoDelivery': return 'B (结算中,无接货)';
+            case 'Settling_Delivery': return 'C (结算中,有接货)';
+            case 'Terminated_Early': return 'D (提前敲出)';
+            case 'Terminated_Normal': return 'E (正常结束,无接货)';
+            case 'Terminated_Delivery': return 'F (结束已接货)';
+            default: return status;
+        }
+    };
+
+    const calcExpectedCouponPeriods = (res: FCNResult) => {
+        if (!res) return 0;
+        const total_return = res.hist_coupons_paid + res.pending_coupons_pv + res.future_coupons_pv;
+        return res.avg_period_coupon > 0 ? total_return / res.avg_period_coupon : 0;
+    };
+
+    const getKnockInTooltip = (params: FCNParams, result: FCNResult) => {
+        if (!params || !result || !result.loss_attribution) return '';
+        return params.tickers.map((t, idx) => {
+            const name = params.ticker_name?.[idx] || t;
+            const prob = result.loss_attribution[idx] || 0;
+            return `${name}: ${fmtPct(prob)}`;
+        }).join('\n');
+    };
+
+    const getDeliveryTooltip = (params: FCNParams, result: FCNResult) => {
+        if (result.status !== 'Terminated_Delivery' && result.status !== 'Settling_Delivery') return '';
+        const worstIdx = result.loss_attribution.findIndex((val: number) => val === 1.0);
+        if (worstIdx !== -1) {
+            const name = params.ticker_name?.[worstIdx] || params.tickers[worstIdx];
+            const qty = params.total_notional / (params.initial_spots[worstIdx] * params.strike_pct);
+            return `${name} ${Math.round(qty)}股`;
+        }
+        return '';
+    };
+
+    const getNextObsDate = (dateRows: any[]) => {
+        if (!dateRows) return '';
+        const today = new Date(); today.setHours(0,0,0,0);
+        return dateRows.map(r => r.obsDate).filter((d: string) => new Date(d) >= today).sort()[0] || '';
+    };
+
     // --- 核心評估邏輯 (封裝復用) ---
     const evaluateFCN = async (mergedRecord: MergedRecord) => {
         const inputData = replaceNullWithUndefined(mergedRecord.inputData);
@@ -474,7 +545,7 @@ export default function FCNHoldingPage() {
                     validPrices.sort((a:any, b:any) => a.date.localeCompare(b.date));
                     return validPrices[validPrices.length - 1].close;
                 }
-                throw new Error(`無法獲取 ${t} 於最後觀察日 ${last_obs_date} 之前的有效歷史收盤價，拒絕結算！`);
+                throw new Error(`無法獲取 ${t} 於最後觀察日 ${last_obs_date} 之前的有效歷史收盘价，拒絕結算！`);
             } else {
                 const p = await fetchQuotePrice(t);
                 return p !== null ? p : pricerParams.initial_spots[i];
@@ -645,129 +716,6 @@ export default function FCNHoldingPage() {
         } finally {
             setLoadingDied(false);
         }
-    };
-
-    // --- 后台库管理 Handlers ---
-    const handleDeleteRecord = async (id: string) => {
-        if (!confirm("确定要永久删除这条记录吗？不可恢复。")) return;
-        try {
-            await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, id));
-            setDbRecords(dbRecords.filter(r => r.id !== id));
-        } catch(e: any) { alert("删除失败: " + e.message); }
-    };
-
-    const handleSaveRecordEdit = async () => {
-        if (!editRecordModal) return;
-        try {
-            const parsedData = JSON.parse(editRecordModal.rawJson);
-            const docId = parsedData.id || editRecordModal.record.id;
-            delete parsedData.id; 
-            parsedData.updatedAt = new Date();
-            await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
-            alert("数据修改成功！");
-            setEditRecordModal(null);
-            fetchDbRecords(activeDbTab); 
-        } catch(e: any) {
-            alert("修改失败 (请检查 JSON 格式是否正确): \n" + e.message);
-        }
-    };
-
-    // --- 动态展示记录摘要 Helper ---
-    const getRecordSummary = (r: any, tab: string) => {
-        try {
-            if (tab.includes('input')) {
-                const p = r.pricerParams || r.inputParams;
-                if (!p) return 'FCN Input 参数';
-                const names = p.ticker_name?.length ? p.ticker_name.join('~') : (p.tickers?.join('~') || '');
-                return `${p.broker_name || p.broker || '未知'} 【${names}】 | ${p.trade_date || ''}`;
-            }
-            if (tab.includes('output_living') || tab.includes('output_died')) {
-                if (r.result?.product_name_display) return r.result.product_name_display;
-                if (r.name) return r.name;
-                return 'FCN 测算结果';
-            }
-            if (tab.includes('get-stock') || tab.includes('pending_delivery')) {
-                return `【交收】${r.account || ''} | ${r.direction || ''} ${r.quantity || 0}股 ${r.stockName || r.stockCode || ''}`;
-            }
-            if (tab.includes('mktvalue') || tab.includes('pl')) {
-                const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
-                return `全局大盘统计快照 (更新于: ${time})`;
-            }
-            return JSON.stringify(r).substring(0, 100) + '...';
-        } catch (e) {
-            return '解析失败...';
-        }
-    };
-
-    // --- 核心工具 (融合全局实时汇率逻辑) ---
-    const formatMoneyWithUnit = (val: number, market: string, fxRate: number = 1) => {
-        const effectiveRate = globalFxRates[market] || fxRate || 1;
-        const value = isHKDView ? val * effectiveRate : val;
-        const currency = isHKDView ? 'HKD' : (market || 'HKD');
-        const numStr = value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        return `${numStr} ${currency}`;
-    };
-
-    const formatNotionalWithUnit = (val: number, market: string, fxRate: number = 1) => {
-        const effectiveRate = globalFxRates[market] || fxRate || 1;
-        const value = isHKDView ? val * effectiveRate : val;
-        const currency = isHKDView ? 'HKD' : (market || 'HKD');
-        const numStr = Math.round(value).toLocaleString('en-US');
-        return `${numStr} ${currency}`;
-    };
-
-    const renderName = (params: FCNParams) => {
-        if (!params) return 'N/A';
-        const tNames = params.ticker_name && params.ticker_name.length > 0 
-            ? params.ticker_name.join('~') 
-            : params.tickers?.join('~') || '';
-        return `${params.broker_name || '未知券商'} 【${tNames}】`;
-    };
-    
-    const fmtPct = (val: number) => (val * 100).toFixed(2) + '%';
-    
-    const getStatusText = (status: string) => {
-        switch (status) {
-            case 'Active': return 'A (存续中)';
-            case 'Settling_NoDelivery': return 'B (结算中,无接货)';
-            case 'Settling_Delivery': return 'C (结算中,有接货)';
-            case 'Terminated_Early': return 'D (提前敲出)';
-            case 'Terminated_Normal': return 'E (正常结束,无接货)';
-            case 'Terminated_Delivery': return 'F (结束已接货)';
-            default: return status;
-        }
-    };
-
-    const calcExpectedCouponPeriods = (res: FCNResult) => {
-        if (!res) return 0;
-        const total_return = res.hist_coupons_paid + res.pending_coupons_pv + res.future_coupons_pv;
-        return res.avg_period_coupon > 0 ? total_return / res.avg_period_coupon : 0;
-    };
-
-    const getKnockInTooltip = (params: FCNParams, result: FCNResult) => {
-        if (!params || !result || !result.loss_attribution) return '';
-        return params.tickers.map((t, idx) => {
-            const name = params.ticker_name?.[idx] || t;
-            const prob = result.loss_attribution[idx] || 0;
-            return `${name}: ${fmtPct(prob)}`;
-        }).join('\n');
-    };
-
-    const getDeliveryTooltip = (params: FCNParams, result: FCNResult) => {
-        if (result.status !== 'Terminated_Delivery' && result.status !== 'Settling_Delivery') return '';
-        const worstIdx = result.loss_attribution.findIndex((val: number) => val === 1.0);
-        if (worstIdx !== -1) {
-            const name = params.ticker_name?.[worstIdx] || params.tickers[worstIdx];
-            const qty = params.total_notional / (params.initial_spots[worstIdx] * params.strike_pct);
-            return `${name} ${Math.round(qty)}股`;
-        }
-        return '';
-    };
-
-    const getNextObsDate = (dateRows: any[]) => {
-        if (!dateRows) return '';
-        const today = new Date(); today.setHours(0,0,0,0);
-        return dateRows.map(r => r.obsDate).filter(d => new Date(d) >= today).sort()[0] || '';
     };
 
     // --- 数据重构与扁平化 Hook (处理排序与筛选) ---
@@ -1132,19 +1080,37 @@ export default function FCNHoldingPage() {
 
     // --- 【新增】当前收益统计矩阵 ---
     const currentPlStats = useMemo(() => {
-        const markets = globalStats.marketList.map(m => m.market).sort();
-        const rawMatrix: Record<string, { realized: number, unrealized: number, total: number }> = {};
+        const marketsSet = new Set<string>();
+        processedLiving.forEach(item => {
+            if (item.market) marketsSet.add(item.market);
+        });
+        processedDied.forEach(item => {
+            if (item.market) marketsSet.add(item.market);
+        });
+        const markets = Array.from(marketsSet).sort();
         
-        globalStats.marketList.forEach(m => {
-            rawMatrix[m.market] = {
-                realized: m.realizedTotal,
-                unrealized: m.unrealized,
-                total: m.totalPnl
-            };
+        const rawMatrix: Record<string, { realized: number, unrealized: number, total: number }> = {};
+        markets.forEach(m => {
+            rawMatrix[m] = { realized: 0, unrealized: 0, total: 0 };
+        });
+
+        processedLiving.forEach(item => {
+            if (item.market) {
+                rawMatrix[item.market].realized += (item.realized || 0);
+                rawMatrix[item.market].unrealized += (item.unrealized || 0);
+                rawMatrix[item.market].total += ((item.realized || 0) + (item.unrealized || 0));
+            }
+        });
+
+        processedDied.forEach(item => {
+            if (item.market) {
+                rawMatrix[item.market].realized += (item.realized || 0);
+                rawMatrix[item.market].total += (item.realized || 0);
+            }
         });
 
         return { markets, rawMatrix };
-    }, [globalStats]);
+    }, [processedLiving, processedDied]);
 
     // --- 市值与盈亏数据入库逻辑 ---
     const handleSaveMktValStats = async (isAuto = false) => {
@@ -1167,24 +1133,24 @@ export default function FCNHoldingPage() {
     };
 
     const handleSavePlStats = async (isAuto = false) => {
-        if (!user) return;
-        if (!isAuto) setIsSavingPl(true);
-        try {
-            const payload = {
-                markets: currentPlStats.markets,
-                rawMatrix: currentPlStats.rawMatrix,
-                updatedAt: new Date().toISOString()
-            };
-            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_pl', 'latest_summary'), payload);
-            if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
-        } catch (e) {
-            console.error("保存当前收益统计失败:", e);
-        } finally {
-            if (!isAuto) setIsSavingPl(false);
-        }
+      if (!user) return;
+      if (!isAuto) setIsSavingPl(true);
+      try {
+          const payload = {
+              markets: currentPlStats.markets,
+              rawMatrix: currentPlStats.rawMatrix,
+              updatedAt: new Date().toISOString()
+          };
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_pl', 'latest_summary'), payload);
+          if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+      } catch (e) {
+          console.error("保存当前收益统计失败:", e);
+      } finally {
+          if (!isAuto) setIsSavingPl(false);
+      }
     };
 
-    // --- 资金净买入统计入库逻辑 ---
+    // --- 资金净买入数据入库逻辑 ---
     const handleSaveCashStats = async (isAuto = false) => {
         if (!user) return;
         if (!isAuto) setIsSavingCash(true);
@@ -1210,12 +1176,84 @@ export default function FCNHoldingPage() {
     useEffect(() => {
         if (!user) return;
         const intervalId = setInterval(() => {
-            handleSaveMktValStats(true);
-            handleSavePlStats(true);
-            handleSaveCashStats(true);
+            // 在 HKD 视图下暂停自动入库，保护原始数据的纯净度
+            if (!isHKDView) {
+                handleSaveMktValStats(true);
+                handleSavePlStats(true);
+                handleSaveCashStats(true);
+            }
         }, 60000); 
         return () => clearInterval(intervalId);
-    }, [user, currentMktStats, currentPlStats, cashStats]); 
+    }, [user, currentMktStats, currentPlStats, cashStats, isHKDView]);
+
+    // --- 后台库管理 Handlers ---
+    const handleDeleteRecord = async (id: string) => {
+        if (!confirm("确定要永久删除这条记录吗？不可恢复。")) return;
+        try {
+            await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, id));
+            setDbRecords(dbRecords.filter(r => r.id !== id));
+        } catch(e: any) { alert("删除失败: " + e.message); }
+    };
+
+    const handleSaveRecordEdit = async () => {
+        if (!editRecordModal) return;
+        try {
+            const parsedData = JSON.parse(editRecordModal.rawJson);
+            const docId = parsedData.id || editRecordModal.record.id;
+            delete parsedData.id; 
+            parsedData.updatedAt = new Date().toISOString();
+            await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
+            alert("数据修改成功！");
+            setEditRecordModal(null);
+            
+            // 简单刷新一次对应库的数据
+            if (!user) return;
+            setLoadingDb(true);
+            const querySnapshot = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab));
+            let records: any[] = [];
+            querySnapshot.forEach((docSnap) => {
+                const data = docSnap.data();
+                delete data.id; 
+                records.push({ ...data, id: docSnap.id });
+            });
+            records.sort((a, b) => {
+                const timeA = getTime(a.updatedAt) || getTime(a.createdAt);
+                const timeB = getTime(b.updatedAt) || getTime(b.createdAt);
+                return timeB - timeA;
+            });
+            setDbRecords(records);
+            setLoadingDb(false);
+            
+        } catch(e: any) {
+            alert("修改失败 (请检查 JSON 格式是否正确): \n" + e.message);
+        }
+    };
+
+    const getRecordSummary = (r: any, tab: string) => {
+        try {
+            if (tab.includes('input')) {
+                const p = r.pricerParams || r.inputParams;
+                if (!p) return 'FCN Input 参数';
+                const names = p.ticker_name?.length ? p.ticker_name.join('~') : (p.tickers?.join('~') || '');
+                return `${p.broker_name || p.broker || '未知'} 【${names}】 | ${p.trade_date || ''}`;
+            }
+            if (tab.includes('output_living') || tab.includes('output_died')) {
+                if (r.result?.product_name_display) return r.result.product_name_display;
+                if (r.name) return r.name;
+                return 'FCN 测算结果';
+            }
+            if (tab.includes('get-stock') || tab.includes('pending_delivery')) {
+                return `【交收】${r.account || ''} | ${r.direction || ''} ${Math.abs(r.quantity || 0)}股 ${r.stockName || r.stockCode || ''}`;
+            }
+            if (tab.includes('mktvalue') || tab.includes('pl') || tab.includes('cash')) {
+                const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
+                return `全局大盘统计快照 (更新于: ${time})`;
+            }
+            return JSON.stringify(r).substring(0, 100) + '...';
+        } catch (e) {
+            return '解析失败...';
+        }
+    };
 
     return (
         <div className="space-y-8 pb-10">
@@ -1293,7 +1331,6 @@ export default function FCNHoldingPage() {
                                     <td className="px-3 py-2 text-center">
                                         <button onClick={() => {
                                             const p = item.p as FCNParams;
-                                            // 【安全校驗】：防止舊數據或髒數據導致 Modal 崩潰
                                             if (!p || !p.tickers || !p.initial_spots) {
                                                 alert("數據格式不完整或為舊版數據，無法繪製點位圖。");
                                                 return;
@@ -1303,18 +1340,9 @@ export default function FCNHoldingPage() {
                                                 const current = p.current_spots?.[idx] || initial;
                                                 const strike = initial * (Number(p.strike_pct) || 0);
                                                 const ko = initial * (Number(p.trigger_pct) || 0);
-                                                return {
-                                                    name: p.ticker_name?.[idx] || ticker,
-                                                    ticker,
-                                                    current,
-                                                    strike,
-                                                    ko
-                                                };
+                                                return { name: p.ticker_name?.[idx] || ticker, ticker, current, strike, ko };
                                             });
-                                            setChartModalData({
-                                                title: item.name,
-                                                charts
-                                            });
+                                            setChartModalData({ title: item.name, charts });
                                         }} className="text-blue-500 hover:text-blue-700 bg-blue-50 p-1 rounded transition-colors" title="查看点位图">
                                             <LineChart size={16}/>
                                         </button>
@@ -1548,12 +1576,12 @@ export default function FCNHoldingPage() {
                                                 rawRowSum += rawVal;
                                                 const displayVal = rawVal * rate;
                                                 return (
-                                                    <td key={acc} className="px-3 py-2 font-mono text-gray-700">
+                                                    <td key={acc} className={`px-3 py-2 font-mono ${displayVal >= 0 ? 'text-gray-700' : 'text-red-600'}`}>
                                                         {displayVal === 0 ? '-' : formatMoney(displayVal, isHKDView)}
                                                     </td>
                                                 );
                                             })}
-                                            <td className="px-3 py-2 font-mono font-bold text-indigo-900 border-l border-indigo-50 bg-indigo-50/20">
+                                            <td className={`px-3 py-2 font-mono font-bold border-l border-indigo-50 bg-indigo-50/20 ${rawRowSum * actualRate >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
                                                 {rawRowSum * actualRate === 0 ? '-' : formatMoney(rawRowSum * actualRate, true)}
                                             </td>
                                         </tr>
@@ -1574,19 +1602,13 @@ export default function FCNHoldingPage() {
                                                 colSumHKD += rawVal * (globalFxRates[mkt] || 1);
                                             });
                                             return (
-                                                <td key={acc} className="px-3 py-3 font-mono font-bold text-indigo-900">
+                                                <td key={acc} className={`px-3 py-3 font-mono font-bold ${colSumHKD >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
                                                     {colSumHKD === 0 ? '-' : formatMoney(colSumHKD, true)}
                                                 </td>
                                             );
                                         })}
-                                        <td className="px-3 py-3 font-mono font-bold text-sm border-l border-indigo-200 text-indigo-900">
-                                            {formatMoney(
-                                                currentMktStats.markets.reduce((sum, mkt) => {
-                                                    let rSum = 0;
-                                                    currentMktStats.accounts.forEach(a => rSum += currentMktStats.rawMatrix[mkt][a] || 0);
-                                                    return sum + rSum * (globalFxRates[mkt] || 1);
-                                                }, 0), true
-                                            )} HKD
+                                        <td className={`px-3 py-3 font-mono font-bold text-sm border-l border-indigo-200 ${globalStats.hkdSum.mktValLiving >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
+                                            {formatMoney(globalStats.hkdSum.mktValLiving, true)} HKD
                                         </td>
                                     </tr>
                                 </tfoot>
@@ -1594,19 +1616,22 @@ export default function FCNHoldingPage() {
                         </table>
                     </div>
 
-                    {/* 市值统计底部功能区 */}
                     <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-indigo-100 shadow-sm">
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
-                            <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">※每分钟自动入库</span>
+                            <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
+                                {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
+                            </span>
                         </div>
                         <div className="flex items-center gap-3">
                             <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-600 text-indigo-600 hover:bg-indigo-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                             </button>
-                            <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
-                            </button>
+                            {!isHKDView && (
+                                <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                    {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -1654,13 +1679,13 @@ export default function FCNHoldingPage() {
                                         <tr key={mkt} className="hover:bg-rose-50/30">
                                             <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-rose-50 bg-rose-50/20">{mkt}</td>
                                             <td className={`px-3 py-3 font-mono ${displayRealized > 0 ? 'text-red-600' : displayRealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                                {displayRealized > 0 ? '+' : ''}{displayRealized === 0 ? '-' : formatMoney(displayRealized)}
+                                                {displayRealized > 0 ? '+' : ''}{displayRealized === 0 ? '-' : formatMoney(displayRealized, isHKDView)}
                                             </td>
                                             <td className={`px-3 py-3 font-mono ${displayUnrealized > 0 ? 'text-red-600' : displayUnrealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                                {displayUnrealized > 0 ? '+' : ''}{displayUnrealized === 0 ? '-' : formatMoney(displayUnrealized)}
+                                                {displayUnrealized > 0 ? '+' : ''}{displayUnrealized === 0 ? '-' : formatMoney(displayUnrealized, isHKDView)}
                                             </td>
                                             <td className={`px-3 py-3 font-mono font-bold border-l border-rose-50 bg-rose-50/20 ${displayTotal > 0 ? 'text-red-700' : displayTotal < 0 ? 'text-green-700' : 'text-gray-500'}`}>
-                                                {displayTotal > 0 ? '+' : ''}{displayTotal === 0 ? '-' : formatMoney(displayTotal)}
+                                                {displayTotal > 0 ? '+' : ''}{displayTotal === 0 ? '-' : formatMoney(displayTotal, isHKDView)}
                                             </td>
                                         </tr>
                                     );
@@ -1692,19 +1717,22 @@ export default function FCNHoldingPage() {
                         </table>
                     </div>
 
-                    {/* 当前收益底部功能区 */}
                     <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-rose-100 shadow-sm">
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
-                            <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">※每分钟自动入库</span>
+                            <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
+                                {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
+                            </span>
                         </div>
                         <div className="flex items-center gap-3">
                             <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-rose-600 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                             </button>
-                            <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
-                            </button>
+                            {!isHKDView && (
+                                <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                    {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -1803,15 +1831,19 @@ export default function FCNHoldingPage() {
                     <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-teal-100 shadow-sm">
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
-                            <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">※每分钟自动入库</span>
+                            <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">
+                                {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
+                            </span>
                         </div>
                         <div className="flex items-center gap-3">
                             <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-teal-600 text-teal-600 hover:bg-teal-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                             </button>
-                            <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
-                            </button>
+                            {!isHKDView && (
+                                <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                    {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>

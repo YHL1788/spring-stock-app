@@ -800,21 +800,40 @@ export default function OptionHoldingPage() {
         return { accounts, markets, rawMatrix };
     }, [processedLiving]);
 
-    // --- 当前收益统计矩阵 ---
+    // --- 当前收益统计矩阵 (已修复双重乘率BUG) ---
     const currentPlStats = useMemo(() => {
-        const markets = globalStats.marketList.map(m => m.market).sort();
-        const rawMatrix: Record<string, { realized: number, unrealized: number, total: number }> = {};
+        const marketsSet = new Set<string>();
+        processedLiving.forEach(item => {
+            if (item.currency) marketsSet.add(item.currency);
+        });
+        processedDied.forEach(item => {
+            if (item.currency) marketsSet.add(item.currency);
+        });
+        const markets = Array.from(marketsSet).sort();
         
-        globalStats.marketList.forEach(m => {
-            rawMatrix[m.market] = {
-                realized: m.realizedTotal,
-                unrealized: m.unrealized,
-                total: m.realizedTotal + m.unrealized // 强制使用表面的已实现+表面浮动
-            };
+        const rawMatrix: Record<string, { realized: number, unrealized: number, total: number }> = {};
+        markets.forEach(m => {
+            rawMatrix[m] = { realized: 0, unrealized: 0, total: 0 };
+        });
+
+        // 直接提取原始币种的汇总，绝不调用 globalStats！
+        processedLiving.forEach(item => {
+            if (item.currency) {
+                rawMatrix[item.currency].realized += (item.realizedPremium || 0);
+                rawMatrix[item.currency].unrealized += (item.unrealizedPnl || 0);
+                rawMatrix[item.currency].total += (item.totalPnl || 0);
+            }
+        });
+
+        processedDied.forEach(item => {
+            if (item.currency) {
+                rawMatrix[item.currency].realized += (item.realizedPremium || 0);
+                rawMatrix[item.currency].total += (item.totalPnl || 0);
+            }
         });
 
         return { markets, rawMatrix };
-    }, [globalStats]);
+    }, [processedLiving, processedDied]);
 
     // --- 資金純買付統計データ (資金浄買入 = -已実現期権金) ---
     const cashStats = useMemo(() => {
@@ -926,12 +945,15 @@ export default function OptionHoldingPage() {
     useEffect(() => {
         if (!user) return;
         const intervalId = setInterval(() => {
-            handleSaveMktValStats(true);
-            handleSavePlStats(true);
-            handleSaveCashStats(true);
+            // 在 HKD 视图下暂停自动入库，保护原始数据的纯净度
+            if (!isHKDView) {
+                handleSaveMktValStats(true);
+                handleSavePlStats(true);
+                handleSaveCashStats(true);
+            }
         }, 60000); 
         return () => clearInterval(intervalId);
-    }, [user, currentMktStats, currentPlStats, cashStats]);
+    }, [user, currentMktStats, currentPlStats, cashStats, isHKDView]);
 
     // --- ヘルパー関数 ---
     const getRecordSummary = (r: any, tab: string) => {
@@ -1422,31 +1444,35 @@ export default function OptionHoldingPage() {
                                         );
                                     })}
                                     {currentMktStats.markets.length === 0 && (
-                                        <tr><td colSpan={currentMktStats.accounts.length + 2} className="px-3 py-4 text-center text-gray-400">暂无数据</td></tr>
-                                    )}
-                                </tbody>
-                                {currentMktStats.markets.length > 0 && renderMktSumHKD()}
-                            </table>
-                        </div>
+                                    <tr><td colSpan={currentMktStats.accounts.length + 2} className="px-3 py-4 text-center text-gray-400">暂无数据</td></tr>
+                                )}
+                            </tbody>
+                            {currentMktStats.markets.length > 0 && renderMktSumHKD()}
+                        </table>
+                    </div>
 
-                        <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-indigo-100 shadow-sm">
-                            <div className="flex items-center gap-4 text-xs text-gray-500">
-                                <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
-                                <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">※每分钟自动入库</span>
-                            </div>
-                            <div className="flex items-center gap-3">
-                                <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-600 text-indigo-600 hover:bg-indigo-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                    <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
-                                </button>
+                    <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-indigo-100 shadow-sm">
+                        <div className="flex items-center gap-4 text-xs text-gray-500">
+                            <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
+                            <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
+                                {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-600 text-indigo-600 hover:bg-indigo-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
+                            </button>
+                            {!isHKDView && (
                                 <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                     {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                                 </button>
-                            </div>
+                            )}
                         </div>
                     </div>
-                )}
+                </div>
+            )}
 
-                {statsTab === 'PL' && (
+            {statsTab === 'PL' && (
                     <div className="bg-rose-50 border-t border-rose-100 p-5 rounded-lg">
                         <div className="flex justify-between items-center mb-3">
                             <h3 className="font-bold text-rose-800 text-sm">当前收益统计表</h3>
@@ -1492,33 +1518,37 @@ export default function OptionHoldingPage() {
                                         );
                                     })}
                                     {currentPlStats.markets.length === 0 && (
-                                        <tr><td colSpan={4} className="px-3 py-6 text-center text-gray-400">暂无数据</td></tr>
-                                    )}
-                                </tbody>
-                                {currentPlStats.markets.length > 0 && renderPlSumHKD()}
-                            </table>
+                                    <tr><td colSpan={4} className="px-3 py-6 text-center text-gray-400">暂无数据</td></tr>
+                                )}
+                            </tbody>
+                            {currentPlStats.markets.length > 0 && renderPlSumHKD()}
+                        </table>
+                    </div>
+                    
+                    {/* 资金统计底部功能区 */}
+                    <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-teal-100 shadow-sm">
+                        <div className="flex items-center gap-4 text-xs text-gray-500">
+                            <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
+                            <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">
+                                {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
+                            </span>
                         </div>
-                        
-                        {/* 资金统计底部功能区 */}
-                        <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-teal-100 shadow-sm">
-                            <div className="flex items-center gap-4 text-xs text-gray-500">
-                                <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
-                                <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">※每分钟自动入库</span>
-                            </div>
-                            <div className="flex items-center gap-3">
-                                <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-teal-600 text-teal-600 hover:bg-teal-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                    <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
-                                </button>
+                        <div className="flex items-center gap-3">
+                            <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-teal-600 text-teal-600 hover:bg-teal-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
+                            </button>
+                            {!isHKDView && (
                                 <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                     {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                                 </button>
-                            </div>
+                            )}
                         </div>
                     </div>
-                )}
-            </div>
+                </div>
+            )}
+        </div>
 
-            {/* --- モジュール 6：后台库管理模块 --- */}
+        {/* --- モジュール 6：后台库管理模块 --- */}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200 mt-8">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">

@@ -304,36 +304,33 @@ export default function SpotHoldingsPage() {
 
                let merged: UnifiedTrade[] = [];
 
-               // 【终极修复 1】SPOT 库清洗：完全信任底层传来的正负号，取消过度重写
+               // 【终极修复 1】SPOT 库清洗：完全信任底层传来的数量与金额正负号，取消过度重写
                spotSnap.forEach(doc => {
                  const d = doc.data();
                  const direction = d.direction?.toUpperCase() || 'BUY';
-                 const qty = Math.abs(Number(d.quantity));
-                 // 信任底层已经计算好的金额，直接提取（对于手动录入的SELL，它本身已经是负数了）
                  const rawAmt = Number(d.amount_incl_fee || d.amount_excl_fee || 0); 
                  merged.push({
                    id: doc.id, source: 'SPOT', date: d.date, account: d.account || '', 
                    market: mapMarket(d.market, 'HKD'),
                    code: d.code, name: d.name, direction,
-                   quantity: direction === 'BUY' ? qty : -qty,
+                   quantity: Number(d.quantity || 0), // 信任底层
                    price: Number(d.avg_price_incl_fee || d.price_excl_fee || 0),
-                   amount: rawAmt, // 取消自作聪明的翻转，直接赋值
+                   amount: rawAmt,
                    fee: Number(d.fee || 0),
                    updatedAt: getTime(d.createdAt), executor: d.executor || ''
                  });
                });
 
-               // FCN 库清洗：FCN 都是到期被动接货 (BUY)
+               // FCN 库清洗
                fcnSnap.forEach(doc => {
                  const d = doc.data();
                  const direction = d.direction?.toUpperCase() || 'BUY';
-                 const qty = Math.abs(Number(d.quantity));
-                 const rawAmt = Number(d.amountWithFee || d.amountNoFee || 0); // 原始正数绝对值
+                 const rawAmt = Number(d.amountWithFee || d.amountNoFee || 0); 
                  merged.push({
                    id: doc.id, source: 'FCN', date: d.date, account: d.account || '', 
                    market: mapMarket(d.market, 'HKD'),
                    code: d.stockCode, name: d.stockName, direction,
-                   quantity: direction === 'BUY' ? qty : -qty,
+                   quantity: Number(d.quantity || 0), // 信任底层
                    price: Number(d.priceWithFee || d.priceNoFee || 0),
                    amount: direction === 'BUY' ? rawAmt : -rawAmt, 
                    fee: Number(d.fee || 0),
@@ -345,14 +342,13 @@ export default function SpotHoldingsPage() {
                dqaqSnap.forEach(doc => {
                  const d = doc.data();
                  const direction = d.direction?.toUpperCase() || 'BUY';
-                 const qty = Math.abs(Number(d.quantity));
                  const amountNoFee = Number(d.amountNoFee || 0);
                  const fee = Number(d.fee || 0);
                  merged.push({
                    id: doc.id, source: 'DQ/AQ', date: d.date, account: d.account || '', 
                    market: mapMarket(d.market, 'USD'),
                    code: d.stockCode, name: d.stockName, direction,
-                   quantity: direction === 'BUY' ? qty : -qty,
+                   quantity: Number(d.quantity || 0), // 信任底层
                    price: Number(d.priceNoFee || 0), 
                    amount: amountNoFee + fee, 
                    fee,
@@ -364,7 +360,6 @@ export default function SpotHoldingsPage() {
                optionSnap.forEach(doc => {
                  const d = doc.data();
                  const direction = d.direction?.toUpperCase() || 'SELL';
-                 const qty = Math.abs(Number(d.quantity));
                  const sourceType = (d.type || '').toLowerCase().includes('put') ? 'OPTION_PUT' : 'OPTION_CALL';
                  const amountNoFee = Number(d.amountNoFee || 0); 
                  const fee = Number(d.fee || 0);
@@ -372,7 +367,7 @@ export default function SpotHoldingsPage() {
                    id: doc.id, source: sourceType as any, date: d.date, account: d.account || '', 
                    market: mapMarket(d.market, 'USD'),
                    code: d.stockCode, name: d.stockName, direction,
-                   quantity: direction === 'BUY' ? qty : -qty,
+                   quantity: Number(d.quantity || 0), // 信任底层
                    price: Number(d.priceNoFee || 0), 
                    amount: amountNoFee + fee, 
                    fee,
