@@ -27,7 +27,6 @@ const formatTime = (val: any) => {
 
 // ==========================================
 // 终极修复：纯净版数值与颜色格式化工具
-// 彻底解决 JSX 模板字符串中因包含 < 或 > 符号导致的编译器解析 Bug
 // ==========================================
 const formatSum = (val: number) => {
     return `${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -695,8 +694,10 @@ export default function DQAQHoldingPage() {
             koInPrice: strikePrice.toFixed(4), koOutPrice: koPrice.toFixed(4),
             koInPct: fmtPct(basic.strike_pct), koOutPct: fmtPct(basic.ko_barrier_pct),
             nextObs, maturity: periods[periods.length-1].settle_date,
-            koProb: res.ko_probability, expRate: res.exp_completion_rate, mktVal: res.val_net_usd,
-            fullPrice: res.val_full_usd || 0,
+            koProb: res.ko_probability, expRate: res.exp_completion_rate,
+            // 【安全防御】：使用 Number 强转并兜底 0，防止底层缺少该字段时返回 undefined
+            mktVal: Number(res.val_net_usd) || 0,
+            fullPrice: Number(res.val_full_usd) || 0,
             settled: res.shares_settled_paid, locked: res.shares_locked_unpaid, future: res.shares_future, expTotal: res.expected_shares,
             ticker: underlying.ticker,
             S0: underlying.spot_price,
@@ -738,9 +739,9 @@ export default function DQAQHoldingPage() {
             status: res.status_msg, currency: basic.currency, dir: basic.contract_type, leverage: basic.leverage,
             koInPrice: strikePrice.toFixed(4), koOutPrice: koPrice.toFixed(4),
             koInPct: fmtPct(basic.strike_pct), koOutPct: fmtPct(basic.ko_barrier_pct),
-            settled: res.expected_shares || 0, 
-            expRate: res.exp_completion_rate || 0,
-            fullPrice: res.val_full_usd || 0,
+            settled: Number(res.expected_shares) || 0, 
+            expRate: Number(res.exp_completion_rate) || 0,
+            fullPrice: Number(res.val_full_usd) || 0,
             fx_rate: basic.fx_rate || 1
         };
     }), [diedRecords]);
@@ -795,7 +796,7 @@ export default function DQAQHoldingPage() {
         };
     }, [finalLiving, finalDied, globalFxRates]);
 
-    // --- 【新增】当前市值二维统计矩阵 ---
+    // --- 当前市值二维统计矩阵 ---
     const currentMktStats = useMemo(() => {
         const accountsSet = new Set<string>();
         const marketsSet = new Set<string>();
@@ -823,7 +824,7 @@ export default function DQAQHoldingPage() {
         return { accounts, markets, rawMatrix };
     }, [processLiving]);
 
-    // --- 【新增】当前收益统计矩阵 ---
+    // --- 当前收益统计矩阵 ---
     const currentPlStats = useMemo(() => {
         const marketsSet = new Set<string>();
         processLiving.forEach(item => {
@@ -885,15 +886,18 @@ export default function DQAQHoldingPage() {
         }
     };
 
-    // 每分钟自动保存统计
+    // 每分钟自动保存统计 (带有 HKD 视图联动锁)
     useEffect(() => {
         if (!user) return;
         const intervalId = setInterval(() => {
-            handleSaveMktValStats(true);
-            handleSavePlStats(true);
+            // 安全保护：仅在未开启 HKD 折算视图时，才进行自动入库，避免双重乘率脏数据污染
+            if (!isHKDView) {
+                handleSaveMktValStats(true);
+                handleSavePlStats(true);
+            }
         }, 60000); 
         return () => clearInterval(intervalId);
-    }, [user, currentMktStats, currentPlStats]); 
+    }, [user, currentMktStats, currentPlStats, isHKDView]); 
 
     return (
         <div className="space-y-8 pb-10">
@@ -1147,10 +1151,8 @@ export default function DQAQHoldingPage() {
                             <h3 className="font-bold text-indigo-800 text-sm">当前市值二维统计矩阵</h3>
                             <button 
                                 onClick={() => setIsHKDView(!isHKDView)}
-                                disabled={isFetchingFx}
                                 className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-indigo-600 text-white border-indigo-600 shadow-inner' : 'bg-white text-indigo-700 border-indigo-200 hover:bg-indigo-100 shadow-sm'}`}
                             >
-                                {isFetchingFx && <Loader2 size={12} className="animate-spin inline mr-1" />}
                                 {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
                             </button>
                         </div>
@@ -1227,15 +1229,19 @@ export default function DQAQHoldingPage() {
                         <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-indigo-100 shadow-sm">
                             <div className="flex items-center gap-4 text-xs text-gray-500">
                                 <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
-                                <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">※每分钟自动入库</span>
+                                <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
+                                    {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
+                                </span>
                             </div>
                             <div className="flex items-center gap-3">
-                                <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-600 text-indigo-600 hover:bg-indigo-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                    <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
+                                <button className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-600 text-indigo-600 hover:bg-indigo-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                    <RefreshCw size={14} /> 手动刷新
                                 </button>
-                                <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                    {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
-                                </button>
+                                {!isHKDView && (
+                                    <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                        {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                                    </button>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -1247,10 +1253,8 @@ export default function DQAQHoldingPage() {
                             <h3 className="font-bold text-rose-800 text-sm">当前收益统计表</h3>
                             <button 
                                 onClick={() => setIsHKDView(!isHKDView)}
-                                disabled={isFetchingFx}
                                 className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-rose-600 text-white border-rose-600 shadow-inner' : 'bg-white text-rose-700 border-rose-200 hover:bg-rose-100 shadow-sm'}`}
                             >
-                                {isFetchingFx && <Loader2 size={12} className="animate-spin inline mr-1" />}
                                 {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
                             </button>
                         </div>
@@ -1259,8 +1263,8 @@ export default function DQAQHoldingPage() {
                                 <thead className="bg-rose-100/50 text-rose-900 font-medium">
                                     <tr>
                                         <th className="px-3 py-2 text-center border-b border-r border-rose-100 bg-rose-50/50">币种</th>
-                                        <th className="px-3 py-2 border-b border-rose-100">已实现盈亏</th>
-                                        <th className="px-3 py-2 border-b border-rose-100">浮动盈亏 (未实现)</th>
+                                        <th className="px-3 py-2 border-b border-rose-100">已实现盈亏 (恒定为 0)</th>
+                                        <th className="px-3 py-2 border-b border-rose-100">浮动盈亏 (未实现损益)</th>
                                         <th className="px-3 py-2 border-b border-l border-rose-100 bg-rose-50/50">总盈亏 {isHKDView ? '(HKD)' : '(原币种)'}</th>
                                     </tr>
                                 </thead>
@@ -1268,20 +1272,17 @@ export default function DQAQHoldingPage() {
                                     {currentPlStats.markets.map(mkt => {
                                         const rate = isHKDView ? (globalFxRates[mkt] || 1) : 1;
                                         const data = currentPlStats.rawMatrix[mkt];
-                                        const displayRealized = data.realized * rate;
                                         const displayUnrealized = data.unrealized * rate;
                                         const displayTotal = data.total * rate;
                                         return (
                                             <tr key={mkt} className="hover:bg-rose-50/30">
                                                 <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-rose-50 bg-rose-50/20">{mkt}</td>
-                                                <td className={"px-3 py-3 font-mono " + cColor(displayRealized, 'text-red-600', 'text-green-600', 'text-gray-400')}>
-                                                    {fmtSign(displayRealized)}
+                                                <td className="px-3 py-3 font-mono text-gray-300">-</td>
+                                                <td className={`px-3 py-3 font-mono ${displayUnrealized > 0 ? 'text-red-600' : displayUnrealized < 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                                                    {displayUnrealized === 0 ? '-' : fmtSign(displayUnrealized)}
                                                 </td>
-                                                <td className={"px-3 py-3 font-mono " + cColor(displayUnrealized, 'text-red-600', 'text-green-600', 'text-gray-400')}>
-                                                    {fmtSign(displayUnrealized)}
-                                                </td>
-                                                <td className={"px-3 py-3 font-mono font-bold border-l border-rose-50 bg-rose-50/20 " + cColor(displayTotal, 'text-red-700', 'text-green-700', 'text-gray-500')}>
-                                                    {fmtSign(displayTotal)}
+                                                <td className={`px-3 py-3 font-mono font-bold border-l border-rose-50 bg-rose-50/20 ${displayTotal > 0 ? 'text-red-700' : displayTotal < 0 ? 'text-green-700' : 'text-gray-500'}`}>
+                                                    {displayTotal === 0 ? '-' : fmtSign(displayTotal)}
                                                 </td>
                                             </tr>
                                         );
@@ -1296,14 +1297,16 @@ export default function DQAQHoldingPage() {
                                             <td className="px-3 py-4 text-center font-bold border-r border-rose-200">
                                                 {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
                                             </td>
-                                            <td className={"px-3 py-4 font-mono font-bold " + (!isHKDView ? 'text-gray-400' : cColor(globalStats.hkdSum.realizedTotal, 'text-red-600', 'text-green-600', 'text-gray-500'))}>
-                                                {!isHKDView ? '-' : fmtSign(globalStats.hkdSum.realizedTotal)}
+                                            <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : 'text-gray-500'}`}>
+                                                {!isHKDView ? '-' : '-'}
                                             </td>
-                                            <td className={"px-3 py-4 font-mono font-bold " + (!isHKDView ? 'text-gray-400' : cColor(globalStats.hkdSum.unrealized, 'text-red-600', 'text-green-600', 'text-gray-500'))}>
-                                                {!isHKDView ? '-' : fmtSign(globalStats.hkdSum.unrealized)}
+                                            <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : 'text-green-600'}`}>
+                                                {!isHKDView ? '-' : fmtSign(currentPlStats.markets.reduce((sum, mkt) => sum + currentPlStats.rawMatrix[mkt].unrealized * (globalFxRates[mkt] || 1), 0))}
                                             </td>
-                                            <td className={"px-3 py-4 font-mono font-bold text-sm border-l border-rose-200 bg-rose-200/50 " + (!isHKDView ? 'text-rose-900' : cColor(globalStats.hkdSum.totalPnl, 'text-red-700', 'text-green-700', 'text-gray-700'))}>
-                                                {!isHKDView ? <span className="text-gray-400">-</span> : `${fmtSign(globalStats.hkdSum.totalPnl)} HKD`}
+                                            <td className="px-3 py-4 font-mono font-bold text-sm border-l border-rose-200 bg-rose-200/50 text-rose-900">
+                                                {!isHKDView ? <span className="text-gray-400">-</span> : (
+                                                    fmtSign(currentPlStats.markets.reduce((sum, mkt) => sum + currentPlStats.rawMatrix[mkt].total * (globalFxRates[mkt] || 1), 0)) + ' HKD'
+                                                )}
                                             </td>
                                         </tr>
                                     </tfoot>
@@ -1314,15 +1317,19 @@ export default function DQAQHoldingPage() {
                         <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-rose-100 shadow-sm">
                             <div className="flex items-center gap-4 text-xs text-gray-500">
                                 <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
-                                <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">※每分钟自动入库</span>
+                                <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
+                                    {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
+                                </span>
                             </div>
                             <div className="flex items-center gap-3">
-                                <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-rose-600 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                    <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
+                                <button className="flex items-center gap-2 px-4 py-2 bg-white border border-rose-600 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                    <RefreshCw size={14} /> 手动刷新
                                 </button>
-                                <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                    {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
-                                </button>
+                                {!isHKDView && (
+                                    <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                        {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                                    </button>
+                                )}
                             </div>
                         </div>
                     </div>

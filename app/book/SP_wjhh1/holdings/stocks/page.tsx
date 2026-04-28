@@ -226,6 +226,13 @@ export default function SpotHoldingsPage() {
   const toggleHoldingSort = toggleSort(setHoldingSort);
   const updateHoldingFilter = handleFilter(setHoldingFilters);
 
+  // --- 【新增】安全锁：判定是否有生效的模糊筛选 ---
+  const hasActiveFilters = useMemo(() => {
+      const holdingFiltered = Object.values(holdingFilters).some(val => val && String(val).trim() !== '');
+      const tradeFiltered = Object.values(tradeFilters).some(val => val && String(val).trim() !== '');
+      return holdingFiltered || tradeFiltered;
+  }, [holdingFilters, tradeFilters]);
+
   // --- 鉴权与数据抓取 (5个库：4个流水 + 1个期初底座) ---
   useEffect(() => {
     let unsubStart: (() => void) | undefined;
@@ -910,16 +917,19 @@ export default function SpotHoldingsPage() {
       }
   };
 
-  // 每分钟自动保存各种统计
+  // 每分钟自动保存各种统计 (带有 HKD 视图及筛选视图联动锁)
   useEffect(() => {
       if (!user) return;
       const intervalId = setInterval(() => {
-          handleSaveCashStats(true);
-          handleSaveMktValStats(true);
-          handleSavePlStats(true);
+          // 安全保护：仅在未开启 HKD 折算视图 且 没有有效搜索筛选时，才进行自动入库，避免残缺脏数据污染
+          if (!isHKDView && !hasActiveFilters) {
+              handleSaveCashStats(true);
+              handleSaveMktValStats(true);
+              handleSavePlStats(true);
+          }
       }, 60000); 
       return () => clearInterval(intervalId);
-  }, [user, netBuyStats, currentMktStats, currentPlStats]);
+  }, [user, netBuyStats, currentMktStats, currentPlStats, isHKDView, hasActiveFilters]);
 
   // --- 获取并刷新后台库数据 ---
   const fetchDbRecords = async (collectionName: string) => {
@@ -1296,15 +1306,19 @@ export default function SpotHoldingsPage() {
                 <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-indigo-100 shadow-sm">
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
-                        <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">※每分钟自动入库</span>
+                        <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
+                            {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动入库'}
+                        </span>
                     </div>
                     <div className="flex items-center gap-3">
                         <button onClick={() => fetchMarketData()} disabled={isFetchingRealTime} className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-600 text-indigo-600 hover:bg-indigo-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                             <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} /> 手动刷新
                         </button>
-                        <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                            {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
-                        </button>
+                        {(!isHKDView && !hasActiveFilters) && (
+                            <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                            </button>
+                        )}
                     </div>
                 </div>
             </div>
@@ -1470,15 +1484,19 @@ export default function SpotHoldingsPage() {
                 <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-rose-100 shadow-sm">
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
-                        <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">※每分钟自动入库</span>
+                        <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
+                            {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动入库'}
+                        </span>
                     </div>
                     <div className="flex items-center gap-3">
                         <button onClick={() => fetchMarketData()} disabled={isFetchingRealTime} className="flex items-center gap-2 px-4 py-2 bg-white border border-rose-600 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                             <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} /> 手动刷新
                         </button>
-                        <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                            {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
-                        </button>
+                        {(!isHKDView && !hasActiveFilters) && (
+                            <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                            </button>
+                        )}
                     </div>
                 </div>
             </div>
@@ -1633,15 +1651,19 @@ export default function SpotHoldingsPage() {
                 <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-blue-100 shadow-sm">
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-blue-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
-                        <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded border border-blue-100">※每分钟自动入库</span>
+                        <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded border border-blue-100">
+                            {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动入库'}
+                        </span>
                     </div>
                     <div className="flex items-center gap-3">
                         <button onClick={() => fetchMarketData()} disabled={isFetchingRealTime} className="flex items-center gap-2 px-4 py-2 bg-white border border-blue-600 text-blue-600 hover:bg-blue-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                             <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} /> 手动刷新
                         </button>
-                        <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                            {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
-                        </button>
+                        {(!isHKDView && !hasActiveFilters) && (
+                            <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                            </button>
+                        )}
                     </div>
                 </div>
             </div>
