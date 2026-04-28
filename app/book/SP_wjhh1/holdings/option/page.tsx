@@ -16,7 +16,7 @@ import {
   Clock,
   BarChart
 } from 'lucide-react';
-import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, addDoc, onSnapshot } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, addDoc, onSnapshot, query, where } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
@@ -169,7 +169,7 @@ export default function OptionHoldingPage() {
     const [isFetchingFx, setIsFetchingFx] = useState(false);
     const hasFetchedInitialFxRates = useRef(false);
 
-    // --- データベース管理モジュールの状態 ---
+    // --- 数据库管理模块的状态 ---
     const [activeDbTab, setActiveDbTab] = useState('sip_holding_option_output_living');
     const [dbRecords, setDbRecords] = useState<any[]>([]);
     const [loadingDb, setLoadingDb] = useState(false);
@@ -192,6 +192,11 @@ export default function OptionHoldingPage() {
     const [isSavingCash, setIsSavingCash] = useState(false);
     const [lastCashSavedTime, setLastCashSavedTime] = useState<string>('未获取');
 
+    // --- 拦截确认接货流水的 State ---
+    const [showDeliveryModal, setShowDeliveryModal] = useState(false);
+    const [pendingDeliveries, setPendingDeliveries] = useState<any[]>([]);
+    const [syncingDeliveries, setSyncingDeliveries] = useState(false);
+
     const toggleSort = (setSort: any) => (key: string) => {
         setSort((prev: any) => {
             if (prev.key === key) {
@@ -211,6 +216,14 @@ export default function OptionHoldingPage() {
     const updateRiskFilter = handleFilter(setRiskFilters);
     const toggleDiedSort = toggleSort(setDiedSort);
     const updateDiedFilter = handleFilter(setDiedFilters);
+
+    // --- 【安全锁判定】检查是否有模糊筛选激活 ---
+    const hasActiveFilters = useMemo(() => {
+        const holdingFiltered = Object.values(livingFilters).some(val => val && String(val).trim() !== '');
+        const riskFiltered = Object.values(riskFilters).some(val => val && String(val).trim() !== '');
+        const diedFiltered = Object.values(diedFilters).some(val => val && String(val).trim() !== '');
+        return holdingFiltered || riskFiltered || diedFiltered;
+    }, [livingFilters, riskFilters, diedFilters]);
 
     // --- 認証の初期化 ---
     useEffect(() => {
@@ -463,6 +476,7 @@ export default function OptionHoldingPage() {
             const deliveryQty = deliveryDir === 'BUY' ? Math.abs(qty) : -Math.abs(qty);
             const deliveryTotal = deliveryQty * strike;
 
+            // 包含 fxRate 以备在弹窗中修改数值时自动重新换算
             deliveryRecord = {
                 tradeId: mergedRecord.tradeId,
                 date: dates.expiryDate,
@@ -477,6 +491,7 @@ export default function OptionHoldingPage() {
                 priceNoFee: strike,
                 fee: 0,
                 amountNoFee: deliveryTotal,
+                fxRate: Number(basic.fxRate) || 1.0,
                 hkdAmount: deliveryTotal * (Number(basic.fxRate) || 1.0)
             };
         }
@@ -509,6 +524,8 @@ export default function OptionHoldingPage() {
     const handleRefreshLiving = async () => {
         setLoadingLiving(true);
         let expiredCount = 0;
+        const allNewDeliveries: any[] = []; 
+
         try {
             const currentLiving = await fetchMergedRecords('living');
             if (currentLiving.length === 0) {
@@ -531,7 +548,7 @@ export default function OptionHoldingPage() {
 
                     if (res.hasDelivery && res.deliveryRecord) {
                         const cleanDelivery = replaceUndefinedWithNull(res.deliveryRecord);
-                        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_get-stock'), {
+                        allNewDeliveries.push({
                             ...cleanDelivery, createdAt: new Date()
                         });
                     }
@@ -541,10 +558,77 @@ export default function OptionHoldingPage() {
             await loadRecords();
             if (activeDbTab.includes('living')) fetchDbRecords(activeDbTab);
 
-            if (expiredCount > 0) alert(`刷新完毕！有 ${expiredCount} 笔期权已到期并移至历史库。`);
-            else alert('刷新完毕，已更新最新持仓与现价值。');
+            if (allNewDeliveries.length > 0) {
+                setPendingDeliveries(allNewDeliveries);
+                setShowDeliveryModal(true);
+            } else {
+                if (expiredCount > 0) alert(`刷新完毕！有 ${expiredCount} 笔期权已到期并移至历史库。本次未触发实盘交收。`);
+                else alert('刷新完毕，已更新最新持仓与现价值。');
+            }
         } catch(e: any) { alert("刷新当前持仓失败: " + e.message); } 
         finally { setLoadingLiving(false); }
+    };
+
+    // --- 拦截确认弹窗内的可编辑修改 ---
+    const handlePendingDeliveryChange = (index: number, field: string, value: any) => {
+        const newData = [...pendingDeliveries];
+        const row = { ...newData[index] };
+
+        if (field === 'direction') {
+            row.direction = value;
+            const absQty = Math.abs(row.quantity);
+            row.quantity = value === 'SELL' ? -absQty : absQty;
+        } else if (field === 'quantity') {
+            const val = parseFloat(value) || 0;
+            row.quantity = row.direction === 'SELL' ? -Math.abs(val) : Math.abs(val);
+        } else {
+            row[field] = value;
+        }
+
+        // 当财务字段发生变化时，实时重新计算总额
+        if (['quantity', 'priceNoFee', 'fee', 'direction'].includes(field)) {
+            const qty = Math.abs(Number(row.quantity) || 0);
+            const price = Number(row.priceNoFee) || 0;
+            const fee = Number(row.fee) || 0;
+            row.amountNoFee = qty * price;
+            if (row.fxRate) {
+                row.hkdAmount = (row.amountNoFee + fee) * row.fxRate;
+            }
+        }
+
+        newData[index] = row;
+        setPendingDeliveries(newData);
+    };
+
+    // --- 将用户确认无误的数据精准覆写入库 ---
+    const handleConfirmDeliveries = async () => {
+        setSyncingDeliveries(true);
+        try {
+            const getStockRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_get-stock');
+            const tradeIds = [...new Set(pendingDeliveries.map(d => d.tradeId))];
+            
+            for (const tid of tradeIds) {
+                const q = query(getStockRef, where('tradeId', '==', tid));
+                const snap = await getDocs(q);
+                for(const d of snap.docs) await deleteDoc(d.ref);
+            }
+
+            for (const rec of pendingDeliveries) {
+                const clean = replaceUndefinedWithNull(rec);
+                await addDoc(getStockRef, clean); 
+            }
+
+            alert("交收流水已成功精准覆盖至 get-stock 接货库！");
+            setShowDeliveryModal(false);
+            setPendingDeliveries([]);
+            
+            if(activeDbTab === 'sip_holding_option_output_get-stock') fetchDbRecords(activeDbTab);
+
+        } catch(e:any) { 
+            alert("覆盖失败: " + e.message); 
+        } finally { 
+            setSyncingDeliveries(false); 
+        }
     };
 
     const handleRefreshDied = async () => {
@@ -718,7 +802,19 @@ export default function OptionHoldingPage() {
     const finalRisk = useTableData(processedRisk, riskSort, riskFilters, isHKDView, globalFxRates);
     const finalDied = useTableData(processedDied, diedSort, diedFilters, isHKDView, globalFxRates);
 
-    // --- グローバルな SUM と統計の計算 ---
+    // --- 【修复】独立统计当前持仓表格内的 SUM 行 ---
+    const livingSumsHKD = useMemo(() => {
+        return finalLiving.reduce((acc, item) => {
+            const rate = globalFxRates[item.currency] || item.fx_rate || 1;
+            acc.notional += (item.notional || 0) * rate;
+            acc.realizedPremium += (item.realizedPremium || 0) * rate;
+            acc.unrealizedPnl += (item.unrealizedPnl || 0) * rate;
+            acc.totalPnl += (item.totalPnl || 0) * rate;
+            return acc;
+        }, { notional: 0, realizedPremium: 0, unrealizedPnl: 0, totalPnl: 0 });
+    }, [finalLiving, globalFxRates]);
+
+    // --- グローバルな SUM と統計の計算 (无损回归旧版，不强制约束 totalPnl) ---
     const globalStats = useMemo(() => {
         const markets: Record<string, any> = {};
 
@@ -800,7 +896,7 @@ export default function OptionHoldingPage() {
         return { accounts, markets, rawMatrix };
     }, [processedLiving]);
 
-    // --- 当前收益统计矩阵 (已修复双重乘率BUG) ---
+    // --- 当前收益统计矩阵 (强制约束 total = realized + unrealized) ---
     const currentPlStats = useMemo(() => {
         const marketsSet = new Set<string>();
         processedLiving.forEach(item => {
@@ -816,20 +912,22 @@ export default function OptionHoldingPage() {
             rawMatrix[m] = { realized: 0, unrealized: 0, total: 0 };
         });
 
-        // 直接提取原始币种的汇总，绝不调用 globalStats！
         processedLiving.forEach(item => {
             if (item.currency) {
                 rawMatrix[item.currency].realized += (item.realizedPremium || 0);
                 rawMatrix[item.currency].unrealized += (item.unrealizedPnl || 0);
-                rawMatrix[item.currency].total += (item.totalPnl || 0);
             }
         });
 
         processedDied.forEach(item => {
             if (item.currency) {
                 rawMatrix[item.currency].realized += (item.realizedPremium || 0);
-                rawMatrix[item.currency].total += (item.totalPnl || 0);
             }
+        });
+
+        // 强行约定：总盈亏 严格等于 已实现 + 浮动(未实现)
+        markets.forEach(m => {
+            rawMatrix[m].total = rawMatrix[m].realized + rawMatrix[m].unrealized;
         });
 
         return { markets, rawMatrix };
@@ -946,14 +1044,14 @@ export default function OptionHoldingPage() {
         if (!user) return;
         const intervalId = setInterval(() => {
             // 在 HKD 视图下暂停自动入库，保护原始数据的纯净度
-            if (!isHKDView) {
+            if (!isHKDView && !hasActiveFilters) {
                 handleSaveMktValStats(true);
                 handleSavePlStats(true);
                 handleSaveCashStats(true);
             }
         }, 60000); 
         return () => clearInterval(intervalId);
-    }, [user, currentMktStats, currentPlStats, cashStats, isHKDView]);
+    }, [user, currentMktStats, currentPlStats, cashStats, isHKDView, hasActiveFilters]);
 
     // --- ヘルパー関数 ---
     const getRecordSummary = (r: any, tab: string) => {
@@ -1039,8 +1137,9 @@ export default function OptionHoldingPage() {
             );
         }
         
-        const rSum = globalStats.hkdSum.realizedTotal;
-        const uSum = globalStats.hkdSum.unrealized;
+        // 此处的合计也使用强约束的数值 (已实现总额 + 未实现总额)
+        const rSum = currentPlStats.markets.reduce((s, mkt) => s + (currentPlStats.rawMatrix[mkt].realized * (globalFxRates[mkt]||1)), 0);
+        const uSum = currentPlStats.markets.reduce((s, mkt) => s + (currentPlStats.rawMatrix[mkt].unrealized * (globalFxRates[mkt]||1)), 0);
         const tSum = rSum + uSum;
 
         return (
@@ -1087,7 +1186,7 @@ export default function OptionHoldingPage() {
         );
     };
 
-    const livingSumPnlRatio = globalStats.hkdSum.notionalLiving > 0 ? (globalStats.hkdSum.totalPnl / globalStats.hkdSum.notionalLiving) : 0;
+    const livingSumPnlRatio = livingSumsHKD.notional > 0 ? (livingSumsHKD.totalPnl / livingSumsHKD.notional) : 0;
     
     const riskSums = useMemo(() => {
         return finalRisk.reduce((acc, item) => {
@@ -1174,13 +1273,12 @@ export default function OptionHoldingPage() {
                         {finalLiving.length > 0 && (
                             <tfoot className="bg-gray-100 border-t-2 border-gray-300 shadow-inner sticky bottom-0 z-20 [&>tr>td]:bg-gray-100">
                                 <tr>
-                                    <td colSpan={5} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{fmtMoney(globalStats.hkdSum.notionalLiving)}</td>
-                                    <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(livingSumPnlRatio, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtPctWithSign(livingSumPnlRatio)}</td>
+                                    <td colSpan={6} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{fmtMoney(livingSumsHKD.notional)}</td>
                                     <td colSpan={2}></td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{fmtMoney(globalStats.hkdSum.realizedTotal)}</td>
-                                    <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(globalStats.hkdSum.unrealized, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(globalStats.hkdSum.unrealized)}</td>
-                                    <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(globalStats.hkdSum.totalPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(globalStats.hkdSum.totalPnl)}</td>
+                                    <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(livingSumsHKD.realizedPremium, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(livingSumsHKD.realizedPremium)}</td>
+                                    <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(livingSumsHKD.unrealizedPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(livingSumsHKD.unrealizedPnl)}</td>
+                                    <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(livingSumsHKD.totalPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(livingSumsHKD.totalPnl)}</td>
                                 </tr>
                             </tfoot>
                         )}
@@ -1455,14 +1553,14 @@ export default function OptionHoldingPage() {
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
                             <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                                {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
+                                {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动入库'}
                             </span>
                         </div>
                         <div className="flex items-center gap-3">
                             <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-600 text-indigo-600 hover:bg-indigo-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                             </button>
-                            {!isHKDView && (
+                            {(!isHKDView && !hasActiveFilters) && (
                                 <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                     {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                                 </button>
@@ -1530,14 +1628,14 @@ export default function OptionHoldingPage() {
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
                             <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">
-                                {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
+                                {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动入库'}
                             </span>
                         </div>
                         <div className="flex items-center gap-3">
                             <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-teal-600 text-teal-600 hover:bg-teal-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                             </button>
-                            {!isHKDView && (
+                            {(!isHKDView && !hasActiveFilters) && (
                                 <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                     {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                                 </button>
@@ -1620,22 +1718,122 @@ export default function OptionHoldingPage() {
             {/* 修改 Raw JSON 弹窗 */}
             {editRecordModal && (
                 <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-                    <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-5xl flex flex-col h-[85vh]">
+                    <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-5xl flex flex-col h-[85vh] max-h-[90vh]">
                         <div className="flex justify-between items-center mb-4 border-b pb-4">
-                            <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700"><FileJson size={20}/> 进阶修改记录 - {editRecordModal.record?.id}</h3>
+                            <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700">
+                                <FileJson size={20}/> 
+                                进阶修改记录 - {editRecordModal?.record?.id}
+                            </h3>
                             <button onClick={() => setEditRecordModal(null)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
                         </div>
                         <p className="text-xs text-gray-500 mb-2 border-l-2 border-orange-400 pl-2">
                             警告：直接修改 Raw JSON 属于高阶操作，请确保 JSON 格式合法且结构正确，否则可能会导致页面崩溃或逻辑错误。
                         </p>
-                        <textarea className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none bg-gray-50" value={editRecordModal.rawJson} onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)} />
+                        
+                        <textarea 
+                            className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none" 
+                            value={editRecordModal?.rawJson || ''}
+                            onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)}
+                        />
+                        
                         <div className="flex justify-end gap-3 pt-2 border-t">
                             <button onClick={() => setEditRecordModal(null)} className="px-5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-medium transition-colors">取消</button>
-                            <button onClick={handleSaveRecordEdit} className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-sm font-bold flex items-center gap-2 transition-colors"><Save size={16}/> 保存强制覆盖</button>
+                            <button onClick={handleSaveRecordEdit} className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-sm font-bold flex items-center gap-2 transition-colors">
+                                <Save size={16}/> 保存强制覆盖
+                            </button>
                         </div>
                     </div>
                 </div>
             )}
+
+            {/* 实盘交收记录确认 Modal */}
+            {showDeliveryModal && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col relative overflow-hidden">
+                        <div className="px-6 py-4 border-b flex justify-between items-center bg-gray-50 flex-shrink-0">
+                            <div>
+                                <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                                    <AlertCircle className="text-orange-500" size={24} />
+                                    检测到期权实盘交收记录 (行权接货)
+                                </h3>
+                                <p className="text-sm text-gray-500 mt-1">本次刷新触发了以下期权的到期行权，请确认并推送到交收库。</p>
+                            </div>
+                            <button onClick={() => { setShowDeliveryModal(false); setPendingDeliveries([]); }} className="text-gray-400 hover:text-gray-600 bg-white p-1 rounded-full shadow-sm border transition-colors"><X size={24}/></button>
+                        </div>
+                        
+                        <div className="p-6 overflow-y-auto flex-1 bg-white">
+                            <div className="border border-gray-200 rounded-lg overflow-x-auto shadow-sm">
+                                <table className="min-w-full text-sm text-left">
+                                    <thead className="bg-gray-100 text-gray-600 font-medium sticky top-0 shadow-sm">
+                                        <tr>
+                                            <th className="px-4 py-3">交收日期</th>
+                                            <th className="px-4 py-3">账户</th>
+                                            <th className="px-4 py-3 text-center">方向</th>
+                                            <th className="px-4 py-3">标的</th>
+                                            <th className="px-4 py-3 text-right">股数</th>
+                                            <th className="px-4 py-3 text-right">执行价</th>
+                                            <th className="px-4 py-3 text-right">手续费</th>
+                                            <th className="px-4 py-3 text-right">总额(含费)</th>
+                                            <th className="px-4 py-3 text-center">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-100">
+                                        {pendingDeliveries.map((d, i) => (
+                                            <tr key={i} className="hover:bg-orange-50 transition-colors">
+                                                <td className="px-4 py-3">
+                                                    <input type="date" value={d.date} onChange={(e) => handlePendingDeliveryChange(i, 'date', e.target.value)} className="w-32 p-1 border border-gray-200 rounded text-xs outline-none focus:border-blue-400" />
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <input type="text" value={d.account} onChange={(e) => handlePendingDeliveryChange(i, 'account', e.target.value)} className="w-20 p-1 border border-gray-200 rounded text-xs outline-none focus:border-blue-400" />
+                                                </td>
+                                                <td className="px-4 py-3 text-center">
+                                                    <select value={d.direction} onChange={(e) => handlePendingDeliveryChange(i, 'direction', e.target.value)} className={`w-16 p-1 border border-gray-200 rounded text-[10px] font-bold outline-none focus:border-blue-400 bg-white ${d.direction === 'BUY' ? 'text-red-700' : 'text-green-700'}`}>
+                                                        <option value="BUY">BUY</option>
+                                                        <option value="SELL">SELL</option>
+                                                    </select>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <div className="font-bold text-gray-800">{d.stockName}</div>
+                                                    <div className="text-[10px] font-mono text-gray-400">{d.stockCode}</div>
+                                                </td>
+                                                <td className="px-4 py-3 text-right">
+                                                    <input type="number" value={Math.abs(d.quantity)} onChange={(e) => handlePendingDeliveryChange(i, 'quantity', e.target.value)} className={`w-20 text-right p-1 border border-gray-200 rounded text-xs font-mono font-bold outline-none focus:border-blue-400 ${d.quantity < 0 ? 'text-green-600 bg-green-50/50' : 'text-red-600 bg-red-50/50'}`} />
+                                                </td>
+                                                <td className="px-4 py-3 text-right">
+                                                    <input type="number" step="0.0001" value={d.priceNoFee} onChange={(e) => handlePendingDeliveryChange(i, 'priceNoFee', parseFloat(e.target.value) || 0)} className="w-20 text-right p-1 border border-gray-200 rounded text-xs font-mono outline-none focus:border-blue-400" />
+                                                </td>
+                                                <td className="px-4 py-3 text-right">
+                                                     <input type="number" step="0.01" value={d.fee || 0} onChange={(e) => handlePendingDeliveryChange(i, 'fee', parseFloat(e.target.value) || 0)} className="w-16 text-right p-1 border border-gray-200 rounded text-xs font-mono outline-none focus:border-blue-400 text-gray-500" />
+                                                </td>
+                                                <td className="px-4 py-3 text-right font-mono font-bold text-orange-700 bg-orange-50/30">
+                                                    {((d.amountNoFee || 0) + (d.fee || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                </td>
+                                                <td className="px-4 py-3 text-center align-middle">
+                                                    <button onClick={() => {
+                                                        const newData = [...pendingDeliveries];
+                                                        newData.splice(i, 1);
+                                                        setPendingDeliveries(newData);
+                                                    }} className="text-gray-400 hover:text-red-500 p-1.5 rounded hover:bg-red-50 transition-colors" title="移除此条">
+                                                        <Trash2 size={16}/>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div className="px-6 py-4 border-t bg-gray-50 flex justify-end gap-3 flex-shrink-0">
+                            <button onClick={() => { setShowDeliveryModal(false); setPendingDeliveries([]); }} className="px-5 py-2.5 rounded-md text-gray-700 font-bold bg-white border border-gray-300 hover:bg-gray-100 transition-colors shadow-sm">取消并跳过</button>
+                            <button onClick={handleConfirmDeliveries} disabled={syncingDeliveries} className="px-6 py-2.5 rounded-md text-white font-bold flex items-center gap-2 transition-all shadow-md bg-orange-600 hover:bg-orange-700 disabled:opacity-50">
+                                {syncingDeliveries ? <Loader2 className="animate-spin" size={18}/> : <Save size={18}/>} 确认覆盖至 Get-Stock 交收库
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
         </div>
     );
 }
