@@ -998,6 +998,7 @@ export default function OptionTradePage() {
                                                     <th className="px-2 py-2 font-medium text-right">数量</th>
                                                     <th className="px-2 py-2 font-medium text-right">执行价</th>
                                                     <th className="px-2 py-2 font-medium text-right">期权单价</th>
+                                                    <th className="px-2 py-2 font-medium text-right">手续费</th>
                                                     <th className="px-2 py-2 font-medium text-center">操作</th>
                                                 </tr>
                                             </thead>
@@ -1051,6 +1052,9 @@ export default function OptionTradePage() {
                                                         </td>
                                                         <td className="px-2 py-1.5 text-right">
                                                             <input type="number" value={item.premium} onChange={(e) => handleParsedDataChange(idx, 'premium', parseFloat(e.target.value) || 0)} className="w-14 text-right p-1 border border-gray-200 rounded text-xs font-mono outline-none focus:border-blue-400 text-gray-500" />
+                                                        </td>
+                                                        <td className="px-2 py-1.5 text-center align-middle">
+                                                            <input type="number" value={item.fee} onChange={(e) => handleParsedDataChange(idx, 'fee', parseFloat(e.target.value) || 0)} className="w-14 text-right p-1 border border-gray-200 rounded text-xs font-mono outline-none focus:border-blue-400 text-gray-500" />
                                                         </td>
                                                         <td className="px-2 py-1.5 text-center align-middle">
                                                             <button onClick={() => {

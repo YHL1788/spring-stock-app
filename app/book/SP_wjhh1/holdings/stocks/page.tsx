@@ -602,7 +602,18 @@ export default function SpotHoldingsPage() {
       Object.keys(holdingFilters).forEach(key => {
           const val = holdingFilters[key]?.toLowerCase();
           if (val) {
-              result = result.filter(item => String((item as any)[key]).toLowerCase().includes(val));
+              result = result.filter(item => {
+                  // 特殊处理 "各账户持仓股数" 对象的模糊匹配
+                  if (key === 'accounts') {
+                      const accStr = Object.entries(item.accounts)
+                          .filter(([_, qty]) => qty > 0)
+                          .map(([acc, qty]) => `${acc}:${qty}`)
+                          .join(' | ')
+                          .toLowerCase();
+                      return accStr.includes(val);
+                  }
+                  return String((item as any)[key]).toLowerCase().includes(val);
+              });
           }
       });
 
@@ -1154,12 +1165,12 @@ export default function SpotHoldingsPage() {
                             <Th label="盈亏比" sortKey="pnlRatio" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
                             <Th label="市值占比" sortKey={null} filterKey={null} align="right" />
                             <Th label="盈亏贡献率" sortKey={null} filterKey={null} align="right" />
-                            <Th label="各账户持仓股数" sortKey={null} filterKey={null} />
+                            <Th label="各账户持仓股数" sortKey={null} filterKey="accounts" currentFilter={holdingFilters} onFilter={updateHoldingFilter} />
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                         {displayHoldings.length === 0 ? (
-                            <tr><td colSpan={13} className="p-8 text-center text-gray-400">当前空仓或无符合条件数据</td></tr>
+                            <tr><td colSpan={14} className="p-8 text-center text-gray-400">当前空仓或无符合条件数据</td></tr>
                         ) : displayHoldings.map(h => {
                             const pctOfTotalMktVal = holdingSums.mktValHKD > 0 ? h.mktValHKD / holdingSums.mktValHKD : 0;
                             const pnlContribution = holdingSums.totalCostHKD > 0 ? h.unrealizedPnlHKD / holdingSums.totalCostHKD : 0;

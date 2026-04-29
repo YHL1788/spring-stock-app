@@ -220,9 +220,25 @@ export default function SummaryHoldingsPage() {
       return { rows, cols, matrix, rowSums, colSums, grandTotal };
   }, [mktDataMap, allCurrencies, selectedAccount, isHKDView, globalFxRates]);
 
-  // MktVal 图表数据生成
+  // MktVal 图表数据生成 (剔除现金)
   const chartDataMktMarket = useMemo(() => {
-      return mktMatrix.rows.map(r => ({ name: r, value: mktMatrix.rowSums[r] > 0 ? mktMatrix.rowSums[r] : 0 })).filter(d => d.value > 0);
+      let totalWithoutCash = 0;
+      const data = mktMatrix.rows.map(row => {
+          let valWithoutCash = 0;
+          mktMatrix.cols.forEach(col => {
+              // 在累加该币种市值时，跳过 cash (现金)
+              if (col.id !== 'cash') {
+                  valWithoutCash += (mktMatrix.matrix[row][col.id] || 0);
+              }
+          });
+          if (valWithoutCash > 0) {
+              totalWithoutCash += valWithoutCash;
+          }
+          return { name: row, value: valWithoutCash > 0 ? valWithoutCash : 0 };
+      }).filter(d => d.value > 0);
+
+      // 返回计算好的数据和不含现金的总市值，供饼图计算百分比使用
+      return { data, total: totalWithoutCash };
   }, [mktMatrix]);
 
   const chartDataMktAsset = useMemo(() => {
@@ -422,11 +438,11 @@ export default function SummaryHoldingsPage() {
             {/* 可视化图表区 */}
             <div className="bg-white rounded-xl border border-indigo-100 p-1">
                 <div className="flex border-b border-indigo-50 px-4 pt-3 gap-6">
-                    <button onClick={() => setMktChartTab('MARKET')} className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition-colors ${mktChartTab === 'MARKET' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-gray-400 hover:text-indigo-400'}`}><PieChartIcon size={16}/> 市场分布 (币种)</button>
+                    <button onClick={() => setMktChartTab('MARKET')} className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition-colors ${mktChartTab === 'MARKET' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-gray-400 hover:text-indigo-400'}`}><PieChartIcon size={16}/> 市场分布 (不含现金)</button>
                     <button onClick={() => setMktChartTab('ASSET')} className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition-colors ${mktChartTab === 'ASSET' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-gray-400 hover:text-indigo-400'}`}><BarChartIcon size={16}/> 资产分布 (品类)</button>
                     <button onClick={() => setMktChartTab('ACCOUNT')} className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition-colors ${mktChartTab === 'ACCOUNT' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-gray-400 hover:text-indigo-400'}`}><Building2 size={16}/> 账户分布 (全局券商)</button>
                 </div>
-                <div className="h-[300px] w-full p-4 relative flex items-center justify-center">
+                <div className="h-[380px] w-full p-4 relative flex items-center justify-center">
                     {!isHKDView ? (
                         <div className="text-gray-400 font-medium flex items-center gap-2 bg-gray-50 px-6 py-3 rounded-full border border-gray-100">
                             <Info size={18}/> 请在右上角点击「TO HKD」统一计价后，方可查看图表可视化。
@@ -437,10 +453,14 @@ export default function SummaryHoldingsPage() {
                         <ResponsiveContainer width="100%" height="100%">
                             {mktChartTab === 'MARKET' ? (
                                 <PieChart>
-                                    <Pie data={chartDataMktMarket} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} dataKey="value" nameKey="name" label={(entry) => `${entry.name} (${((entry.value/mktMatrix.grandTotal)*100).toFixed(1)}%)`}>
-                                        {chartDataMktMarket.map((entry, index) => <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />)}
+                                    <Pie 
+                                        data={chartDataMktMarket.data} 
+                                        cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} dataKey="value" nameKey="name" 
+                                        label={(entry) => `${entry.name} (${chartDataMktMarket.total > 0 ? ((entry.value/chartDataMktMarket.total)*100).toFixed(1) : 0}%)`}
+                                    >
+                                        {chartDataMktMarket.data.map((entry, index) => <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />)}
                                     </Pie>
-                                    <Tooltip formatter={(val: any) => [`${Number(val).toLocaleString('en-US', {maximumFractionDigits:0})} HKD`, '市值']} />
+                                    <Tooltip formatter={(val: any) => [`${Number(val).toLocaleString('en-US', {maximumFractionDigits:0})} HKD`, '市值 (不含现金)']} />
                                     <Legend />
                                 </PieChart>
                             ) : mktChartTab === 'ASSET' ? (
