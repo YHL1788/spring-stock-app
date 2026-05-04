@@ -717,6 +717,7 @@ export default function OptionHoldingPage() {
                 id: r.tradeId,
                 status: out.status,
                 tradeDate: dts.tradeDate || '',
+                expiryDate: dts.expiryDate || '',
                 name: out.name || '',
                 ticker: und.ticker || '',
                 account: basic.account || '',
@@ -784,6 +785,7 @@ export default function OptionHoldingPage() {
                 id: r.tradeId,
                 status: out.status,
                 tradeDate: dts.tradeDate || '',
+                expiryDate: dts.expiryDate || '',
                 name: out.name || '',
                 ticker: und.ticker || '',
                 account: basic.account || '',
@@ -1230,6 +1232,7 @@ export default function OptionHoldingPage() {
                             <tr>
                                 <Th label="状态" sortKey="status" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
                                 <Th label="交易日期" sortKey="tradeDate" filterKey="tradeDate" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
+                                <Th label="结算日期" sortKey="expiryDate" filterKey="expiredDate" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
                                 <Th label="名称" sortKey="name" filterKey="name" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="left" />
                                 <Th label="标的代码" sortKey="ticker" filterKey="ticker" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
                                 <Th label="账户" sortKey="account" filterKey="account" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
@@ -1249,6 +1252,7 @@ export default function OptionHoldingPage() {
                                 <tr key={item.id} className="hover:bg-blue-50/50 transition-colors">
                                     <td className="px-3 py-2 text-center font-bold text-green-700">{item.status}</td>
                                     <td className="px-3 py-2 text-center text-gray-600">{item.tradeDate}</td>
+                                    <td className="px-3 py-2 text-center text-gray-600">{item.expiryDate}</td>
                                     <td className="px-3 py-2 font-medium text-gray-800">{item.name}</td>
                                     <td className="px-3 py-2 text-center font-mono text-blue-600">{item.ticker}</td>
                                     <td className="px-3 py-2 text-center text-gray-600">{item.account}</td>
@@ -1365,6 +1369,7 @@ export default function OptionHoldingPage() {
                             <tr>
                                 <Th label="状态" sortKey="status" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
                                 <Th label="交易日期" sortKey="tradeDate" filterKey="tradeDate" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
+                                <Th label="结算日期" sortKey="expiryDate" filterKey="expiryDate" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
                                 <Th label="名称" sortKey="name" filterKey="name" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="left" />
                                 <Th label="标的代码" sortKey="ticker" filterKey="ticker" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
                                 <Th label="账户" sortKey="account" filterKey="account" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
@@ -1383,6 +1388,7 @@ export default function OptionHoldingPage() {
                                 <tr key={item.id} className="hover:bg-orange-50/50 transition-colors">
                                     <td className="px-3 py-2 text-center font-bold text-gray-500">{item.status}</td>
                                     <td className="px-3 py-2 text-center text-gray-600">{item.tradeDate}</td>
+                                    <td className="px-3 py-2 text-center text-gray-600">{item.expiryDate}</td>
                                     <td className="px-3 py-2 font-medium text-gray-800">{item.name}</td>
                                     <td className="px-3 py-2 text-center font-mono text-blue-600">{item.ticker}</td>
                                     <td className="px-3 py-2 text-center text-gray-600">{item.account}</td>

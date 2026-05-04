@@ -219,7 +219,9 @@ export default function DQAQHoldingPage() {
     const [syncingDeliveries, setSyncingDeliveries] = useState(false);
 
     // 点位图 Modal
-    const [chartData, setChartData] = useState<{name: string, ticker: string, current: number, strike: number, ko: number} | null>(null);
+    const [chartData, setChartData] = useState<{name: string, ticker: string, current: number, strike: number, ko: number, recordId: string} | null>(null);
+    const [plotData, setPlotData] = useState<PlotData | null>(null);
+    const [isPlotLoading, setIsPlotLoading] = useState(false);
 
     // 后台库
     const [activeDbTab, setActiveDbTab] = useState('sip_holding_dqaq_output_living');
@@ -239,7 +241,7 @@ export default function DQAQHoldingPage() {
         setSort((prev: any) => {
             if (prev.key === key) {
                 if (prev.dir === 'asc') return { key, dir: 'desc' };
-                if (prev.dir === 'desc') return { key: '', dir: null };
+                if (prev.dir === 'desc') return { key, dir: null };
             }
             return { key, dir: 'asc' };
         });
@@ -499,6 +501,29 @@ export default function DQAQHoldingPage() {
         }
 
         return { res, cleanInput, cleanOutput, newDeliveries, exactNow };
+    };
+
+     // --- 动态生成图表数据 ---
+    const handleGeneratePlot = async (tradeId: string) => {
+        setPlotData(null);
+        setIsPlotLoading(true);
+        try {
+            const rec = livingRecords.find(r => r.tradeId === tradeId) || diedRecords.find(r => r.tradeId === tradeId);
+            if (!rec) throw new Error("找不到对应的持仓记录");
+
+            // 重新运行评估引擎以获取实时的 plot_data 路径
+            const { res } = await evaluateDQAQ(rec);
+
+            if (res.plot_data) {
+                setPlotData(res.plot_data);
+            } else {
+                throw new Error("模型计算未返回模拟路径数据");
+            }
+        } catch (e: any) {
+            alert("生成模拟点位图失败: " + e.message);
+        } finally {
+            setIsPlotLoading(false);
+        }
     };
 
     // --- 刷新引擎核心逻辑 ---
@@ -967,8 +992,10 @@ export default function DQAQHoldingPage() {
                                                     ticker: item.ticker,
                                                     current: item.currentPrice, 
                                                     strike: item.S0 * item.strikeRaw,
-                                                    ko: item.S0 * item.koOutRaw
+                                                    ko: item.S0 * item.koOutRaw,
+                                                    recordId: item.id
                                                 });
+                                                handleGeneratePlot(item.id);
                                             }} 
                                             className="text-blue-500 hover:bg-blue-100 p-1 rounded transition-colors"
                                             title="查看点位图"
@@ -1198,7 +1225,7 @@ export default function DQAQHoldingPage() {
                                 {currentMktStats.markets.length > 0 && (
                                     <tfoot className="bg-indigo-100 text-indigo-900 border-t-2 border-indigo-200 shadow-inner">
                                         <tr>
-                                            <td className="px-3 py-3 text-center font-bold border-r border-indigo-200">SUM (HKD)</td>
+                                            <td className="px-3 py-4 text-center font-bold border-r border-indigo-200">SUM (HKD)</td>
                                             {currentMktStats.accounts.map(acc => {
                                                 let colSumHKD = 0;
                                                 currentMktStats.markets.forEach(mkt => {
@@ -1206,12 +1233,12 @@ export default function DQAQHoldingPage() {
                                                     colSumHKD += rawVal * (globalFxRates[mkt] || 1);
                                                 });
                                                 return (
-                                                    <td key={acc} className={"px-3 py-3 font-mono font-bold " + cColor(colSumHKD, 'text-indigo-900', 'text-red-600', 'text-gray-500')}>
+                                                    <td key={acc} className={"px-3 py-4 font-mono font-bold " + cColor(colSumHKD, 'text-indigo-900', 'text-red-600', 'text-gray-500')}>
                                                         {colSumHKD === 0 ? '-' : formatMoney(colSumHKD)}
                                                     </td>
                                                 );
                                             })}
-                                            <td className="px-3 py-3 font-mono font-bold text-sm border-l border-indigo-200 text-indigo-900">
+                                            <td className="px-3 py-4 font-mono font-bold text-sm border-l border-indigo-200 bg-indigo-200/50 text-indigo-900">
                                                 {formatMoney(
                                                     currentMktStats.markets.reduce((sum, mkt) => {
                                                         let rSum = 0;
@@ -1501,6 +1528,58 @@ export default function DQAQHoldingPage() {
                             <button onClick={() => { setShowDeliveryModal(false); setPendingDeliveries([]); }} className="px-5 py-2.5 rounded-md text-gray-700 font-bold bg-white border border-gray-300 hover:bg-gray-100 transition-colors shadow-sm">取消并跳过</button>
                             <button onClick={handleConfirmDeliveries} disabled={syncingDeliveries} className="px-6 py-2.5 rounded-md text-white font-bold flex items-center gap-2 transition-all shadow-md bg-orange-600 hover:bg-orange-700 disabled:opacity-50">
                                 {syncingDeliveries ? <Loader2 className="animate-spin" size={18}/> : <Save size={18}/>} 确认覆盖至 Get-Stock 交收库
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* 点位图与蒙特卡洛模拟 Modal */}
+            {chartData && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-4xl flex flex-col relative animate-in fade-in duration-200">
+                        <div className="flex justify-between items-center mb-4 border-b pb-4">
+                            <div>
+                                <h3 className="font-bold text-xl text-gray-900 flex items-center gap-2">
+                                    <LineChart className="text-blue-600" size={24} />
+                                    {chartData.name} - 点位图与蒙特卡洛模拟
+                                </h3>
+                                <div className="text-sm text-gray-500 mt-2 flex flex-wrap gap-4">
+                                    <span className="flex items-center gap-1">标的: <strong className="text-gray-800 bg-gray-100 px-1.5 py-0.5 rounded font-mono">{chartData.ticker}</strong></span>
+                                    <span className="flex items-center gap-1">最新现价: <strong className="text-blue-600 font-mono">{chartData.current.toFixed(4)}</strong></span>
+                                    <span className="flex items-center gap-1">敲入(Strike): <strong className="text-red-600 font-mono">{chartData.strike.toFixed(4)}</strong></span>
+                                    <span className="flex items-center gap-1">敲出(KO): <strong className="text-green-600 font-mono">{chartData.ko.toFixed(4)}</strong></span>
+                                </div>
+                            </div>
+                            <button onClick={() => { setChartData(null); setPlotData(null); }} className="text-gray-400 hover:text-gray-600 bg-gray-50 hover:bg-gray-100 p-2 rounded-full transition-all self-start">
+                                <X size={20}/>
+                            </button>
+                        </div>
+
+                        <div className="min-h-[350px] flex items-center justify-center bg-gray-50 rounded-lg border border-gray-200 p-6 relative overflow-hidden">
+                            {isPlotLoading ? (
+                                <div className="flex flex-col items-center text-blue-600">
+                                    <Loader2 className="animate-spin mb-3" size={40} />
+                                    <span className="text-base font-bold text-gray-700">正在获取历史数据...</span>
+                                    <span className="text-xs text-gray-500 mt-1">引擎正在进行高频蒙特卡洛路径测算，请稍候</span>
+                                </div>
+                            ) : plotData ? (
+                                <div className="w-full h-full flex flex-col">
+                                    <SimulationChart data={plotData} />
+                                </div>
+                            ) : (
+                                <div className="text-gray-400 flex flex-col items-center gap-2">
+                                    <AlertCircle size={40} className="text-orange-400" />
+                                    <span className="font-medium">未能生成图表数据</span>
+                                    <span className="text-xs">该合约可能未正确初始化或数据缺失</span>
+                                </div>
+                            )}
+                        </div>
+                        
+                        <div className="flex justify-between items-center mt-4 pt-4 border-t text-xs text-gray-500">
+                            <p className="flex items-center gap-1"><AlertCircle size={14}/> 提示：图表数据为引擎实时动态生成，受蒙特卡洛随机种子及最新市价影响。</p>
+                            <button onClick={() => setChartData(null)} className="px-6 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-md transition-colors">
+                                关闭图表
                             </button>
                         </div>
                     </div>
