@@ -296,7 +296,7 @@ export default function SpotTradePage() {
     let amtIncl = 0;
     amtIncl = amtExcl + fee;
     // 修复：针对 SELL 时数量为负的情况，防止分母为 0
-    const avgPriceIncl = quantity !== 0 ? amtIncl / Math.abs(quantity) : 0;
+    const avgPriceIncl = quantity !== 0 ? amtIncl / quantity: 0;
 
   // 只有当计算结果与当前值有显著差异时才更新，避免死循环
   if (
