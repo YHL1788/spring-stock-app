@@ -2,23 +2,11 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
-  RefreshCw, 
-  Database, 
-  FileJson, 
-  Trash2, 
-  X, 
-  Save, 
-  Loader2, 
-  AlertCircle,
-  TrendingUp,
-  LineChart,
-  PieChart,
-  Clock,
-  BarChart
+  RefreshCw, Database, FileJson, Trash2, X, Save, Loader2, 
+  AlertCircle, TrendingUp, LineChart, PieChart, Clock, BarChart
 } from 'lucide-react';
 import { collection, getDocs, doc, updateDoc, addDoc, deleteDoc, setDoc, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
-
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { FCNPricer, FCNParams, FCNResult } from '@/app/lib/fcnPricer';
 
@@ -97,10 +85,12 @@ const replaceNullWithUndefined = (obj: any): any => {
 const formatSum = (val: number) => {
     return `${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
+
 const formatSumWithSign = (val: number) => {
     const sign = val > 0 ? '+' : '';
     return `${sign}${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
+
 const formatMoney = (val: number, isHkdContext = false) => {
     const v = isHkdContext ? val : val; 
     return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -126,12 +116,12 @@ interface FCNChartData {
 }
 
 // --- 可排序筛选表头组件 ---
-const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onFilter, align='left' }: any) => {
+const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onFilter, align='left', className='' }: any) => {
     const justifyClass = align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start';
     const textClass = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
     
     return (
-        <th className={`px-3 py-2 whitespace-nowrap align-top group ${textClass}`}>
+        <th className={`px-3 py-2 whitespace-nowrap align-top group ${textClass} ${className} shadow-[0_1px_0_rgba(0,0,0,0.1)]`}>
             <div 
                 className={`flex items-center ${justifyClass} gap-1 select-none ${sortKey ? 'cursor-pointer hover:text-gray-800' : ''}`}
                 onClick={() => sortKey && onSort(sortKey)}
@@ -154,7 +144,7 @@ const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onF
                         value={currentFilter[filterKey] || ''}
                         onChange={(e) => onFilter(filterKey, e.target.value)}
                         onClick={(e) => e.stopPropagation()}
-                        className="w-full min-w-[60px] border border-gray-300 rounded px-1 py-0.5 text-[10px] font-normal focus:outline-none focus:border-blue-500 text-gray-700"
+                        className="w-full min-w-[60px] border border-gray-300 rounded px-1 py-0.5 text-[10px] font-normal focus:outline-none focus:border-blue-500 text-gray-700 bg-white"
                     />
                 </div>
             )}
@@ -197,12 +187,12 @@ export default function FCNHoldingPage() {
     // --- 保存状态与时间 ---
     const [isSavingMktVal, setIsSavingMktVal] = useState(false);
     const [lastMktValSavedTime, setLastMktValSavedTime] = useState<string>('未获取');
-    
     const [isSavingPl, setIsSavingPl] = useState(false);
     const [lastPlSavedTime, setLastPlSavedTime] = useState<string>('未获取');
-
     const [isSavingCash, setIsSavingCash] = useState(false);
     const [lastCashSavedTime, setLastCashSavedTime] = useState<string>('未获取');
+    const [isSavingExposure, setIsSavingExposure] = useState(false);
+    const [lastExposureSavedTime, setLastExposureSavedTime] = useState<string>('未获取');
 
     const toggleSort = (setSort: any) => (key: string) => {
         setSort((prev: any) => {
@@ -213,6 +203,7 @@ export default function FCNHoldingPage() {
             return { key, dir: 'asc' };
         });
     };
+
     const handleFilter = (setFilter: any) => (key: string, val: string) => {
         setFilter((prev: any) => ({ ...prev, [key]: val }));
     };
@@ -229,6 +220,7 @@ export default function FCNHoldingPage() {
         let unsubCashTime: (() => void) | undefined;
         let unsubMktValTime: (() => void) | undefined;
         let unsubPlTime: (() => void) | undefined;
+        let unsubExposureTime: (() => void) | undefined;
 
         const initAuth = async () => {
             if (!auth.currentUser) {
@@ -240,6 +232,7 @@ export default function FCNHoldingPage() {
                     await signInAnonymously(auth);
                 }
             }
+
             onAuthStateChanged(auth, (currentUser) => {
                 setUser(currentUser);
                 if (currentUser) {
@@ -264,14 +257,24 @@ export default function FCNHoldingPage() {
                             if (data.updatedAt) setLastCashSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
                         }
                     });
+
+                    unsubExposureTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_fcn', 'latest_summary'), (docSnap) => {
+                        if (docSnap.exists()) {
+                            const data = docSnap.data();
+                            if (data.updatedAt) setLastExposureSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
+                        }
+                    });
                 }
             });
         };
+
         initAuth();
+
         return () => {
             if (unsubMktValTime) unsubMktValTime();
             if (unsubPlTime) unsubPlTime();
             if (unsubCashTime) unsubCashTime();
+            if (unsubExposureTime) unsubExposureTime();
         };
     }, []);
 
@@ -315,6 +318,7 @@ export default function FCNHoldingPage() {
                 const timeB = getTime(b.updatedAt) || getTime(b.createdAt);
                 return timeB - timeA;
             });
+
             return merged;
         } catch (error) {
             console.warn(`[Graceful Fallback] Fetch ${lifeCycle} records failed, possibly empty:`, error);
@@ -415,9 +419,7 @@ export default function FCNHoldingPage() {
             const mkt = r.inputData?.pricerParams?.market;
             if (mkt && mkt !== 'HKD') markets.add(mkt);
         });
-
         if (markets.size === 0) return;
-
         setIsFetchingFx(true);
         const newRates: Record<string, number> = {};
         try {
@@ -539,7 +541,6 @@ export default function FCNHoldingPage() {
                 const d = new Date(last_obs_date); d.setDate(d.getDate() - 7);
                 const startStr = d.toISOString().split('T')[0];
                 const histPrices = await fetchHistoricalPrices(t, startStr, last_obs_date);
-                
                 const validPrices = histPrices.filter((p:any) => p.date <= last_obs_date);
                 if (validPrices.length > 0) {
                     validPrices.sort((a:any, b:any) => a.date.localeCompare(b.date));
@@ -551,8 +552,8 @@ export default function FCNHoldingPage() {
                 return p !== null ? p : pricerParams.initial_spots[i];
             }
         }));
-        pricerParams.current_spots = fetchedSpots;
 
+        pricerParams.current_spots = fetchedSpots;
         const today = new Date(); today.setHours(0,0,0,0);
         const hasPastObservation = pricerParams.obs_dates.some(d => new Date(d) <= today);
         const cutoffDate = isExpired ? last_obs_date : new Date().toISOString().split('T')[0];
@@ -575,8 +576,8 @@ export default function FCNHoldingPage() {
         
         const pricer = new FCNPricer(pricerParams);
         const newResult = pricer.simulate_price();
-
         let deliveryRecord = null;
+
         if (newResult.status === 'Terminated_Delivery') {
             const worstIdx = newResult.loss_attribution.findIndex((val: number) => val === 1.0);
             if (worstIdx !== -1) {
@@ -607,7 +608,6 @@ export default function FCNHoldingPage() {
         }
 
         const exactNow = new Date();
-
         const cleanInput = replaceUndefinedWithNull({ 
             ...inputData, 
             pricerParams,
@@ -632,12 +632,9 @@ export default function FCNHoldingPage() {
         try {
             const currentLiving = await fetchMergedRecords('living');
             if (currentLiving.length === 0) { setLoadingLiving(false); return; }
-
             const allNewDeliveries: any[] = [];
-
             for (const mergedRecord of currentLiving) {
                 const { newResult, deliveryRecord, cleanInput, cleanOutput, exactNow } = await evaluateFCN(mergedRecord);
-                
                 const status = newResult.status;
                 if (['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(status)) {
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId), cleanInput);
@@ -662,7 +659,6 @@ export default function FCNHoldingPage() {
             
             await loadRecords();
             await fetchLatestFxRates();
-
             if (activeDbTab === 'sip_holding_fcn_output_living' || activeDbTab === 'sip_trade_fcn_input_living') fetchDbRecords(activeDbTab);
 
             if (deliveredCount > 0) {
@@ -687,7 +683,6 @@ export default function FCNHoldingPage() {
 
             for (const mergedRecord of currentDied) {
                 const { newResult, cleanInput, cleanOutput } = await evaluateFCN(mergedRecord);
-                
                 const status = newResult.status;
                 if (['Active', 'Settling_NoDelivery', 'Settling_Delivery'].includes(status)) {
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_input_living', mergedRecord.inputId), cleanInput);
@@ -703,7 +698,6 @@ export default function FCNHoldingPage() {
             
             await loadRecords();
             await fetchLatestFxRates();
-
             if (activeDbTab === 'sip_holding_fcn_output_died' || activeDbTab === 'sip_trade_fcn_input_died') fetchDbRecords(activeDbTab);
 
             if (errorCount > 0) {
@@ -722,7 +716,6 @@ export default function FCNHoldingPage() {
     const useTableData = (data: any[], sortConfig: any, filterConfig: any, isHKDView: boolean, globalFx: Record<string, number>) => {
         return useMemo(() => {
             let result = [...data];
-
             Object.keys(filterConfig).forEach(key => {
                 const filterValue = filterConfig[key]?.toLowerCase();
                 if (filterValue) {
@@ -753,17 +746,14 @@ export default function FCNHoldingPage() {
                     if (isAEmpty && isBEmpty) return 0;
                     if (isAEmpty) return 1; 
                     if (isBEmpty) return -1; 
-
                     if (typeof aVal === 'string' && typeof bVal === 'string') {
                         return sortConfig.dir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
                     }
-
                     if (aVal < bVal) return sortConfig.dir === 'asc' ? -1 : 1;
                     if (aVal > bVal) return sortConfig.dir === 'asc' ? 1 : -1;
                     return 0;
                 });
             }
-
             return result;
         }, [data, sortConfig, filterConfig, isHKDView, globalFx]);
     };
@@ -828,7 +818,6 @@ export default function FCNHoldingPage() {
             if (result.status === 'Settling_Delivery' || (result.status === 'Active' && result.loss_prob > 0)) {
                 const factor = Number(params.total_notional) / Number(params.denomination);
                 const account = params.account_name || inputData.inputParams?.account_name || 'N/A';
-
                 params.tickers.forEach((ticker, idx) => {
                     const initialP = params.initial_spots[idx];
                     const currentP = params.current_spots?.[idx] || initialP;
@@ -900,18 +889,11 @@ export default function FCNHoldingPage() {
     // --- 计算全局 SUM 与统计 ---
     const globalStats = useMemo(() => {
         const markets: Record<string, any> = {};
-
         const initMarket = (mkt: string) => {
             if (!markets[mkt]) {
                 markets[mkt] = {
-                    market: mkt,
-                    notionalTotal: 0,
-                    notionalLiving: 0,
-                    mktValLiving: 0,
-                    realizedTotal: 0,
-                    unrealized: 0,
-                    totalPnl: 0,
-                    fxRate: 1
+                    market: mkt, notionalTotal: 0, notionalLiving: 0, mktValLiving: 0,
+                    realizedTotal: 0, unrealized: 0, totalPnl: 0, fxRate: 1
                 };
             }
         };
@@ -950,9 +932,7 @@ export default function FCNHoldingPage() {
             acc.unrealized += m.unrealized;
             acc.totalPnl += m.totalPnl;
             return acc;
-        }, {
-            notionalTotal: 0, notionalLiving: 0, mktValLiving: 0, realizedTotal: 0, unrealized: 0, totalPnl: 0
-        });
+        }, { notionalTotal: 0, notionalLiving: 0, mktValLiving: 0, realizedTotal: 0, unrealized: 0, totalPnl: 0 });
 
         const livingSumsForTable = finalLiving.reduce((acc, item) => {
             const rate = globalFxRates[item.market] || item.fx_rate || 1;
@@ -973,12 +953,7 @@ export default function FCNHoldingPage() {
             return acc;
         }, { notional: 0, realized: 0 });
 
-        return {
-            marketList,
-            hkdSum,
-            livingSums: livingSumsForTable,
-            diedSums: diedSumsForTable,
-        };
+        return { marketList, hkdSum, livingSums: livingSumsForTable, diedSums: diedSumsForTable };
     }, [finalLiving, finalDied, globalFxRates]);
 
     const livingSumPnlRatio = globalStats.livingSums.notional > 0 ? ((globalStats.livingSums.mktVal + globalStats.livingSums.realized) / globalStats.livingSums.notional) - 1 : 0;
@@ -991,13 +966,47 @@ export default function FCNHoldingPage() {
             return acc;
         }, { cost: 0, mktVal: 0 });
     }, [finalRisk, globalFxRates]);
+
     const riskSumPnlRatio = riskSums.cost > 0 ? (riskSums.mktVal / riskSums.cost) - 1 : 0;
+
+    // --- 【新增】FCN 风控板块 标的聚合逻辑 (暗线入库用) ---
+    const riskExposureSummary = useMemo(() => {
+        const summary: Record<string, any> = {};
+        finalRisk.forEach(row => {
+            const t = row.ticker;
+            if (!summary[t]) {
+                summary[t] = { ticker: t, market: row.market, shares: 0, cost: 0 };
+            }
+            summary[t].shares += row.shares;
+            summary[t].cost += row.cost; 
+        });
+        return Object.values(summary).map(item => ({
+            ...item,
+            costPrice: item.shares > 0 ? item.cost / item.shares : 0
+        }));
+    }, [finalRisk]);
+
+    const handleSaveExposure = async (isAuto = false) => {
+        if (!user) return;
+        if (!isAuto) setIsSavingExposure(true);
+        try {
+            const payload = {
+                data: riskExposureSummary,
+                updatedAt: new Date().toISOString()
+            };
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_fcn', 'latest_summary'), payload);
+            if (!isAuto) setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+        } catch (e) {
+            console.error("保存暴露汇总失败:", e);
+        } finally {
+            if (!isAuto) setIsSavingExposure(false);
+        }
+    };
 
     // --- 资金净买入统计数据 (存续名义本金 - 累计已实现票息) ---
     const cashStats = useMemo(() => {
         const accountsSet = new Set<string>();
         const marketsSet = new Set<string>();
-
         processedLiving.forEach(item => {
             if (item.account) accountsSet.add(item.account);
             if (item.market) marketsSet.add(item.market);
@@ -1006,10 +1015,9 @@ export default function FCNHoldingPage() {
             if (item.account) accountsSet.add(item.account);
             if (item.market) marketsSet.add(item.market);
         });
-
+        
         const accounts = Array.from(accountsSet).sort();
         const markets = Array.from(marketsSet).sort();
-
         const rawMatrix: Record<string, Record<string, number>> = {};
         markets.forEach(m => {
             rawMatrix[m] = {};
@@ -1022,7 +1030,6 @@ export default function FCNHoldingPage() {
                 rawMatrix[item.market][item.account] += (item.notional || 0);
             }
         });
-
         // 减去：所有的累计已实现票息 (Living + Died)
         processedLiving.forEach(item => {
             if (item.market && item.account) {
@@ -1054,15 +1061,12 @@ export default function FCNHoldingPage() {
     const currentMktStats = useMemo(() => {
         const accountsSet = new Set<string>();
         const marketsSet = new Set<string>();
-
         processedLiving.forEach(item => {
             if (item.account) accountsSet.add(item.account);
             if (item.market) marketsSet.add(item.market);
         });
-
         const accounts = Array.from(accountsSet).sort();
         const markets = Array.from(marketsSet).sort();
-
         const rawMatrix: Record<string, Record<string, number>> = {};
         markets.forEach(m => {
             rawMatrix[m] = {};
@@ -1074,19 +1078,14 @@ export default function FCNHoldingPage() {
                 rawMatrix[item.market][item.account] += (item.mktVal || 0);
             }
         });
-
         return { accounts, markets, rawMatrix };
     }, [processedLiving]);
 
     // --- 【新增】当前收益统计矩阵 ---
     const currentPlStats = useMemo(() => {
         const marketsSet = new Set<string>();
-        processedLiving.forEach(item => {
-            if (item.market) marketsSet.add(item.market);
-        });
-        processedDied.forEach(item => {
-            if (item.market) marketsSet.add(item.market);
-        });
+        processedLiving.forEach(item => { if (item.market) marketsSet.add(item.market); });
+        processedDied.forEach(item => { if (item.market) marketsSet.add(item.market); });
         const markets = Array.from(marketsSet).sort();
         
         const rawMatrix: Record<string, { realized: number, unrealized: number, total: number }> = {};
@@ -1101,14 +1100,12 @@ export default function FCNHoldingPage() {
                 rawMatrix[item.market].total += ((item.realized || 0) + (item.unrealized || 0));
             }
         });
-
         processedDied.forEach(item => {
             if (item.market) {
                 rawMatrix[item.market].realized += (item.realized || 0);
                 rawMatrix[item.market].total += (item.realized || 0);
             }
         });
-
         return { markets, rawMatrix };
     }, [processedLiving, processedDied]);
 
@@ -1249,6 +1246,10 @@ export default function FCNHoldingPage() {
                 const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
                 return `全局大盘统计快照 (更新于: ${time})`;
             }
+            if (tab.includes('exposure')) {
+                const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
+                return `按标的合并风控暴露快照 (更新于: ${time})`;
+            }
             return JSON.stringify(r).substring(0, 100) + '...';
         } catch (e) {
             return '解析失败...';
@@ -1286,13 +1287,13 @@ export default function FCNHoldingPage() {
                     </div>
                 </div>
                 
-                <div className="overflow-x-auto border rounded-lg mb-4 shadow-sm pb-16">
-                    <table className="min-w-full text-xs text-left divide-y divide-gray-200">
-                        <thead className="bg-gray-50 text-gray-600 font-medium">
+                <div className="overflow-auto border rounded-lg mb-4 shadow-sm max-h-[450px]">
+                    <table className="min-w-full text-xs text-left divide-y divide-gray-200 border-collapse">
+                        <thead className="bg-gray-50 text-gray-600 font-medium sticky top-0 z-30 shadow-sm">
                             <tr>
-                                <Th label="当前状态" sortKey="statusText" filterKey="statusText" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
-                                <Th label="交易日期" sortKey="tradeDate" filterKey="tradeDate" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
-                                <Th label="名称" sortKey="name" filterKey="name" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="left" />
+                                <Th label="当前状态" sortKey="statusText" filterKey="statusText" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" className="sticky left-0 top-0 z-40 bg-gray-50 w-[120px] min-w-[120px] shadow-[2px_1px_0_rgba(0,0,0,0.1)]" />
+                                <Th label="交易日期" sortKey="tradeDate" filterKey="tradeDate" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" className="sticky left-[120px] top-0 z-40 bg-gray-50 w-[100px] min-w-[100px] shadow-[2px_1px_0_rgba(0,0,0,0.1)]" />
+                                <Th label="名称" sortKey="name" filterKey="name" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="left" className="sticky left-[220px] top-0 z-40 bg-gray-50 w-[180px] min-w-[180px] shadow-[2px_1px_0_rgba(0,0,0,0.1)]" />
                                 <Th label="账户" sortKey="account" filterKey="account" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
                                 <Th label="币种" sortKey="market" filterKey="market" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" />
                                 <Th label="总名义本金" sortKey="notional" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
@@ -1316,10 +1317,10 @@ export default function FCNHoldingPage() {
                             {finalLiving.length === 0 ? (
                                 <tr><td colSpan={20} className="px-4 py-8 text-center text-gray-400">暂无存续中的持仓数据 或 暂无匹配条件数据</td></tr>
                             ) : finalLiving.map((item) => (
-                                <tr key={item.id} className="hover:bg-blue-50/50 transition-colors">
-                                    <td className="px-3 py-2 text-center whitespace-nowrap font-bold text-gray-700">{item.statusText}</td>
-                                    <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.tradeDate}</td>
-                                    <td className="px-3 py-2 font-medium text-gray-800 whitespace-nowrap">{item.name}</td>
+                                <tr key={item.id} className="group hover:bg-blue-50/50 transition-colors">
+                                    <td className="sticky left-0 z-10 bg-white group-hover:bg-blue-50 px-3 py-2 text-center whitespace-nowrap font-bold text-gray-700 w-[120px] min-w-[120px] shadow-[1px_0_0_rgba(0,0,0,0.05)]">{item.statusText}</td>
+                                    <td className="sticky left-[120px] z-10 bg-white group-hover:bg-blue-50 px-3 py-2 text-center text-gray-600 whitespace-nowrap w-[100px] min-w-[100px] shadow-[1px_0_0_rgba(0,0,0,0.05)]">{item.tradeDate}</td>
+                                    <td className="sticky left-[220px] z-10 bg-white group-hover:bg-blue-50 px-3 py-2 font-medium text-gray-800 whitespace-nowrap w-[180px] min-w-[180px] shadow-[2px_0_0_rgba(0,0,0,0.05)]">{item.name}</td>
                                     <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.account}</td>
                                     <td className="px-3 py-2 text-center font-mono text-gray-500">{item.market}</td>
                                     <td className="px-3 py-2 text-right font-mono whitespace-nowrap">{formatNotionalWithUnit(item.notional, item.market, item.fx_rate)}</td>
@@ -1367,24 +1368,24 @@ export default function FCNHoldingPage() {
                             ))}
                         </tbody>
                         {finalLiving.length > 0 && (
-                            <tfoot className="bg-gray-100 border-t-2 border-gray-300 shadow-inner">
+                            <tfoot className="bg-gray-100 shadow-inner sticky bottom-0 z-30">
                                 <tr>
-                                    <td colSpan={5} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.livingSums.notional)}</td>
-                                    <td className={`px-3 py-3 text-right font-mono font-bold ${livingSumPnlRatio >= 0 ? 'text-green-600' : 'text-red-600'}`}>{livingSumPnlRatio > 0 ? '+' : ''}{fmtPct(livingSumPnlRatio)}</td>
-                                    <td colSpan={7}></td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.livingSums.mktVal)}</td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.livingSums.realized)}</td>
-                                    <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.livingSums.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatSumWithSign(globalStats.livingSums.unrealized)}</td>
-                                    <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.livingSums.unrealizedCoupon > 0 ? 'text-green-600' : 'text-gray-500'}`}>{formatSumWithSign(globalStats.livingSums.unrealizedCoupon)}</td>
-                                    <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.livingSums.impliedLoss > 0 ? 'text-red-600' : 'text-gray-500'}`}>{globalStats.livingSums.impliedLoss > 0 ? '-' : ''}{formatSum(globalStats.livingSums.impliedLoss)}</td>
-                                    <td className={`px-3 py-3 text-right font-mono font-bold ${globalStats.livingSums.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatSumWithSign(globalStats.livingSums.totalPnl)}</td>
+                                    <td colSpan={3} className="sticky left-0 bottom-0 z-40 bg-gray-100 px-3 py-3 text-center font-bold text-gray-700 tracking-wider shadow-[2px_-1px_0_rgba(0,0,0,0.1),_0_-1px_0_rgba(0,0,0,0.1)] border-t-2 border-gray-300">SUM (折合 HKD)</td>
+                                    <td colSpan={2} className="px-3 py-3 bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]"></td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800 bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]">{formatSum(globalStats.livingSums.notional)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)] ${livingSumPnlRatio >= 0 ? 'text-green-600' : 'text-red-600'}`}>{livingSumPnlRatio > 0 ? '+' : ''}{fmtPct(livingSumPnlRatio)}</td>
+                                    <td colSpan={7} className="bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]"></td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800 bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]">{formatSum(globalStats.livingSums.mktVal)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800 bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]">{formatSum(globalStats.livingSums.realized)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)] ${globalStats.livingSums.unrealized >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatSumWithSign(globalStats.livingSums.unrealized)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)] ${globalStats.livingSums.unrealizedCoupon > 0 ? 'text-green-600' : 'text-gray-500'}`}>{formatSumWithSign(globalStats.livingSums.unrealizedCoupon)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)] ${globalStats.livingSums.impliedLoss > 0 ? 'text-red-600' : 'text-gray-500'}`}>{globalStats.livingSums.impliedLoss > 0 ? '-' : ''}{formatSum(globalStats.livingSums.impliedLoss)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)] ${globalStats.livingSums.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatSumWithSign(globalStats.livingSums.totalPnl)}</td>
                                 </tr>
                             </tfoot>
                         )}
                     </table>
                 </div>
-
                 <button
                     onClick={handleRefreshLiving}
                     disabled={loadingLiving}
@@ -1406,29 +1407,30 @@ export default function FCNHoldingPage() {
                         <span className="text-sm text-gray-500">高风险标的: {finalRisk.length} 项</span>
                     </div>
                 </div>
-
-                <div className="overflow-x-auto border rounded-lg shadow-sm pb-16">
-                    <table className="min-w-full text-xs text-left divide-y divide-gray-200">
-                        <thead className="bg-red-50 text-red-800 font-medium">
+                <div className="overflow-auto border rounded-lg shadow-sm max-h-[450px]">
+                    <table className="min-w-full text-xs text-left divide-y divide-gray-200 border-collapse">
+                        <thead className="bg-red-50 text-red-800 font-medium sticky top-0 z-30 shadow-sm">
                             <tr>
-                                <Th label="标的代码 (Ticker)" filterKey="ticker" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="left" />
-                                <Th label="FCN 产品名称" filterKey="fcnName" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="left" />
-                                <Th label="账户" sortKey="account" filterKey="account" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="center" />
-                                <Th label="暴露成本价" sortKey="costPrice" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
-                                <Th label="暴露股数" sortKey="shares" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
-                                <Th label="暴露成本总额" sortKey="cost" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
-                                <Th label="暴露当前市值" sortKey="mktVal" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
-                                <Th label="暴露盈亏比" sortKey="pnlRatio" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
+                                <Th label="标的代码 (Ticker)" filterKey="ticker" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="left" className="bg-red-50" />
+                                <Th label="FCN 产品名称" filterKey="fcnName" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="left" className="bg-red-50" />
+                                <Th label="账户" sortKey="account" filterKey="account" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="center" className="bg-red-50" />
+                                <Th label="币种" sortKey="market" filterKey="market" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="center" className="bg-red-50" />
+                                <Th label="暴露成本价" sortKey="costPrice" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" className="bg-red-50" />
+                                <Th label="暴露股数" sortKey="shares" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" className="bg-red-50" />
+                                <Th label="暴露成本总额" sortKey="cost" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" className="bg-red-50" />
+                                <Th label="暴露当前市值" sortKey="mktVal" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" className="bg-red-50" />
+                                <Th label="暴露盈亏比" sortKey="pnlRatio" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" className="bg-red-50" />
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                             {finalRisk.length === 0 ? (
-                                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">当前没有处于高接货风险或结算有接货的持仓</td></tr>
+                                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">当前没有处于高接货风险或结算有接货的持仓</td></tr>
                             ) : finalRisk.map((row, idx) => (
                                 <tr key={`${row.ticker}-${idx}`} className={`transition-colors ${row.isWorst ? 'bg-red-50/50 font-medium' : 'hover:bg-gray-50'}`}>
                                     <td className="px-3 py-2 text-gray-900 whitespace-nowrap">{row.ticker} <span className="text-gray-400 text-[10px] ml-1">{row.name}</span></td>
                                     <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{row.fcnName}</td>
                                     <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{row.account}</td>
+                                    <td className="px-3 py-2 text-center font-mono text-gray-500">{row.market}</td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-600">{row.costPrice.toFixed(2)}</td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-900">
                                         {row.shares.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
@@ -1440,18 +1442,38 @@ export default function FCNHoldingPage() {
                             ))}
                         </tbody>
                         {finalRisk.length > 0 && (
-                            <tfoot className="bg-red-50 border-t-2 border-red-200 shadow-inner">
+                            <tfoot className="bg-red-50 shadow-inner sticky bottom-0 z-30">
                                 <tr>
-                                    <td colSpan={5} className="px-3 py-3 text-center font-bold text-red-800 tracking-wider">SUM (折合 HKD)</td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-red-900">{formatSum(riskSums.cost)}</td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-red-900">{formatSum(riskSums.mktVal)}</td>
-                                    <td className={`px-3 py-3 text-right font-mono font-bold ${riskSumPnlRatio >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                    <td colSpan={6} className="px-3 py-3 text-center font-bold text-red-800 tracking-wider bg-red-50 border-t-2 border-red-200 shadow-[0_-1px_0_rgba(0,0,0,0.1)]">SUM (折合 HKD)</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-red-900 bg-red-50 border-t-2 border-red-200 shadow-[0_-1px_0_rgba(0,0,0,0.1)]">{formatSum(riskSums.cost)}</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-red-900 bg-red-50 border-t-2 border-red-200 shadow-[0_-1px_0_rgba(0,0,0,0.1)]">{formatSum(riskSums.mktVal)}</td>
+                                    <td className={`px-3 py-3 text-right font-mono font-bold bg-red-50 border-t-2 border-red-200 shadow-[0_-1px_0_rgba(0,0,0,0.1)] ${riskSumPnlRatio >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                                         {riskSumPnlRatio > 0 ? '+' : ''}{fmtPct(riskSumPnlRatio)}
                                     </td>
                                 </tr>
                             </tfoot>
                         )}
                     </table>
+                </div>
+
+                {/* 暴露汇总底部功能区 */}
+                <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-red-100 shadow-sm">
+                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                        <span className="flex items-center gap-1.5"><Clock size={14} className="text-red-500" /> 暴露汇总最后入库时间: <span className="font-mono font-medium text-gray-700">{lastExposureSavedTime}</span></span>
+                        <span className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded border border-red-100">
+                            {isHKDView ? '※自动/手动入库已在折算视图下暂停，保护原始暴露数据' : '*后台暗线逻辑：已按标的(Ticker)合并计算总暴露成本与股数'}
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => alert('汇总数据已根据当前页面风险标的状态实时更新！您可以直接点击“手动保存入库”。')} className="flex items-center gap-2 px-4 py-2 bg-white border border-red-600 text-red-600 hover:bg-red-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <RefreshCw size={14} /> 刷新汇总
+                        </button>
+                        {!isHKDView && (
+                            <button onClick={() => handleSaveExposure(false)} disabled={isSavingExposure} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                {isSavingExposure ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 暴露汇总手动入库
+                            </button>
+                        )}
+                    </div>
                 </div>
             </div>
 
@@ -1467,20 +1489,20 @@ export default function FCNHoldingPage() {
                     </div>
                 </div>
                 
-                <div className="overflow-x-auto border rounded-lg mb-4 shadow-sm pb-16">
-                    <table className="min-w-full text-xs text-left divide-y divide-gray-200">
-                        <thead className="bg-gray-50 text-gray-600 font-medium">
+                <div className="overflow-auto border rounded-lg mb-4 shadow-sm max-h-[450px]">
+                    <table className="min-w-full text-xs text-left divide-y divide-gray-200 border-collapse">
+                        <thead className="bg-gray-50 text-gray-600 font-medium sticky top-0 z-30 shadow-sm">
                             <tr>
-                                <Th label="当前状态" sortKey="statusText" filterKey="statusText" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
-                                <Th label="交易日期" sortKey="tradeDate" filterKey="tradeDate" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
-                                <Th label="名称" sortKey="name" filterKey="name" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="left" />
-                                <Th label="账户" sortKey="account" filterKey="account" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
-                                <Th label="币种" sortKey="market" filterKey="market" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
-                                <Th label="总名义本金" sortKey="notional" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
-                                <Th label="年化票息" sortKey="coupon" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
-                                <Th label="敲入/出界限" sortKey="strike" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
-                                <Th label="已实现票息" sortKey="realized" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
-                                <Th label="是否有接货" sortKey="hasDeliveryText" filterKey="hasDeliveryText" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" />
+                                <Th label="当前状态" sortKey="statusText" filterKey="statusText" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" className="bg-gray-50" />
+                                <Th label="交易日期" sortKey="tradeDate" filterKey="tradeDate" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" className="bg-gray-50" />
+                                <Th label="名称" sortKey="name" filterKey="name" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="left" className="bg-gray-50" />
+                                <Th label="账户" sortKey="account" filterKey="account" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" className="bg-gray-50" />
+                                <Th label="币种" sortKey="market" filterKey="market" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" className="bg-gray-50" />
+                                <Th label="总名义本金" sortKey="notional" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" className="bg-gray-50" />
+                                <Th label="年化票息" sortKey="coupon" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" className="bg-gray-50" />
+                                <Th label="敲入/出界限" sortKey="strike" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" className="bg-gray-50" />
+                                <Th label="已实现票息" sortKey="realized" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" className="bg-gray-50" />
+                                <Th label="是否有接货" sortKey="hasDeliveryText" filterKey="hasDeliveryText" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" className="bg-gray-50" />
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
@@ -1508,19 +1530,18 @@ export default function FCNHoldingPage() {
                             ))}
                         </tbody>
                         {finalDied.length > 0 && (
-                            <tfoot className="bg-gray-100 border-t-2 border-gray-300 shadow-inner">
+                            <tfoot className="bg-gray-100 shadow-inner sticky bottom-0 z-30">
                                 <tr>
-                                    <td colSpan={5} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.diedSums.notional)}</td>
-                                    <td colSpan={2}></td>
-                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{formatSum(globalStats.diedSums.realized)}</td>
-                                    <td></td>
+                                    <td colSpan={5} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]">SUM (折合 HKD)</td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800 bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]">{formatSum(globalStats.diedSums.notional)}</td>
+                                    <td colSpan={2} className="bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]"></td>
+                                    <td className="px-3 py-3 text-right font-mono font-bold text-gray-800 bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]">{formatSum(globalStats.diedSums.realized)}</td>
+                                    <td className="bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]"></td>
                                 </tr>
                             </tfoot>
                         )}
                     </table>
                 </div>
-
                 <button
                     onClick={handleRefreshDied}
                     disabled={loadingDied}
@@ -1615,7 +1636,6 @@ export default function FCNHoldingPage() {
                             )}
                         </table>
                     </div>
-
                     <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-indigo-100 shadow-sm">
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
@@ -1716,7 +1736,6 @@ export default function FCNHoldingPage() {
                             )}
                         </table>
                     </div>
-
                     <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-rose-100 shadow-sm">
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
@@ -1750,7 +1769,6 @@ export default function FCNHoldingPage() {
                         <span className="text-xs text-gray-400">数据每分钟自动存入 sip_holding_cash_fcn 库</span>
                     </div>
                 </div>
-
                 <div className="bg-teal-50 border-t border-teal-100 p-5 rounded-lg">
                     <div className="flex justify-between items-center mb-3">
                         <h3 className="font-bold text-teal-800 text-sm">资金净买入矩阵</h3>
@@ -1826,7 +1844,6 @@ export default function FCNHoldingPage() {
                             )}
                         </table>
                     </div>
-
                     {/* 资金统计底部功能区 */}
                     <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-teal-100 shadow-sm">
                         <div className="flex items-center gap-4 text-xs text-gray-500">
@@ -1859,7 +1876,6 @@ export default function FCNHoldingPage() {
                         <RefreshCw size={14}/> 刷新数据
                     </button>
                 </div>
-
                 <div className="flex gap-2 mb-4 border-b pb-2 overflow-x-auto">
                     {[
                         'sip_trade_fcn_input_living',
@@ -1870,7 +1886,8 @@ export default function FCNHoldingPage() {
                         'sip_holding_fcn_output_get-stock',
                         'sip_holding_fcn_mktvalue',
                         'sip_holding_fcn_pl',
-                        'sip_holding_cash_fcn'
+                        'sip_holding_cash_fcn',
+                        'sip_exposure_fcn'
                     ].map(tab => (
                         <button 
                             key={tab} 
@@ -1881,7 +1898,7 @@ export default function FCNHoldingPage() {
                         </button>
                     ))}
                 </div>
-
+                
                 {/* 资料库表格 */}
                 {loadingDb ? (
                     <div className="py-10 text-center"><Loader2 className="animate-spin mx-auto text-purple-600" size={30}/></div>
@@ -1959,12 +1976,10 @@ export default function FCNHoldingPage() {
                                 const { current, strike, ko, ticker, name } = data;
                                 const leftPct = current > 0 ? (strike / current) - 1 : 0;
                                 const rightPct = current > 0 ? (ko / current) - 1 : 0;
-
                                 const values = [strike, current, ko];
                                 const minVal = Math.min(...values) * 0.85;
                                 const maxVal = Math.max(...values) * 1.15;
                                 const range = maxVal - minVal;
-
                                 const getPos = (val: number) => range === 0 ? 50 : ((val - minVal) / range) * 100;
 
                                 return (
@@ -1979,13 +1994,11 @@ export default function FCNHoldingPage() {
                                                 <span className="text-base font-semibold text-gray-900">{current.toFixed(2)}</span>
                                             </div>
                                         </div>
-
                                         <div className="flex items-center gap-4">
                                             <div className={`flex flex-col items-center justify-center w-24 h-16 rounded-lg border-2 transition-colors ${leftPct > 0 ? 'bg-red-50 border-red-500 text-red-700' : 'bg-white border-gray-100 text-gray-400'}`}>
                                                 <span className="text-[10px] font-semibold uppercase tracking-wider">距敲入</span>
                                                 <span className="text-lg font-bold">{fmtPct(leftPct)}</span>
                                             </div>
-
                                             <div className="flex-1 relative h-16 mx-4 select-none">
                                                 <div className="absolute top-1/2 left-0 right-0 h-1.5 bg-gray-100 rounded-full transform -translate-y-1/2"></div>
                                                 {/* 標記 Strike 到 KO 之間的區間 */}
@@ -2012,7 +2025,6 @@ export default function FCNHoldingPage() {
                                                     </div>
                                                 </div>
                                             </div>
-
                                             <div className={`flex flex-col items-center justify-center w-24 h-16 rounded-lg border-2 transition-colors ${rightPct < 0 ? 'bg-yellow-50 border-yellow-400 text-yellow-700' : 'bg-white border-gray-100 text-gray-400'}`}>
                                                 <span className="text-[10px] font-semibold uppercase tracking-wider">距敲出</span>
                                                 <span className="text-lg font-bold">{fmtPct(rightPct)}</span>
@@ -2056,7 +2068,6 @@ export default function FCNHoldingPage() {
                     </div>
                 </div>
             )}
-
         </div>
     );
 }

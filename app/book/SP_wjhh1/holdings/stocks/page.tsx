@@ -2,39 +2,16 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Building2, 
-  ListOrdered,
-  PieChart,
-  BarChart as BarChartIcon,
-  Loader2, 
-  AlertCircle,
-  RefreshCw,
-  Search,
-  Database,
-  Save,
-  Trash2,
-  Info,
-  Clock,
-  X,
-  FileJson,
-  Edit2,
-  ClipboardList,
-  Settings2
+  Building2, ListOrdered, PieChart, BarChart as BarChartIcon,
+  Loader2, AlertCircle, RefreshCw, Search, Database, Save,
+  Trash2, Info, Clock, X, FileJson, Edit2, ClipboardList, Settings2
 } from 'lucide-react';
 import { collection, getDocs, query, onSnapshot, addDoc, deleteDoc, setDoc, doc, updateDoc, writeBatch } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
-
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { useStockPool } from '@/app/hooks/useStockPool';
 import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer,
-  Cell
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
 
 // --- 统一的流水数据类型 ---
@@ -167,17 +144,17 @@ export default function SpotHoldingsPage() {
   const [submittingInit, setSubmittingInit] = useState(false);
   const [editingInitId, setEditingInitId] = useState<string | null>(null);
   const [initCodeFilter, setInitCodeFilter] = useState('');
-
+  
   // --- 批量导入 (Clipboard Paste) State ---
   const [showPasteModal, setShowPasteModal] = useState(false);
   const [pasteText, setPasteText] = useState('');
   const [parsedPasteData, setParsedPasteData] = useState<any[]>([]);
-
+  
   // --- 汇率锁定 State ---
   const [baseFxRates, setBaseFxRates] = useState<Record<string, number>>({});
   const [showBaseFxModal, setShowBaseFxModal] = useState(false);
   const [draftBaseFx, setDraftBaseFx] = useState<Record<string, string>>({});
-
+  
   // 全局状态
   const [isHKDView, setIsHKDView] = useState(false);
   const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
@@ -190,19 +167,24 @@ export default function SpotHoldingsPage() {
   
   const [isSavingMktVal, setIsSavingMktVal] = useState(false);
   const [lastMktValSavedTime, setLastMktValSavedTime] = useState<string>('未获取');
-
+  
   const [isSavingPl, setIsSavingPl] = useState(false);
   const [lastPlSavedTime, setLastPlSavedTime] = useState<string>('未获取');
 
+  const [isSavingInitial, setIsSavingInitial] = useState(false);
+  const [lastInitialSavedTime, setLastInitialSavedTime] = useState<string>('未获取');
+
+  const [isSavingExposure, setIsSavingExposure] = useState(false);
+  const [lastExposureSavedTime, setLastExposureSavedTime] = useState<string>('未获取');
+  
   // 图表切换
   const [chartType, setChartType] = useState<'BEST' | 'WORST'>('BEST');
-
+  
   // --- 数据库管理模块状态 ---
   const [activeDbTab, setActiveDbTab] = useState('sip_spot_trade');
   const [dbRecords, setDbRecords] = useState<any[]>([]);
   const [loadingDb, setLoadingDb] = useState(false);
   const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
-
   const [tradeSort, setTradeSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: 'date', dir: 'desc'});
   const [tradeFilters, setTradeFilters] = useState<Record<string, string>>({});
   const [holdingSort, setHoldingSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: 'mktValHKD', dir: 'desc'});
@@ -217,6 +199,7 @@ export default function SpotHoldingsPage() {
           return { key, dir: 'asc' };
       });
   };
+
   const handleFilter = (setFilter: any) => (key: string, val: string) => {
       setFilter((prev: any) => ({ ...prev, [key]: val }));
   };
@@ -239,6 +222,8 @@ export default function SpotHoldingsPage() {
     let unsubCashTime: (() => void) | undefined;
     let unsubMktValTime: (() => void) | undefined;
     let unsubPlTime: (() => void) | undefined;
+    let unsubInitTime: (() => void) | undefined;
+    let unsubExposureTime: (() => void) | undefined;
 
     const initData = async () => {
       try {
@@ -266,6 +251,8 @@ export default function SpotHoldingsPage() {
                     if (docSnap.id === '_global_config') {
                         bDate = docSnap.data().baseDate || '';
                         bFx = docSnap.data().baseFxRates || {};
+                    } else if (docSnap.id === 'latest_summary') {
+                        // 忽略聚合数据快照文档
                     } else {
                         const data = docSnap.data();
                         starts.push({ 
@@ -280,26 +267,25 @@ export default function SpotHoldingsPage() {
                 setInitialHoldings(starts);
             });
 
-            // 获取最后保存时间
+            // 获取各类快照的最后保存时间
             unsubCashTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_stock', 'latest_summary'), (docSnap) => {
-                if (docSnap.exists()) {
-                    const data = docSnap.data();
-                    if (data.updatedAt) setLastCashSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
-                }
+                if (docSnap.exists() && docSnap.data().updatedAt) setLastCashSavedTime(new Date(docSnap.data().updatedAt).toLocaleString('zh-CN', { hour12: false }));
             });
 
             unsubMktValTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_stock_mktvalue', 'latest_summary'), (docSnap) => {
-                if (docSnap.exists()) {
-                    const data = docSnap.data();
-                    if (data.updatedAt) setLastMktValSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
-                }
+                if (docSnap.exists() && docSnap.data().updatedAt) setLastMktValSavedTime(new Date(docSnap.data().updatedAt).toLocaleString('zh-CN', { hour12: false }));
             });
 
             unsubPlTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_stock_pl', 'latest_summary'), (docSnap) => {
-                if (docSnap.exists()) {
-                    const data = docSnap.data();
-                    if (data.updatedAt) setLastPlSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
-                }
+                if (docSnap.exists() && docSnap.data().updatedAt) setLastPlSavedTime(new Date(docSnap.data().updatedAt).toLocaleString('zh-CN', { hour12: false }));
+            });
+
+            unsubInitTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start', 'latest_summary'), (docSnap) => {
+                if (docSnap.exists() && docSnap.data().updatedAt) setLastInitialSavedTime(new Date(docSnap.data().updatedAt).toLocaleString('zh-CN', { hour12: false }));
+            });
+
+            unsubExposureTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_spot', 'latest_summary'), (docSnap) => {
+                if (docSnap.exists() && docSnap.data().updatedAt) setLastExposureSavedTime(new Date(docSnap.data().updatedAt).toLocaleString('zh-CN', { hour12: false }));
             });
 
             // 2. 抓取：四个增量流水库的数据
@@ -308,7 +294,7 @@ export default function SpotHoldingsPage() {
                const fcnSnap = await getDocs(query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_get-stock')));
                const dqaqSnap = await getDocs(query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_dqaq_output_get-stock')));
                const optionSnap = await getDocs(query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_get-stock')));
-
+               
                let merged: UnifiedTrade[] = [];
 
                // 【终极修复 1】SPOT 库清洗：完全信任底层传来的数量与金额正负号，取消过度重写
@@ -393,7 +379,6 @@ export default function SpotHoldingsPage() {
             }
           }
         });
-
       } catch (err: any) {
         console.error("Init error:", err);
         setError(`初始化失败: ${err.message}`);
@@ -402,11 +387,14 @@ export default function SpotHoldingsPage() {
     };
 
     initData();
+
     return () => {
         if (unsubStart) unsubStart();
         if (unsubCashTime) unsubCashTime();
         if (unsubMktValTime) unsubMktValTime();
         if (unsubPlTime) unsubPlTime();
+        if (unsubInitTime) unsubInitTime();
+        if (unsubExposureTime) unsubExposureTime();
     };
   }, []);
 
@@ -442,6 +430,7 @@ export default function SpotHoldingsPage() {
       initialHoldings.forEach(h => collect(h.code, h.market));
 
       const newRates: Record<string, number> = { 'HKD': 1.0 };
+
       await Promise.all(Array.from(markets).map(async (currency) => {
           try {
               const res = await fetch(`/api/quote?currency=${currency}`);
@@ -471,7 +460,6 @@ export default function SpotHoldingsPage() {
            } catch(e) {}
       }));
       setRealTimeQuotes(newQuotes);
-
     } catch (e) {
         console.error("Market data fetch error", e);
     } finally {
@@ -550,7 +538,6 @@ export default function SpotHoldingsPage() {
                   accounts: {}
               };
           }
-
           const h = holdingsMap[key];
           const rate = globalFxRates[t.market] || 1;
 
@@ -569,8 +556,8 @@ export default function SpotHoldingsPage() {
               const realizedPnlLocal = sellProceeds - costOfGoodsSold;
               h.realizedPnlLocal += realizedPnlLocal;
               h.realizedPnlHKD += (realizedPnlLocal * rate);
-
               h.quantity -= sellQty;
+
               if (h.quantity <= 0) {
                   h.quantity = 0;
                   h.avgCost = 0;
@@ -606,7 +593,7 @@ export default function SpotHoldingsPage() {
                   // 特殊处理 "各账户持仓股数" 对象的模糊匹配
                   if (key === 'accounts') {
                       const accStr = Object.entries(item.accounts)
-                          .filter(([_, qty]) => qty > 0)
+                          .filter(([_k, qty]) => qty > 0)
                           .map(([acc, qty]) => `${acc}:${qty}`)
                           .join(' | ')
                           .toLowerCase();
@@ -640,6 +627,17 @@ export default function SpotHoldingsPage() {
   }, [displayHoldings]);
 
   const totalUnrealizedPct = holdingSums.totalCostHKD > 0 ? holdingSums.unrealizedPnlHKD / holdingSums.totalCostHKD : 0;
+
+  // --- 生成风控暴露汇总数据 (映射 displayHoldings) ---
+  const riskExposureSummary = useMemo(() => {
+      return displayHoldings.map(h => ({
+          code: h.code,
+          market: h.market,
+          costPrice: h.avgCost,
+          shares: h.quantity,
+          cost: h.avgCost * h.quantity
+      }));
+  }, [displayHoldings]);
 
   // --- 当前市值二维统计矩阵 ---
   const currentMktStats = useMemo(() => {
@@ -746,7 +744,6 @@ export default function SpotHoldingsPage() {
                   aVal = aVal * (globalFxRates[a.market] || 1);
                   bVal = bVal * (globalFxRates[b.market] || 1);
               }
-
               if (typeof aVal === 'string') {
                   return tradeSort.dir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
               }
@@ -831,7 +828,6 @@ export default function SpotHoldingsPage() {
       setPasteText(text);
       
       const rows = text.split('\n').map((r: string) => r.trim()).filter(Boolean);
-      
       const parsed = rows.map((row: string) => {
           const cols = row.split('\t');
           return {
@@ -868,7 +864,7 @@ export default function SpotHoldingsPage() {
       }
   };
 
-  // --- 资金净买入数据入库逻辑 ---
+  // --- 数据入库归档逻辑 ---
   const handleSaveCashStats = async (isAuto = false) => {
       if (!user) return;
       if (!isAuto) setIsSavingCash(true);
@@ -880,9 +876,7 @@ export default function SpotHoldingsPage() {
               updatedAt: new Date().toISOString()
           };
           await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_stock', 'latest_summary'), payload);
-          if (!isAuto) {
-              setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
-          }
+          if (!isAuto) setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存资金净买入统计失败:", e);
       } finally {
@@ -890,7 +884,6 @@ export default function SpotHoldingsPage() {
       }
   };
 
-  // --- 市值与盈亏数据入库逻辑 ---
   const handleSaveMktValStats = async (isAuto = false) => {
       if (!user) return;
       if (!isAuto) setIsSavingMktVal(true);
@@ -928,6 +921,42 @@ export default function SpotHoldingsPage() {
       }
   };
 
+  const handleSaveInitialStats = async (isAuto = false) => {
+      if (!user) return;
+      if (!isAuto) setIsSavingInitial(true);
+      try {
+          const payload = {
+              accounts: initialStats.accounts,
+              markets: initialStats.markets,
+              rawMatrix: initialStats.rawMatrix,
+              updatedAt: new Date().toISOString()
+          };
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start', 'latest_summary'), payload);
+          if (!isAuto) setLastInitialSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+      } catch (e) {
+          console.error("保存期初投入统计失败:", e);
+      } finally {
+          if (!isAuto) setIsSavingInitial(false);
+      }
+  };
+
+  const handleSaveExposure = async (isAuto = false) => {
+      if (!user) return;
+      if (!isAuto) setIsSavingExposure(true);
+      try {
+          const payload = {
+              data: riskExposureSummary,
+              updatedAt: new Date().toISOString()
+          };
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_spot', 'latest_summary'), payload);
+          if (!isAuto) setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+      } catch (e) {
+          console.error("保存现货风控暴露失败:", e);
+      } finally {
+          if (!isAuto) setIsSavingExposure(false);
+      }
+  };
+
   // 每分钟自动保存各种统计 (带有 HKD 视图及筛选视图联动锁)
   useEffect(() => {
       if (!user) return;
@@ -937,10 +966,12 @@ export default function SpotHoldingsPage() {
               handleSaveCashStats(true);
               handleSaveMktValStats(true);
               handleSavePlStats(true);
+              handleSaveInitialStats(true);
+              handleSaveExposure(true);
           }
       }, 60000); 
       return () => clearInterval(intervalId);
-  }, [user, netBuyStats, currentMktStats, currentPlStats, isHKDView, hasActiveFilters]);
+  }, [user, netBuyStats, currentMktStats, currentPlStats, initialStats, riskExposureSummary, isHKDView, hasActiveFilters]);
 
   // --- 获取并刷新后台库数据 ---
   const fetchDbRecords = async (collectionName: string) => {
@@ -1001,12 +1032,17 @@ export default function SpotHoldingsPage() {
           }
           if (tab === 'sip_holding_spot_start') {
               if (r.id === '_global_config') return `全局基准配置`;
+              if (r.id === 'latest_summary') return `期初投入统计快照`;
               return `[期初] ${r.quantity}股 ${r.code} | ${r.account}`;
           }
           if (tab.includes('get-stock')) {
               return `【交收】${r.account || ''} | ${r.direction || ''} ${Math.abs(r.quantity || 0)}股 ${r.stockName || r.stockCode || ''}`;
           }
-          if (tab.includes('mktvalue') || tab.includes('pl') || tab.includes('sum')) {
+          if (tab.includes('exposure')) {
+              const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
+              return `按标的合并现货风控暴露快照 (更新于: ${time})`;
+          }
+          if (tab.includes('mktvalue') || tab.includes('pl') || tab.includes('sum') || tab.includes('cash')) {
               const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
               return `全局大盘统计快照 (更新于: ${time})`;
           }
@@ -1174,8 +1210,8 @@ export default function SpotHoldingsPage() {
                         ) : displayHoldings.map(h => {
                             const pctOfTotalMktVal = holdingSums.mktValHKD > 0 ? h.mktValHKD / holdingSums.mktValHKD : 0;
                             const pnlContribution = holdingSums.totalCostHKD > 0 ? h.unrealizedPnlHKD / holdingSums.totalCostHKD : 0;
-                            const accountsArr = Object.entries(h.accounts).filter(([_, qty]) => qty > 0).map(([acc, qty]) => `'${acc}': ${qty.toLocaleString()}`);
-
+                            const accountsArr = Object.entries(h.accounts).filter(([_k, qty]) => qty > 0).map(([acc, qty]) => `'${acc}': ${qty.toLocaleString()}`);
+                            
                             return (
                                 <tr key={h.code} className="hover:bg-indigo-50/30 transition-colors">
                                     <td className="px-3 py-2 whitespace-nowrap">
@@ -1237,8 +1273,28 @@ export default function SpotHoldingsPage() {
                 </table>
             </div>
 
+            {/* 当前持仓风控暴露入库区 (提取底层数据入库) */}
+            <div className="mt-4 mx-5 mb-5 flex items-center justify-between bg-white px-4 py-3 rounded border border-indigo-100 shadow-sm">
+                <div className="flex items-center gap-4 text-xs text-gray-500">
+                    <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 现货风控暴露最后入库时间: <span className="font-mono font-medium text-gray-700">{lastExposureSavedTime}</span></span>
+                    <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
+                        {(isHKDView || hasActiveFilters) ? '※风控自动/手动入库已在折算或筛选视图下暂停，保护数据纯净' : '*后台暗线逻辑：已基于现货持仓生成合并敞口数据'}
+                    </span>
+                </div>
+                <div className="flex items-center gap-3">
+                    <button onClick={() => alert('汇总敞口数据已根据当前页面状态实时更新！您可以直接点击“手动保存入库”。')} className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-600 text-indigo-600 hover:bg-indigo-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                        <RefreshCw size={14} /> 刷新风控汇总
+                    </button>
+                    {(!isHKDView && !hasActiveFilters) && (
+                        <button onClick={() => handleSaveExposure(false)} disabled={isSavingExposure} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            {isSavingExposure ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 暴露汇总手动入库
+                        </button>
+                    )}
+                </div>
+            </div>
+
             {/* 当前市值二维统计表 */}
-            <div className="bg-indigo-50 border-t border-indigo-100 p-5 rounded-lg">
+            <div className="bg-indigo-50 border-t border-indigo-100 p-5">
                 <div className="flex justify-between items-center mb-3">
                     <h3 className="font-bold text-indigo-800 text-sm">当前市值二维统计矩阵</h3>
                     <button 
@@ -1313,7 +1369,6 @@ export default function SpotHoldingsPage() {
                         )}
                     </table>
                 </div>
-
                 <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-indigo-100 shadow-sm">
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
@@ -1357,7 +1412,6 @@ export default function SpotHoldingsPage() {
                     </button>
                 </div>
             </div>
-
             <div className="grid grid-cols-1 lg:grid-cols-5 divide-y lg:divide-y-0 lg:divide-x divide-gray-200">
                 <div className="lg:col-span-3 overflow-y-auto max-h-[500px]">
                     <table className="w-full text-xs text-left">
@@ -1389,7 +1443,6 @@ export default function SpotHoldingsPage() {
                         </tfoot>
                     </table>
                 </div>
-
                 <div className="lg:col-span-2 p-6 flex flex-col justify-center bg-gray-50/50">
                     <h3 className="text-center font-bold text-gray-700 mb-6">
                         {chartType === 'BEST' ? '🏅 总盈亏贡献 Top 10 (必须盈利)' : '⚠️ 总盈亏拖累 Top 10 (必须亏损)'}
@@ -1438,8 +1491,8 @@ export default function SpotHoldingsPage() {
                         <thead className="bg-rose-100/50 text-rose-900 font-medium">
                             <tr>
                                 <th className="px-3 py-2 text-center border-b border-r border-rose-100 bg-rose-50/50">币种</th>
-                                <th className="px-3 py-2 border-b border-rose-100">已实现盈亏</th>
-                                <th className="px-3 py-2 border-b border-rose-100">浮动盈亏 (未实现)</th>
+                                <th className="px-3 py-2 border-b border-rose-100">已实现盈亏 (票息)</th>
+                                <th className="px-3 py-2 border-b border-rose-100">浮动盈亏 (未实现损益)</th>
                                 <th className="px-3 py-2 border-b border-l border-rose-100 bg-rose-50/50">总盈亏 {isHKDView ? '(HKD)' : '(原币种)'}</th>
                             </tr>
                         </thead>
@@ -1491,7 +1544,6 @@ export default function SpotHoldingsPage() {
                         )}
                     </table>
                 </div>
-
                 <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-rose-100 shadow-sm">
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
@@ -1814,7 +1866,7 @@ export default function SpotHoldingsPage() {
             </div>
 
             {/* 期初成本二维统计表 */}
-            <div className="bg-purple-50 border-t border-purple-100 p-5 rounded-lg mt-6">
+            <div className="bg-purple-50 border-t border-purple-100 p-5">
                 <div className="flex justify-between items-center mb-3">
                     <h3 className="font-bold text-purple-800 text-sm">期初投入统计表</h3>
                     <button 
@@ -1894,6 +1946,26 @@ export default function SpotHoldingsPage() {
                         )}
                     </table>
                 </div>
+
+                {/* 期初统计底部功能区 */}
+                <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-purple-100 shadow-sm">
+                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                        <span className="flex items-center gap-1.5"><Clock size={14} className="text-purple-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastInitialSavedTime}</span></span>
+                        <span className="text-[10px] bg-purple-50 text-purple-600 px-2 py-0.5 rounded border border-purple-100">
+                            {(isHKDView || hasActiveFilters) ? '※自动/手动入库已在折算或筛选视图下暂停，保护原始数据' : '※每分钟自动入库'}
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => fetchMarketData()} disabled={isFetchingRealTime} className="flex items-center gap-2 px-4 py-2 bg-white border border-purple-600 text-purple-600 hover:bg-purple-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} /> 手动刷新
+                        </button>
+                        {(!isHKDView && !hasActiveFilters) && (
+                            <button onClick={() => handleSaveInitialStats(false)} disabled={isSavingInitial} className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                {isSavingInitial ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                            </button>
+                        )}
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1907,7 +1979,6 @@ export default function SpotHoldingsPage() {
                     <RefreshCw size={14}/> 刷新数据
                 </button>
             </div>
-
             <div className="flex gap-2 mb-4 border-b pb-2 overflow-x-auto">
                 {[
                     'sip_spot_trade',
@@ -1917,7 +1988,8 @@ export default function SpotHoldingsPage() {
                     'sip_holding_option_output_get-stock',
                     'sip_holding_stock_mktvalue',
                     'sip_holding_stock_pl',
-                    'sip_holding_cash_stock'
+                    'sip_holding_cash_stock',
+                    'sip_exposure_spot'
                 ].map(tab => (
                     <button 
                         key={tab} 
@@ -1928,7 +2000,6 @@ export default function SpotHoldingsPage() {
                     </button>
                 ))}
             </div>
-
             {loadingDb ? (
                 <div className="py-10 text-center"><Loader2 className="animate-spin mx-auto text-purple-600 mb-2" size={30}/></div>
             ) : dbRecords.length === 0 ? (
@@ -2101,7 +2172,6 @@ export default function SpotHoldingsPage() {
                                 disabled={submittingInit}
                             />
                         </div>
-
                         {/* 右侧：预览区 */}
                         <div className="flex-[3] flex flex-col">
                             <label className="block text-sm font-bold text-gray-700 mb-2 flex justify-between items-end">
@@ -2148,7 +2218,6 @@ export default function SpotHoldingsPage() {
                             </div>
                         </div>
                     </div>
-
                     <div className="bg-gray-50 px-6 py-4 border-t border-gray-200 flex justify-end gap-3 flex-shrink-0">
                         <button onClick={() => setShowPasteModal(false)} disabled={submittingInit} className="px-5 py-2.5 bg-gray-200 text-gray-700 text-sm font-bold rounded shadow-sm hover:bg-gray-300 transition-colors disabled:opacity-50">
                             取消
