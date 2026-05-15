@@ -60,7 +60,6 @@ const cColor = (val: number, posClass: string, negClass: string, zeroClass: stri
     return zeroClass;
 };
 
-
 // --- 補助関数：シリアライズ処理 ---
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) return null;
@@ -192,6 +191,10 @@ export default function OptionHoldingPage() {
     const [isSavingCash, setIsSavingCash] = useState(false);
     const [lastCashSavedTime, setLastCashSavedTime] = useState<string>('未获取');
 
+    // --- 新增：暴露风险相关的 State ---
+    const [isSavingExposure, setIsSavingExposure] = useState(false);
+    const [lastExposureSavedTime, setLastExposureSavedTime] = useState<string>('未获取');
+
     // --- 拦截确认接货流水的 State ---
     const [showDeliveryModal, setShowDeliveryModal] = useState(false);
     const [pendingDeliveries, setPendingDeliveries] = useState<any[]>([]);
@@ -225,11 +228,12 @@ export default function OptionHoldingPage() {
         return holdingFiltered || riskFiltered || diedFiltered;
     }, [livingFilters, riskFilters, diedFilters]);
 
-    // --- 認証の初期化 ---
+    // --- 認証の初期化とリスナー設定 ---
     useEffect(() => {
         let unsubCashTime: (() => void) | undefined;
         let unsubMktValTime: (() => void) | undefined;
         let unsubPlTime: (() => void) | undefined;
+        let unsubExposureTime: (() => void) | undefined;
 
         const initAuth = async () => {
             if (!auth.currentUser) {
@@ -260,6 +264,14 @@ export default function OptionHoldingPage() {
                             if (data.updatedAt) setLastCashSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
                         }
                     });
+
+                    // 新增：监听暴露风控的时间
+                    unsubExposureTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_option', 'latest_summary'), (docSnap) => {
+                        if (docSnap.exists()) {
+                            const data = docSnap.data();
+                            if (data.updatedAt) setLastExposureSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
+                        }
+                    });
                 }
             });
         };
@@ -268,6 +280,7 @@ export default function OptionHoldingPage() {
             if (unsubMktValTime) unsubMktValTime();
             if (unsubPlTime) unsubPlTime();
             if (unsubCashTime) unsubCashTime();
+            if (unsubExposureTime) unsubExposureTime();
         };
     }, []);
 
@@ -476,7 +489,6 @@ export default function OptionHoldingPage() {
             const deliveryQty = deliveryDir === 'BUY' ? Math.abs(qty) : -Math.abs(qty);
             const deliveryTotal = deliveryQty * strike;
 
-            // 包含 fxRate 以备在弹窗中修改数值时自动重新换算
             deliveryRecord = {
                 tradeId: mergedRecord.tradeId,
                 date: dates.expiryDate,
@@ -585,7 +597,6 @@ export default function OptionHoldingPage() {
             row[field] = value;
         }
 
-        // 当财务字段发生变化时，实时重新计算总额
         if (['quantity', 'priceNoFee', 'fee', 'direction'].includes(field)) {
             const qty = Math.abs(Number(row.quantity) || 0);
             const price = Number(row.priceNoFee) || 0;
@@ -600,7 +611,6 @@ export default function OptionHoldingPage() {
         setPendingDeliveries(newData);
     };
 
-    // --- 将用户确认无误的数据精准覆写入库 ---
     const handleConfirmDeliveries = async () => {
         setSyncingDeliveries(true);
         try {
@@ -706,7 +716,6 @@ export default function OptionHoldingPage() {
         }, [data, sortConfig, filterConfig, isHKDView, globalFx]);
     };
 
-    // --- 平坦化辞書の準備 ---
     const processedLiving = useMemo(() => {
         return livingRecords.map((r) => {
             const out = r.outputData || {};
@@ -804,7 +813,6 @@ export default function OptionHoldingPage() {
     const finalRisk = useTableData(processedRisk, riskSort, riskFilters, isHKDView, globalFxRates);
     const finalDied = useTableData(processedDied, diedSort, diedFilters, isHKDView, globalFxRates);
 
-    // --- 【修复】独立统计当前持仓表格内的 SUM 行 ---
     const livingSumsHKD = useMemo(() => {
         return finalLiving.reduce((acc, item) => {
             const rate = globalFxRates[item.currency] || item.fx_rate || 1;
@@ -816,7 +824,6 @@ export default function OptionHoldingPage() {
         }, { notional: 0, realizedPremium: 0, unrealizedPnl: 0, totalPnl: 0 });
     }, [finalLiving, globalFxRates]);
 
-    // --- グローバルな SUM と統計の計算 (无损回归旧版，不强制约束 totalPnl) ---
     const globalStats = useMemo(() => {
         const markets: Record<string, any> = {};
 
@@ -870,7 +877,29 @@ export default function OptionHoldingPage() {
         return { marketList, hkdSum };
     }, [finalLiving, finalDied, globalFxRates]);
 
-    // --- 当前市值二维统计矩阵 ---
+    // --- 新增：暴露净风险按标的聚合 (支持多空抵消) ---
+    const riskExposureSummary = useMemo(() => {
+        const summary: Record<string, any> = {};
+        finalRisk.forEach(row => {
+            // 只统计实际有暴露的标的
+            if (row.exposureShares === 0) return;
+
+            const t = row.ticker;
+            if (!summary[t]) {
+                summary[t] = { ticker: t, market: row.currency, shares: 0, cost: 0 };
+            }
+            // 买卖双方（多空）在此自动相加抵消
+            summary[t].shares += row.exposureShares;
+            summary[t].cost += row.exposureCost; 
+        });
+        
+        return Object.values(summary).map(item => ({
+            ...item,
+            // 防爆计算
+            costPrice: Math.abs(item.shares) > 0.0001 ? item.cost / item.shares : 0
+        }));
+    }, [finalRisk]);
+
     const currentMktStats = useMemo(() => {
         const accountsSet = new Set<string>();
         const marketsSet = new Set<string>();
@@ -898,7 +927,6 @@ export default function OptionHoldingPage() {
         return { accounts, markets, rawMatrix };
     }, [processedLiving]);
 
-    // --- 当前收益统计矩阵 (强制约束 total = realized + unrealized) ---
     const currentPlStats = useMemo(() => {
         const marketsSet = new Set<string>();
         processedLiving.forEach(item => {
@@ -927,7 +955,6 @@ export default function OptionHoldingPage() {
             }
         });
 
-        // 强行约定：总盈亏 严格等于 已实现 + 浮动(未实现)
         markets.forEach(m => {
             rawMatrix[m].total = rawMatrix[m].realized + rawMatrix[m].unrealized;
         });
@@ -935,7 +962,6 @@ export default function OptionHoldingPage() {
         return { markets, rawMatrix };
     }, [processedLiving, processedDied]);
 
-    // --- 資金純買付統計データ (資金浄買入 = -已実現期権金) ---
     const cashStats = useMemo(() => {
         const accountsSet = new Set<string>();
         const marketsSet = new Set<string>();
@@ -981,7 +1007,6 @@ export default function OptionHoldingPage() {
         return total;
     }, [cashStats, globalFxRates]);
 
-    // --- 市值与盈亏数据入库逻辑 ---
     const handleSaveMktValStats = async (isAuto = false) => {
         if (!user) return;
         if (!isAuto) setIsSavingMktVal(true);
@@ -1019,7 +1044,6 @@ export default function OptionHoldingPage() {
         }
     };
 
-    // --- 資金純買付データの保存ロジック ---
     const handleSaveCashStats = async (isAuto = false) => {
         if (!user) return;
         if (!isAuto) setIsSavingCash(true);
@@ -1041,21 +1065,38 @@ export default function OptionHoldingPage() {
         }
     };
 
-    // 毎分自動で統計と資金純買付を保存
+    // --- 新增：暴露汇总入库逻辑 ---
+    const handleSaveExposure = async (isAuto = false) => {
+        if (!user) return;
+        if (!isAuto) setIsSavingExposure(true);
+        try {
+            const payload = {
+                data: riskExposureSummary,
+                updatedAt: new Date().toISOString()
+            };
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_option', 'latest_summary'), payload);
+            if (!isAuto) setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+        } catch (e) {
+            console.error("保存暴露汇总失败:", e);
+        } finally {
+            if (!isAuto) setIsSavingExposure(false);
+        }
+    };
+
+    // 每分钟自动入库，加入防污染锁
     useEffect(() => {
         if (!user) return;
         const intervalId = setInterval(() => {
-            // 在 HKD 视图下暂停自动入库，保护原始数据的纯净度
             if (!isHKDView && !hasActiveFilters) {
                 handleSaveMktValStats(true);
                 handleSavePlStats(true);
                 handleSaveCashStats(true);
+                handleSaveExposure(true); // 自动存入暴露数据
             }
         }, 60000); 
         return () => clearInterval(intervalId);
-    }, [user, currentMktStats, currentPlStats, cashStats, isHKDView, hasActiveFilters]);
+    }, [user, currentMktStats, currentPlStats, cashStats, riskExposureSummary, isHKDView, hasActiveFilters]);
 
-    // --- ヘルパー関数 ---
     const getRecordSummary = (r: any, tab: string) => {
         try {
             if (tab.includes('input')) {
@@ -1069,9 +1110,13 @@ export default function OptionHoldingPage() {
             if (tab.includes('get-stock')) {
                 return `【交收】${r.account || ''} | ${r.direction || ''} ${r.quantity || 0}股 ${r.stockName || r.stockCode || ''}`;
             }
-            if (tab.includes('mktvalue') || tab.includes('pl')) {
+            if (tab.includes('mktvalue') || tab.includes('pl') || tab.includes('cash')) {
                 const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
                 return `全局大盘统计快照 (更新于: ${time})`;
+            }
+            if (tab.includes('exposure')) {
+                const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
+                return `按标的合并风控暴露快照 (更新于: ${time})`;
             }
             return JSON.stringify(r).substring(0, 100) + '...';
         } catch (e) { return '解析失败...'; }
@@ -1097,7 +1142,6 @@ export default function OptionHoldingPage() {
         } catch(e:any) { alert("修改失败 (请检查 JSON 格式是否正确): \n" + e.message); }
     };
 
-    // --- Footer Render Helpers ---
     const renderMktSumHKD = () => {
         if (currentMktStats.markets.length === 0) return null;
         return (
@@ -1139,7 +1183,6 @@ export default function OptionHoldingPage() {
             );
         }
         
-        // 此处的合计也使用强约束的数值 (已实现总额 + 未实现总额)
         const rSum = currentPlStats.markets.reduce((s, mkt) => s + (currentPlStats.rawMatrix[mkt].realized * (globalFxRates[mkt]||1)), 0);
         const uSum = currentPlStats.markets.reduce((s, mkt) => s + (currentPlStats.rawMatrix[mkt].unrealized * (globalFxRates[mkt]||1)), 0);
         const tSum = rSum + uSum;
@@ -1304,7 +1347,7 @@ export default function OptionHoldingPage() {
                     <span className="text-sm text-gray-500">潜在交收标的: {finalRisk.filter(r => r.exposureShares !== 0).length} 项</span>
                 </div>
 
-                <div className="overflow-x-auto border rounded-lg shadow-sm pb-16">
+                <div className="overflow-x-auto border rounded-lg shadow-sm">
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200">
                         <thead className="bg-red-50 text-red-800 font-medium">
                             <tr>
@@ -1351,6 +1394,26 @@ export default function OptionHoldingPage() {
                             </tfoot>
                         )}
                     </table>
+                </div>
+
+                {/* --- 暴露汇总底部功能区 --- */}
+                <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-red-100 shadow-sm">
+                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                        <span className="flex items-center gap-1.5"><Clock size={14} className="text-red-500" /> 暴露汇总最后入库时间: <span className="font-mono font-medium text-gray-700">{lastExposureSavedTime}</span></span>
+                        <span className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded border border-red-100">
+                            {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动入库'}
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => alert('汇总数据已根据当前页面风险标的状态实时更新！您可以直接点击“手动保存入库”。')} className="flex items-center gap-2 px-4 py-2 bg-white border border-red-600 text-red-600 hover:bg-red-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <RefreshCw size={14} /> 刷新汇总
+                        </button>
+                        {(!isHKDView && !hasActiveFilters) && (
+                            <button onClick={() => handleSaveExposure(false)} disabled={isSavingExposure} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                {isSavingExposure ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 暴露汇总手动入库
+                            </button>
+                        )}
+                    </div>
                 </div>
             </div>
 
@@ -1671,7 +1734,9 @@ export default function OptionHoldingPage() {
                         'sip_holding_option_output_died', 
                         'sip_holding_option_output_get-stock',
                         'sip_holding_option_mktvalue',
-                        'sip_holding_option_pl'
+                        'sip_holding_option_pl',
+                        'sip_holding_cash_option',
+                        'sip_exposure_option'
                     ].map(tab => (
                         <button key={tab} onClick={() => setActiveDbTab(tab)} className={`px-3 py-1.5 text-xs font-bold rounded whitespace-nowrap transition-colors ${activeDbTab === tab ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
                             {tab.replace('sip_', '').replace(/_/g, '/')}

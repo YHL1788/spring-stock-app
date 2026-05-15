@@ -1,12 +1,9 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { 
-  RefreshCw, Database, FileJson, Trash2, X, Save, Loader2, AlertCircle, TrendingUp, LineChart, PieChart, Clock, BarChart
-} from 'lucide-react';
+import { RefreshCw, Database, FileJson, Trash2, X, Save, Loader2, AlertCircle, TrendingUp, LineChart, PieChart, Clock, BarChart } from 'lucide-react';
 import { collection, getDocs, doc, updateDoc, addDoc, deleteDoc, setDoc, query, where, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
-
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { DQAQValuator, Period, BasicInfo, UnderlyingInfo, SimulationParams, ValuationResult, calculateVolatility, PlotData } from '@/app/lib/DQ-AQPricer';
 
@@ -31,17 +28,21 @@ const formatTime = (val: any) => {
 const formatSum = (val: number) => {
     return `${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
+
 const formatSumWithSign = (val: number) => {
     const sign = val > 0 ? '+' : '';
     return `${sign}${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
+
 const formatMoney = (val: number) => {
     return val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
+
 const fmtSign = (val: number) => {
     if (val === 0 || Math.abs(val) < 0.00001) return '-';
     return `${val > 0 ? '+' : ''}${formatMoney(val)}`;
 };
+
 const cColor = (val: number, posClass: string, negClass: string, zeroClass: string) => {
     if (val > 0.00001) return posClass;
     if (val < -0.00001) return negClass;
@@ -92,7 +93,6 @@ const replaceUndefinedWithNull = (obj: any): any => {
     if (obj instanceof Date) return obj; 
     if (obj.toDate && typeof obj.toDate === 'function') return obj; 
     if (obj._methodName) return obj; 
-
     if (Array.isArray(obj)) return obj.map(replaceUndefinedWithNull);
     const newObj: any = {};
     for (const key in obj) {
@@ -109,7 +109,6 @@ const replaceNullWithUndefined = (obj: any): any => {
     if (obj instanceof Date) return obj; 
     if (obj.toDate && typeof obj.toDate === 'function') return obj; 
     if (obj._methodName) return obj; 
-
     if (Array.isArray(obj)) return obj.map(replaceNullWithUndefined);
     const newObj: any = {};
     for (const key in obj) {
@@ -152,16 +151,13 @@ const SimulationChart = ({ data }: { data: PlotData }) => {
     const minP = Math.min(...allPrices) * 0.95;
     const maxP = Math.max(...allPrices) * 1.05;
     const rangeP = maxP - minP;
-
     const width = 500; const height = 250; const padding = 30;
     const plotW = width - padding * 2; const plotH = height - padding * 2;
     const getX = (dayIndex: number) => padding + (dayIndex / total_days) * plotW;
     const getY = (price: number) => padding + plotH - ((price - minP) / rangeP) * plotH;
-
     const makePath = (prices: number[], startDayIdx: number) => prices.map((p, i) => `${i === 0 ? 'M' : 'L'} ${getX(startDayIdx + i)} ${getY(p)}`).join(' ');
     const historyPathStr = makePath(fullHistory, 0);
     const getPathColor = (index: number) => `hsl(${(index * 137.508) % 360}, ${65 + (index % 3) * 10}%, ${50 + (index % 2) * 10}%)`;
-
     return (
         <div className="bg-white p-4 rounded border border-gray-200 shadow-sm w-full flex flex-col items-center">
             <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} className="overflow-visible max-w-lg">
@@ -199,7 +195,6 @@ export default function DQAQHoldingPage() {
     const [diedRecords, setDiedRecords] = useState<MergedRecord[]>([]);
     const [loadingLiving, setLoadingLiving] = useState(false);
     const [loadingDied, setLoadingDied] = useState(false);
-
     // --- 统计模块状态 ---
     const [statsTab, setStatsTab] = useState<'GLOBAL' | 'MKT_VAL' | 'PL'>('GLOBAL');
     
@@ -209,26 +204,25 @@ export default function DQAQHoldingPage() {
     const [isSavingPl, setIsSavingPl] = useState(false);
     const [lastPlSavedTime, setLastPlSavedTime] = useState<string>('未获取');
 
+    const [isSavingExposure, setIsSavingExposure] = useState(false);
+    const [lastExposureSavedTime, setLastExposureSavedTime] = useState<string>('未获取');
+
     const [isHKDView, setIsHKDView] = useState(false);
     const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
     const [isFetchingFx, setIsFetchingFx] = useState(false);
-
     // 覆盖确认 Modal 相关
     const [showDeliveryModal, setShowDeliveryModal] = useState(false);
     const [pendingDeliveries, setPendingDeliveries] = useState<any[]>([]);
     const [syncingDeliveries, setSyncingDeliveries] = useState(false);
-
     // 点位图 Modal
     const [chartData, setChartData] = useState<{name: string, ticker: string, current: number, strike: number, ko: number, recordId: string} | null>(null);
     const [plotData, setPlotData] = useState<PlotData | null>(null);
     const [isPlotLoading, setIsPlotLoading] = useState(false);
-
     // 后台库
     const [activeDbTab, setActiveDbTab] = useState('sip_holding_dqaq_output_living');
     const [dbRecords, setDbRecords] = useState<any[]>([]);
     const [loadingDb, setLoadingDb] = useState(false);
     const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
-
     // 排序和筛选
     const [livingSort, setLivingSort] = useState<any>({key: '', dir: null});
     const [livingFilters, setLivingFilters] = useState<Record<string, string>>({});
@@ -236,7 +230,6 @@ export default function DQAQHoldingPage() {
     const [riskFilters, setRiskFilters] = useState<Record<string, string>>({});
     const [diedSort, setDiedSort] = useState<any>({key: '', dir: null});
     const [diedFilters, setDiedFilters] = useState<Record<string, string>>({});
-
     const toggleSort = (setSort: any) => (key: string) => {
         setSort((prev: any) => {
             if (prev.key === key) {
@@ -247,7 +240,6 @@ export default function DQAQHoldingPage() {
         });
     };
     const handleFilter = (setFilter: any) => (key: string, val: string) => setFilter((prev: any) => ({ ...prev, [key]: val }));
-
     // 实例化排序与筛选函数
     const toggleLivingSort = toggleSort(setLivingSort);
     const updateLivingFilter = handleFilter(setLivingFilters);
@@ -255,10 +247,10 @@ export default function DQAQHoldingPage() {
     const updateRiskFilter = handleFilter(setRiskFilters);
     const toggleDiedSort = toggleSort(setDiedSort);
     const updateDiedFilter = handleFilter(setDiedFilters);
-
     useEffect(() => {
         let unsubMktValTime: (() => void) | undefined;
         let unsubPlTime: (() => void) | undefined;
+        let unsubExposureTime: (() => void) | undefined;
         
         const initAuth = async () => {
             if (!auth.currentUser) {
@@ -275,11 +267,16 @@ export default function DQAQHoldingPage() {
                             if (data.updatedAt) setLastMktValSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
                         }
                     });
-
                     unsubPlTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_dqaq_pl', 'latest_summary'), (docSnap) => {
                         if (docSnap.exists()) {
                             const data = docSnap.data();
                             if (data.updatedAt) setLastPlSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
+                        }
+                    });
+                    unsubExposureTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_dqaq', 'latest_summary'), (docSnap) => {
+                        if (docSnap.exists()) {
+                            const data = docSnap.data();
+                            if (data.updatedAt) setLastExposureSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
                         }
                     });
                 }
@@ -289,6 +286,7 @@ export default function DQAQHoldingPage() {
         return () => {
             if (unsubMktValTime) unsubMktValTime();
             if (unsubPlTime) unsubPlTime();
+            if (unsubExposureTime) unsubExposureTime();
         }
     }, []);
 
@@ -357,6 +355,7 @@ export default function DQAQHoldingPage() {
             return data.regularMarketPrice || data.price || data.close || null;
         } catch { return null; }
     };
+
     const fetchHistoricalPrices = async (symbol: string, start: string, end?: string) => {
         try {
             const apiUrl = `/api/history?symbol=${symbol}&start=${start}${end ? `&end=${end}` : ''}`;
@@ -369,6 +368,7 @@ export default function DQAQHoldingPage() {
             })).filter((item: any) => !isNaN(item.close));
         } catch { return []; }
     };
+
     const fetchRealTimeFxRate = async (currency: string) => {
         if (currency === 'HKD') return 1.0;
         try {
@@ -409,7 +409,6 @@ export default function DQAQHoldingPage() {
         const contract_end = periods[periods.length - 1].obs_end;
         const expireTimeMs = getExpirationTimeMs(contract_end, basic.currency);
         const isExpired = Date.now() >= expireTimeMs;
-
         let currentPrice = underlying.spot_price;
         
         // 过期强制抓取历史价，存续强制抓取现价
@@ -428,15 +427,12 @@ export default function DQAQHoldingPage() {
             const p = await fetchQuotePrice(underlying.ticker);
             if (p !== null) currentPrice = p;
         }
-
         const cutoffDate = isExpired ? contract_end : new Date().toISOString().split('T')[0];
         const histResFull = await fetchHistoricalPrices(underlying.ticker, sim.history_start_date, cutoffDate);
         const historyPrices = histResFull.map((h:any) => h.close);
         const historyDates = histResFull.map((h:any) => h.date);
-
         let fx = sim.sim_fx_rate || 1.0;
         if (basic.currency !== 'HKD') fx = await fetchRealTimeFxRate(basic.currency) ?? fx;
-
         // 偏移 valDtStr 以适配 DQ-AQ 引擎的周期判定
         let valDtStr = new Date().toISOString().split('T')[0];
         if (isExpired && valDtStr < contract_end) valDtStr = contract_end; 
@@ -444,13 +440,10 @@ export default function DQAQHoldingPage() {
             const d = new Date(contract_end); d.setDate(d.getDate() - 1);
             valDtStr = d.toISOString().split('T')[0];
         }
-
         const valuator = new DQAQValuator(basic, underlying, sim, periods, sigma);
         const res = valuator.generate_report(currentPrice, historyPrices, historyDates, valDtStr, fx);
-
         // 【时间戳铁血逻辑】：使用精确实时 Date 对象
         const exactNow = new Date();
-
         const cleanInput = replaceUndefinedWithNull({
             ...inputData, 
             underlying: { ...underlying, current_price: currentPrice }, 
@@ -465,7 +458,6 @@ export default function DQAQHoldingPage() {
         });
         delete cleanOutput.history_records;
         delete cleanOutput.plot_data;
-
         let newDeliveries: any[] = [];
         if (res.history_records) {
             res.history_records.forEach((rec: any, idx: number) => {
@@ -476,7 +468,6 @@ export default function DQAQHoldingPage() {
                     const sPrice = underlying.spot_price * basic.strike_pct;
                     const amtNoFee = qty * sPrice;
                     const marketCode = basic.currency === 'USD' ? 'US' : basic.currency === 'JPY' ? 'JP' : basic.currency === 'CNY' ? 'CH' : 'HK';
-
                     if (Math.abs(qty) > 0.0001) {
                         newDeliveries.push({
                             tradeId: mergedRecord.tradeId,
@@ -499,21 +490,18 @@ export default function DQAQHoldingPage() {
                 }
             });
         }
-
         return { res, cleanInput, cleanOutput, newDeliveries, exactNow };
     };
 
-     // --- 动态生成图表数据 ---
+    // --- 动态生成图表数据 ---
     const handleGeneratePlot = async (tradeId: string) => {
         setPlotData(null);
         setIsPlotLoading(true);
         try {
             const rec = livingRecords.find(r => r.tradeId === tradeId) || diedRecords.find(r => r.tradeId === tradeId);
             if (!rec) throw new Error("找不到对应的持仓记录");
-
             // 重新运行评估引擎以获取实时的 plot_data 路径
             const { res } = await evaluateDQAQ(rec);
-
             if (res.plot_data) {
                 setPlotData(res.plot_data);
             } else {
@@ -535,13 +523,10 @@ export default function DQAQHoldingPage() {
                 setLoadingLiving(false);
                 return;
             }
-
             const allNewDeliveries: any[] = [];
             let movedToDiedCount = 0;
-
             for (const record of currentLiving) {
                 const { res, cleanInput, cleanOutput, newDeliveries } = await evaluateDQAQ(record);
-
                 if (res.status_msg.includes('存续中') || res.status_msg.includes('订约但未开始') || res.status_msg.includes('尚未订约')) {
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_dqaq_input_living', record.inputId), cleanInput);
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_dqaq_output_living', record.outputId), cleanOutput);
@@ -552,15 +537,12 @@ export default function DQAQHoldingPage() {
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_dqaq_output_living', record.outputId));
                     movedToDiedCount++;
                 }
-
                 if (newDeliveries.length > 0) {
                     allNewDeliveries.push(...newDeliveries);
                 }
             }
-
             await loadRecords();
             if (activeDbTab.includes('living')) fetchDbRecords(activeDbTab);
-
             if (allNewDeliveries.length > 0) {
                 setPendingDeliveries(allNewDeliveries);
                 setShowDeliveryModal(true);
@@ -598,10 +580,8 @@ export default function DQAQHoldingPage() {
         try {
             const currentDied = await fetchMergedRecords('died');
             if (currentDied.length === 0) { setLoadingDied(false); return; }
-
             for (const record of currentDied) {
                 const { res, cleanInput, cleanOutput } = await evaluateDQAQ(record);
-
                 if (res.status_msg.includes('存续中') || res.status_msg.includes('未开始') || res.status_msg.includes('尚未订约')) {
                     errCount++;
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_dqaq_input_living', record.inputId), cleanInput);
@@ -615,7 +595,6 @@ export default function DQAQHoldingPage() {
             }
             await loadRecords();
             if (activeDbTab.includes('died')) fetchDbRecords(activeDbTab);
-
             if (errCount > 0) alert(`出错！有 ${errCount} 笔数据重新计算后发现仍在存续！请重新检查 died 库内容！`);
             else alert('历史持仓刷新校验完毕！数据已基于历史收盘价精准覆盖。');
         } catch(e:any) { alert("刷新失败: " + e.message); } finally { setLoadingDied(false); }
@@ -668,6 +647,10 @@ export default function DQAQHoldingPage() {
                 const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
                 return `全局大盘统计快照 (更新于: ${time})`;
             }
+            if (tab.includes('exposure')) {
+                const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
+                return `按标的合并风控暴露快照 (更新于: ${time})`;
+            }
             return JSON.stringify(r).substring(0, 100) + '...';
         } catch (e) {
             return '解析失败...';
@@ -710,7 +693,6 @@ export default function DQAQHoldingPage() {
         
         const strikePrice = underlying.spot_price * basic.strike_pct;
         const koPrice = underlying.spot_price * basic.ko_barrier_pct;
-
         return {
             id: r.tradeId, pData: r.outputData,
             account: basic.account,
@@ -758,7 +740,6 @@ export default function DQAQHoldingPage() {
         
         const strikePrice = underlying.spot_price * basic.strike_pct;
         const koPrice = underlying.spot_price * basic.ko_barrier_pct;
-
         return {
             id: r.tradeId, name: `${basic.broker} | ${basic.trade_date} | ${underlying.stock_name||underlying.ticker}`,
             status: res.status_msg, currency: basic.currency, dir: basic.contract_type, leverage: basic.leverage,
@@ -778,7 +759,6 @@ export default function DQAQHoldingPage() {
     // --- 计算全局 SUM 与统计 ---
     const globalStats = useMemo(() => {
         const markets: Record<string, any> = {};
-
         const initMarket = (mkt: string) => {
             if (!markets[mkt]) {
                 markets[mkt] = {
@@ -789,7 +769,6 @@ export default function DQAQHoldingPage() {
                 };
             }
         };
-
         finalLiving.forEach(item => {
             const mkt = item.currency || 'HKD';
             initMarket(mkt);
@@ -798,7 +777,6 @@ export default function DQAQHoldingPage() {
             markets[mkt].netVal += (item.mktVal || 0) * rate;
             markets[mkt].fullVal += (item.fullPrice || 0) * rate;
         });
-
         finalDied.forEach(item => {
             const mkt = item.currency || 'HKD';
             initMarket(mkt);
@@ -806,15 +784,12 @@ export default function DQAQHoldingPage() {
             markets[mkt].fxRate = rate;
             markets[mkt].fullVal += (item.fullPrice || 0) * rate;
         });
-
         const marketList = Object.values(markets);
-
         const hkdSum = marketList.reduce((acc, m) => {
             acc.netVal += m.netVal;
             acc.fullVal += m.fullVal;
             return acc;
         }, { netVal: 0, fullVal: 0 });
-
         return {
             marketList,
             hkdSum,
@@ -825,27 +800,22 @@ export default function DQAQHoldingPage() {
     const currentMktStats = useMemo(() => {
         const accountsSet = new Set<string>();
         const marketsSet = new Set<string>();
-
         processLiving.forEach(item => {
             if (item.account) accountsSet.add(item.account);
             if (item.currency) marketsSet.add(item.currency);
         });
-
         const accounts = Array.from(accountsSet).sort();
         const markets = Array.from(marketsSet).sort();
-
         const rawMatrix: Record<string, Record<string, number>> = {};
         markets.forEach(m => {
             rawMatrix[m] = {};
             accounts.forEach(a => rawMatrix[m][a] = 0);
         });
-
         processLiving.forEach(item => {
             if (item.currency && item.account) {
                 rawMatrix[item.currency][item.account] += (item.mktVal || 0);
             }
         });
-
         return { accounts, markets, rawMatrix };
     }, [processLiving]);
 
@@ -856,12 +826,10 @@ export default function DQAQHoldingPage() {
             if (item.currency) marketsSet.add(item.currency);
         });
         const markets = Array.from(marketsSet).sort();
-
         const rawMatrix: Record<string, { realized: number, unrealized: number, total: number }> = {};
         markets.forEach(m => {
             rawMatrix[m] = { realized: 0, unrealized: 0, total: 0 };
         });
-
         processLiving.forEach(item => {
             if (item.currency) {
                 // DQ/AQ 的已实现损益永远为 0，所有净值均为未实现浮动损益
@@ -869,9 +837,42 @@ export default function DQAQHoldingPage() {
                 rawMatrix[item.currency].total += (item.mktVal || 0);
             }
         });
-
         return { markets, rawMatrix };
     }, [processLiving]);
+
+    // --- 【新增】DQ-AQ 风控板块 标的聚合逻辑 (暗线入库用) ---
+    const riskExposureSummary = useMemo(() => {
+        const summary: Record<string, any> = {};
+        finalRisk.forEach(row => {
+            const t = row.ticker;
+            if (!summary[t]) {
+                summary[t] = { ticker: t, market: row.currency, shares: 0, cost: 0 };
+            }
+            summary[t].shares += row.exposureShares;
+            summary[t].cost += row.exposureCost; 
+        });
+        return Object.values(summary).map(item => ({
+            ...item,
+            costPrice: item.shares !== 0 ? item.cost / item.shares : 0
+        }));
+    }, [finalRisk]);
+
+    const handleSaveExposure = async (isAuto = false) => {
+        if (!user) return;
+        if (!isAuto) setIsSavingExposure(true);
+        try {
+            const payload = {
+                data: riskExposureSummary,
+                updatedAt: new Date().toISOString()
+            };
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_dqaq', 'latest_summary'), payload);
+            if (!isAuto) setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+        } catch (e) {
+            console.error("保存暴露汇总失败:", e);
+        } finally {
+            if (!isAuto) setIsSavingExposure(false);
+        }
+    };
 
     // --- 市值与盈亏数据入库逻辑 ---
     const handleSaveMktValStats = async (isAuto = false) => {
@@ -1052,6 +1053,26 @@ export default function DQAQHoldingPage() {
                         </tbody>
                     </table>
                 </div>
+
+                {/* 暴露汇总底部功能区 */}
+                <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-red-100 shadow-sm">
+                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                        <span className="flex items-center gap-1.5"><Clock size={14} className="text-red-500" /> 暴露汇总最后入库时间: <span className="font-mono font-medium text-gray-700">{lastExposureSavedTime}</span></span>
+                        <span className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded border border-red-100">
+                            {isHKDView ? '※自动/手动入库已在折算视图下暂停，保护原始暴露数据' : '*后台暗线逻辑：已按标的(Ticker)合并计算总暴露成本与股数'}
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => alert('汇总数据已根据当前页面风险标的状态实时更新！您可以直接点击“暴露风险入库”。')} className="flex items-center gap-2 px-4 py-2 bg-white border border-red-600 text-red-600 hover:bg-red-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <RefreshCw size={14} /> 刷新汇总
+                        </button>
+                        {!isHKDView && (
+                            <button onClick={() => handleSaveExposure(false)} disabled={isSavingExposure} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                {isSavingExposure ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 暴露风险入库
+                            </button>
+                        )}
+                    </div>
+                </div>
             </div>
 
             {/* === 3. 历史持仓 === */}
@@ -1108,7 +1129,6 @@ export default function DQAQHoldingPage() {
                     </h2>
                     <span className="text-xs text-gray-400">仅市值与收益表进行入库</span>
                 </div>
-
                 <div className="flex bg-gray-100 p-1 rounded-lg w-max mb-4">
                     <button 
                         onClick={() => setStatsTab('GLOBAL')} 
@@ -1252,7 +1272,6 @@ export default function DQAQHoldingPage() {
                                 )}
                             </table>
                         </div>
-
                         <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-indigo-100 shadow-sm">
                             <div className="flex items-center gap-4 text-xs text-gray-500">
                                 <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
@@ -1340,7 +1359,6 @@ export default function DQAQHoldingPage() {
                                 )}
                             </table>
                         </div>
-
                         <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-rose-100 shadow-sm">
                             <div className="flex items-center gap-4 text-xs text-gray-500">
                                 <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
@@ -1374,7 +1392,6 @@ export default function DQAQHoldingPage() {
                         <RefreshCw size={14}/> 刷新数据
                     </button>
                 </div>
-
                 {/* 资料库 Tab 切换 */}
                 <div className="flex gap-2 mb-4 border-b pb-2 overflow-x-auto">
                     {[
@@ -1384,7 +1401,8 @@ export default function DQAQHoldingPage() {
                         'sip_holding_dqaq_output_died', 
                         'sip_holding_dqaq_output_get-stock',
                         'sip_holding_dqaq_mktvalue',
-                        'sip_holding_dqaq_pl'
+                        'sip_holding_dqaq_pl',
+                        'sip_exposure_dqaq'
                     ].map(tab => (
                         <button 
                             key={tab} 
@@ -1395,7 +1413,6 @@ export default function DQAQHoldingPage() {
                         </button>
                     ))}
                 </div>
-
                 {/* 资料库表格 */}
                 {loadingDb ? (
                     <div className="py-10 text-center"><Loader2 className="animate-spin mx-auto text-purple-600 mb-2" size={30}/><p className="text-gray-400 text-sm">拉取中...</p></div>
@@ -1523,7 +1540,6 @@ export default function DQAQHoldingPage() {
                                 </table>
                             </div>
                         </div>
-
                         <div className="px-6 py-4 border-t bg-gray-50 flex justify-end gap-3 flex-shrink-0">
                             <button onClick={() => { setShowDeliveryModal(false); setPendingDeliveries([]); }} className="px-5 py-2.5 rounded-md text-gray-700 font-bold bg-white border border-gray-300 hover:bg-gray-100 transition-colors shadow-sm">取消并跳过</button>
                             <button onClick={handleConfirmDeliveries} disabled={syncingDeliveries} className="px-6 py-2.5 rounded-md text-white font-bold flex items-center gap-2 transition-all shadow-md bg-orange-600 hover:bg-orange-700 disabled:opacity-50">
@@ -1555,7 +1571,6 @@ export default function DQAQHoldingPage() {
                                 <X size={20}/>
                             </button>
                         </div>
-
                         <div className="min-h-[350px] flex items-center justify-center bg-gray-50 rounded-lg border border-gray-200 p-6 relative overflow-hidden">
                             {isPlotLoading ? (
                                 <div className="flex flex-col items-center text-blue-600">
