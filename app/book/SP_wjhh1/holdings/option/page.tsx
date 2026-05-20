@@ -1,4 +1,4 @@
-'use client';
+    'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
@@ -14,7 +14,9 @@ import {
   CheckCircle2,
   PieChart,
   Clock,
-  BarChart
+  BarChart,
+  Settings,
+  Edit3
 } from 'lucide-react';
 import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, addDoc, onSnapshot, query, where } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
@@ -36,10 +38,6 @@ const formatTime = (val: any) => {
     return new Date(val).toLocaleString();
 };
 
-// ==========================================
-// 终极修复：绝对纯净的数值与颜色格式化工具
-// 彻底剥离 JSX 中的尖括号逻辑，防爆绝杀
-// ==========================================
 const fmtMoney = (val: number) => {
     return val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
@@ -60,11 +58,10 @@ const cColor = (val: number, posClass: string, negClass: string, zeroClass: stri
     return zeroClass;
 };
 
-// --- 補助関数：シリアライズ処理 ---
+// --- 序列化辅助函数 ---
 const replaceUndefinedWithNull = (obj: any): any => {
     if (obj === undefined) return null;
     if (obj === null || typeof obj !== 'object') return obj;
-    // ネイティブのDateオブジェクトとFirestoreのTimestampをそのまま通す
     if (obj instanceof Date) return obj; 
     if (obj.toDate && typeof obj.toDate === 'function') return obj; 
     if (obj._methodName) return obj; 
@@ -78,7 +75,7 @@ const replaceUndefinedWithNull = (obj: any): any => {
     return newObj;
 };
 
-// --- 正確な有効期限の計算 (HKT UTC+8) ---
+// --- 过期时间计算 ---
 const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
     if (!expDateStr) return Infinity;
     try {
@@ -103,7 +100,7 @@ const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
     }
 };
 
-// --- ソート・フィルタリング可能なテーブルヘッダーコンポーネント ---
+// --- 表头组件 ---
 const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onFilter, align='left' }: any) => {
     const justifyClass = align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start';
     const textClass = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
@@ -150,6 +147,9 @@ interface MergedRecord {
     createdAt: any;
 }
 
+// ==========================================
+// 主页面组件
+// ==========================================
 export default function OptionHoldingPage() {
     const [user, setUser] = useState<any>(null);
     
@@ -158,6 +158,11 @@ export default function OptionHoldingPage() {
     const [diedRecords, setDiedRecords] = useState<MergedRecord[]>([]);
     const [loadingLiving, setLoadingLiving] = useState(false);
     const [loadingDied, setLoadingDied] = useState(false);
+
+    // --- 高危编辑模式状态 (方案A) ---
+    const [isEditModeLiving, setIsEditModeLiving] = useState(false);
+    const [isEditModeDied, setIsEditModeDied] = useState(false); // 新增历史编辑状态
+    const [isDeleting, setIsDeleting] = useState(false);
 
     // --- 统计模块切换 ---
     const [statsTab, setStatsTab] = useState<'GLOBAL' | 'MKT_VAL' | 'PL'>('GLOBAL');
@@ -172,7 +177,8 @@ export default function OptionHoldingPage() {
     const [activeDbTab, setActiveDbTab] = useState('sip_holding_option_output_living');
     const [dbRecords, setDbRecords] = useState<any[]>([]);
     const [loadingDb, setLoadingDb] = useState(false);
-    const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
+    // 统一复用 Edit Modal，增加 targetCollection 支持跨库修改
+    const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string, targetCollection?: string} | null>(null);
 
     // --- ソートとフィルターのState ---
     const [livingSort, setLivingSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: '', dir: null});
@@ -191,11 +197,9 @@ export default function OptionHoldingPage() {
     const [isSavingCash, setIsSavingCash] = useState(false);
     const [lastCashSavedTime, setLastCashSavedTime] = useState<string>('未获取');
 
-    // --- 新增：暴露风险相关的 State ---
     const [isSavingExposure, setIsSavingExposure] = useState(false);
     const [lastExposureSavedTime, setLastExposureSavedTime] = useState<string>('未获取');
 
-    // --- 拦截确认接货流水的 State ---
     const [showDeliveryModal, setShowDeliveryModal] = useState(false);
     const [pendingDeliveries, setPendingDeliveries] = useState<any[]>([]);
     const [syncingDeliveries, setSyncingDeliveries] = useState(false);
@@ -204,7 +208,7 @@ export default function OptionHoldingPage() {
         setSort((prev: any) => {
             if (prev.key === key) {
                 if (prev.dir === 'asc') return { key, dir: 'desc' };
-                if (prev.dir === 'desc') return { key: '', dir: null };
+                if (prev.dir === 'desc') return { key:'', dir: null };
             }
             return { key, dir: 'asc' };
         });
@@ -220,7 +224,6 @@ export default function OptionHoldingPage() {
     const toggleDiedSort = toggleSort(setDiedSort);
     const updateDiedFilter = handleFilter(setDiedFilters);
 
-    // --- 【安全锁判定】检查是否有模糊筛选激活 ---
     const hasActiveFilters = useMemo(() => {
         const holdingFiltered = Object.values(livingFilters).some(val => val && String(val).trim() !== '');
         const riskFiltered = Object.values(riskFilters).some(val => val && String(val).trim() !== '');
@@ -228,7 +231,6 @@ export default function OptionHoldingPage() {
         return holdingFiltered || riskFiltered || diedFiltered;
     }, [livingFilters, riskFilters, diedFilters]);
 
-    // --- 認証の初期化とリスナー設定 ---
     useEffect(() => {
         let unsubCashTime: (() => void) | undefined;
         let unsubMktValTime: (() => void) | undefined;
@@ -265,7 +267,6 @@ export default function OptionHoldingPage() {
                         }
                     });
 
-                    // 新增：监听暴露风控的时间
                     unsubExposureTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_option', 'latest_summary'), (docSnap) => {
                         if (docSnap.exists()) {
                             const data = docSnap.data();
@@ -284,7 +285,6 @@ export default function OptionHoldingPage() {
         };
     }, []);
 
-    // --- コア処理：tradeIdを基にInputとOutputのコレクションをマージ ---
     const fetchMergedRecords = async (lifeCycle: 'living' | 'died'): Promise<MergedRecord[]> => {
         try {
             const inputSnap = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_option_input_${lifeCycle}`));
@@ -340,7 +340,6 @@ export default function OptionHoldingPage() {
         } catch(e) { console.error(e); }
     };
 
-    // --- データベース管理のデータを取得 ---
     const fetchDbRecords = async (collectionName: string) => {
         if (!user) return;
         setLoadingDb(true);
@@ -365,7 +364,34 @@ export default function OptionHoldingPage() {
     useEffect(() => { if (user) fetchDbRecords(activeDbTab); }, [activeDbTab, user]);
     useEffect(() => { if (user) { loadRecords(); fetchDbRecords(activeDbTab); } }, [user]);
 
-    // --- API呼び出し群 ---
+    const handleCascadeDelete = async (tradeId: string, lifecycle: 'living' | 'died') => {
+        if (!confirm(`⚠️ 高危警告：您正在执行级联删除！\n\n将永久删除 tradeId: ${tradeId} 的所有关联记录，包括：\n- Option Input 原始参数\n- Option Output 计算结果\n- 相关的资金流水 (Cash)\n- 相关的实盘交收记录 (Get-Stock)\n\n此操作不可逆，是否继续？`)) return;
+        setIsDeleting(true);
+        try {
+            const collectionsToDelete = [
+                `sip_trade_option_input_${lifecycle}`,
+                `sip_holding_option_output_${lifecycle}`,
+                `sip_holding_cash_option`,
+                `sip_holding_option_output_get-stock`
+            ];
+            let deletedCount = 0;
+            for (const colName of collectionsToDelete) {
+                const q = query(collection(db, 'artifacts', APP_ID, 'public', 'data', colName), where('tradeId', '==', tradeId));
+                const snap = await getDocs(q);
+                for (const document of snap.docs) {
+                    await deleteDoc(document.ref);
+                    deletedCount++;
+                }
+            }
+            alert(`✅ 级联删除成功！共抹除 ${deletedCount} 条关联记录。`);
+            await loadRecords(); // Refresh the list
+        } catch (e: any) {
+            alert(`❌ 级联删除失败: ${e.message}`);
+        } finally {
+            setIsDeleting(false);
+        }
+    };
+
     const fetchQuotePrice = async (symbol: string): Promise<number | null> => {
         try {
             const res = await fetch(`/api/quote?symbol=${symbol}`);
@@ -429,7 +455,6 @@ export default function OptionHoldingPage() {
         setIsHKDView(!isHKDView);
     };
 
-    // --- コアの計算と状態判定ロジック ---
     const evaluateOption = async (mergedRecord: MergedRecord) => {
         const { inputData, outputData } = mergedRecord;
         const { basic, underlying, dates } = inputData;
@@ -581,7 +606,6 @@ export default function OptionHoldingPage() {
         finally { setLoadingLiving(false); }
     };
 
-    // --- 拦截确认弹窗内的可编辑修改 ---
     const handlePendingDeliveryChange = (index: number, field: string, value: any) => {
         const newData = [...pendingDeliveries];
         const row = { ...newData[index] };
@@ -675,7 +699,6 @@ export default function OptionHoldingPage() {
         finally { setLoadingDied(false); }
     };
 
-    // --- データの平坦化とテーブルヘッダーのロジック ---
     const useTableData = (data: any[], sortConfig: any, filterConfig: any, isHKDView: boolean, globalFx: Record<string, number>) => {
         return useMemo(() => {
             let result = [...data];
@@ -724,6 +747,7 @@ export default function OptionHoldingPage() {
             const dts = r.inputData?.dates || {};
             return {
                 id: r.tradeId,
+                rawRecord: r, 
                 status: out.status,
                 tradeDate: dts.tradeDate || '',
                 expiryDate: dts.expiryDate || '',
@@ -756,7 +780,11 @@ export default function OptionHoldingPage() {
 
             let exposureShares = 0;
             if (isITM) {
+                // 原有的暴露计算，这里确保卖出期权的暴露方向是负的
                 exposureShares = isCall ? qty : -qty;
+                if (basic.direction === 'Sell') {
+                    exposureShares = -exposureShares;
+                }
             }
 
             const exposureCost = exposureShares * strike;
@@ -792,6 +820,7 @@ export default function OptionHoldingPage() {
             const dts = r.inputData?.dates || {};
             return {
                 id: r.tradeId,
+                rawRecord: r,
                 status: out.status,
                 tradeDate: dts.tradeDate || '',
                 expiryDate: dts.expiryDate || '',
@@ -877,25 +906,21 @@ export default function OptionHoldingPage() {
         return { marketList, hkdSum };
     }, [finalLiving, finalDied, globalFxRates]);
 
-    // --- 新增：暴露净风险按标的聚合 (支持多空抵消) ---
+    // --- 暴露净风险按标的聚合 (支持多空抵消) ---
     const riskExposureSummary = useMemo(() => {
         const summary: Record<string, any> = {};
         finalRisk.forEach(row => {
-            // 只统计实际有暴露的标的
             if (row.exposureShares === 0) return;
-
             const t = row.ticker;
             if (!summary[t]) {
                 summary[t] = { ticker: t, market: row.currency, shares: 0, cost: 0 };
             }
-            // 买卖双方（多空）在此自动相加抵消
             summary[t].shares += row.exposureShares;
             summary[t].cost += row.exposureCost; 
         });
         
         return Object.values(summary).map(item => ({
             ...item,
-            // 防爆计算
             costPrice: Math.abs(item.shares) > 0.0001 ? item.cost / item.shares : 0
         }));
     }, [finalRisk]);
@@ -1065,9 +1090,8 @@ export default function OptionHoldingPage() {
         }
     };
 
-    // --- 新增：暴露汇总入库逻辑 ---
     const handleSaveExposure = async (isAuto = false) => {
-        if (!user) return;
+        if (!user || isHKDView || hasActiveFilters) return;
         if (!isAuto) setIsSavingExposure(true);
         try {
             const payload = {
@@ -1083,7 +1107,6 @@ export default function OptionHoldingPage() {
         }
     };
 
-    // 每分钟自动入库，加入防污染锁
     useEffect(() => {
         if (!user) return;
         const intervalId = setInterval(() => {
@@ -1091,7 +1114,7 @@ export default function OptionHoldingPage() {
                 handleSaveMktValStats(true);
                 handleSavePlStats(true);
                 handleSaveCashStats(true);
-                handleSaveExposure(true); // 自动存入暴露数据
+                handleSaveExposure(true); 
             }
         }, 60000); 
         return () => clearInterval(intervalId);
@@ -1135,10 +1158,11 @@ export default function OptionHoldingPage() {
             const docId = parsedData.id || editRecordModal.record?.id;
             delete parsedData.id; 
             parsedData.updatedAt = new Date();
-            await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
+            const targetCol = editRecordModal.targetCollection || activeDbTab;
+            await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', targetCol, docId), parsedData);
             alert("数据修改成功！");
             setEditRecordModal(null);
-            fetchDbRecords(activeDbTab); 
+            if(targetCol === activeDbTab) fetchDbRecords(activeDbTab); 
         } catch(e:any) { alert("修改失败 (请检查 JSON 格式是否正确): \n" + e.message); }
     };
 
@@ -1266,7 +1290,16 @@ export default function OptionHoldingPage() {
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
                         <Database size={20} className="text-blue-600"/> 【Option 持仓板块 (存续中)】
                     </h2>
-                    <span className="text-sm text-gray-500">Living 库总计: {livingRecords.length} 笔</span>
+                    <div className="flex items-center gap-4">
+                        <span className="text-sm text-gray-500">Living 库总计: {livingRecords.length} 笔</span>
+                        <button 
+                            onClick={() => setIsEditModeLiving(!isEditModeLiving)}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold transition-colors border ${isEditModeLiving ? 'bg-red-50 text-red-700 border-red-200 shadow-inner' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50 shadow-sm'}`}
+                        >
+                            {isEditModeLiving ? <X size={14}/> : <Edit3 size={14}/>}
+                            {isEditModeLiving ? '退出高级编辑' : '开启高级编辑'}
+                        </button>
+                    </div>
                 </div>
                 
                 <div className="overflow-x-auto overflow-y-auto max-h-[500px] border rounded-lg mb-4 shadow-sm relative scrollbar-thin">
@@ -1286,11 +1319,12 @@ export default function OptionHoldingPage() {
                                 <Th label="期权金(已实现)" sortKey="realizedPremium" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
                                 <Th label="当前预期收益(未实现)" sortKey="unrealizedPnl" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
                                 <Th label="当前总收益" sortKey="totalPnl" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                {isEditModeLiving && <th className="px-5 py-3 text-center bg-red-50 text-red-800 font-bold border-l border-red-100 whitespace-nowrap">高危操作区</th>}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                             {finalLiving.length === 0 ? (
-                                <tr><td colSpan={12} className="px-4 py-8 text-center text-gray-400">暂无存续中的持仓数据</td></tr>
+                                <tr><td colSpan={isEditModeLiving ? 14 : 13} className="px-4 py-8 text-center text-gray-400">暂无存续中的持仓数据</td></tr>
                             ) : finalLiving.map((item) => (
                                 <tr key={item.id} className="hover:bg-blue-50/50 transition-colors">
                                     <td className="px-3 py-2 text-center font-bold text-green-700">{item.status}</td>
@@ -1314,6 +1348,32 @@ export default function OptionHoldingPage() {
                                     <td className={"px-3 py-2 text-right font-mono font-bold " + cColor(item.totalPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>
                                         {fmtSign(isHKDView ? item.totalPnl * (globalFxRates[item.currency] || item.fx_rate || 1) : item.totalPnl)}
                                     </td>
+                                    {isEditModeLiving && (
+                                        <td className="px-5 py-2 text-center border-l border-red-50 bg-red-50/30 whitespace-nowrap">
+                                            <div className="flex justify-center items-center gap-2">
+                                                <button 
+                                                    onClick={() => setEditRecordModal({
+                                                        show: true, 
+                                                        record: item.rawRecord.inputData, 
+                                                        rawJson: JSON.stringify(item.rawRecord.inputData, null, 4),
+                                                        targetCollection: 'sip_trade_option_input_living'
+                                                    })} 
+                                                    className="p-1.5 bg-white text-purple-600 hover:bg-purple-50 border border-purple-200 rounded shadow-sm transition-colors" 
+                                                    title="高级修改 Input 参数"
+                                                >
+                                                    <Settings size={14}/>
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleCascadeDelete(item.id, 'living')}
+                                                    disabled={isDeleting}
+                                                    className="p-1.5 bg-white text-red-600 hover:bg-red-50 border border-red-200 rounded shadow-sm transition-colors disabled:opacity-50" 
+                                                    title="级联删除全部关联记录"
+                                                >
+                                                    {isDeleting ? <Loader2 size={14} className="animate-spin"/> : <Trash2 size={14}/>}
+                                                </button>
+                                            </div>
+                                        </td>
+                                    )}
                                 </tr>
                             ))}
                         </tbody>
@@ -1326,6 +1386,7 @@ export default function OptionHoldingPage() {
                                     <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(livingSumsHKD.realizedPremium, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(livingSumsHKD.realizedPremium)}</td>
                                     <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(livingSumsHKD.unrealizedPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(livingSumsHKD.unrealizedPnl)}</td>
                                     <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(livingSumsHKD.totalPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(livingSumsHKD.totalPnl)}</td>
+                                    {isEditModeLiving && <td className="bg-red-50 border-l border-red-100"></td>}
                                 </tr>
                             </tfoot>
                         )}
@@ -1342,7 +1403,7 @@ export default function OptionHoldingPage() {
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                        <TrendingUp size={20} className="text-red-600"/> 【Option 风控模块 (现货交收暴露)】
+                        <TrendingUp size={20} className="text-red-600"/> 【Option 风控模块 (多空净暴露抵消)】
                     </h2>
                     <span className="text-sm text-gray-500">潜在交收标的: {finalRisk.filter(r => r.exposureShares !== 0).length} 项</span>
                 </div>
@@ -1354,9 +1415,9 @@ export default function OptionHoldingPage() {
                                 <Th label="标的代码" filterKey="ticker" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="center" />
                                 <Th label="Option 名称" filterKey="name" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="left" />
                                 <Th label="账户" sortKey="account" filterKey="account" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="center" />
-                                <Th label="暴露成本价" sortKey="strike" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
-                                <Th label="暴露股数 (多/空)" sortKey="exposureShares" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
-                                <Th label="暴露成本总额" sortKey="exposureCost" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
+                                <Th label="综合净成本(Strike)" sortKey="strike" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
+                                <Th label="净暴露股数(对冲后)" sortKey="exposureShares" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
+                                <Th label="净暴露成本总额" sortKey="exposureCost" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
                                 <Th label="暴露当前市值" sortKey="exposureMktVal" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
                                 <Th label="现货暴露盈亏比" sortKey="pnlRatio" currentSort={riskSort} onSort={toggleRiskSort} currentFilter={riskFilters} onFilter={updateRiskFilter} align="right" />
                             </tr>
@@ -1423,7 +1484,16 @@ export default function OptionHoldingPage() {
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
                         <Database size={20} className="text-orange-600"/> 【Option 持仓板块 (历史复盘)】
                     </h2>
-                    <span className="text-sm text-gray-500">Died 库总计: {diedRecords.length} 笔</span>
+                    <div className="flex items-center gap-4">
+                        <span className="text-sm text-gray-500">Died 库总计: {diedRecords.length} 笔</span>
+                        <button 
+                            onClick={() => setIsEditModeDied(!isEditModeDied)}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold transition-colors border ${isEditModeDied ? 'bg-red-50 text-red-700 border-red-200 shadow-inner' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50 shadow-sm'}`}
+                        >
+                            {isEditModeDied ? <X size={14}/> : <Edit3 size={14}/>}
+                            {isEditModeDied ? '退出高级编辑' : '开启高级编辑'}
+                        </button>
+                    </div>
                 </div>
                 
                 <div className="overflow-x-auto overflow-y-auto max-h-[500px] border rounded-lg mb-4 shadow-sm relative scrollbar-thin">
@@ -1442,11 +1512,12 @@ export default function OptionHoldingPage() {
                                 <Th label="结算标的价" sortKey="spotPrice" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
                                 <Th label="期权金(已实现)" sortKey="realizedPremium" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
                                 <Th label="历史总收益" sortKey="totalPnl" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
+                                {isEditModeDied && <th className="px-5 py-3 text-center bg-red-50 text-red-800 font-bold border-l border-red-100 whitespace-nowrap">高危操作区</th>}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                             {finalDied.length === 0 ? (
-                                <tr><td colSpan={11} className="px-4 py-8 text-center text-gray-400">暂无历史期权数据</td></tr>
+                                <tr><td colSpan={isEditModeDied ? 13 : 12} className="px-4 py-8 text-center text-gray-400">暂无历史期权数据</td></tr>
                             ) : finalDied.map((item) => (
                                 <tr key={item.id} className="hover:bg-orange-50/50 transition-colors">
                                     <td className="px-3 py-2 text-center font-bold text-gray-500">{item.status}</td>
@@ -1467,6 +1538,32 @@ export default function OptionHoldingPage() {
                                     <td className={"px-3 py-2 text-right font-mono font-bold " + cColor(item.totalPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>
                                         {fmtSign(isHKDView ? item.totalPnl * (globalFxRates[item.currency] || item.fx_rate || 1) : item.totalPnl)}
                                     </td>
+                                    {isEditModeDied && (
+                                        <td className="px-5 py-2 text-center border-l border-red-50 bg-red-50/30 whitespace-nowrap">
+                                            <div className="flex justify-center items-center gap-2">
+                                                <button 
+                                                    onClick={() => setEditRecordModal({
+                                                        show: true, 
+                                                        record: item.rawRecord.inputData, 
+                                                        rawJson: JSON.stringify(item.rawRecord.inputData, null, 4),
+                                                        targetCollection: 'sip_trade_option_input_died' // 注意这里定向到 died 库
+                                                    })} 
+                                                    className="p-1.5 bg-white text-purple-600 hover:bg-purple-50 border border-purple-200 rounded shadow-sm transition-colors" 
+                                                    title="高级修改 Input 参数"
+                                                >
+                                                    <Settings size={14}/>
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleCascadeDelete(item.id, 'died')} // 级联删除 died 生命周期
+                                                    disabled={isDeleting}
+                                                    className="p-1.5 bg-white text-red-600 hover:bg-red-50 border border-red-200 rounded shadow-sm transition-colors disabled:opacity-50" 
+                                                    title="级联删除全部关联记录"
+                                                >
+                                                    {isDeleting ? <Loader2 size={14} className="animate-spin"/> : <Trash2 size={14}/>}
+                                                </button>
+                                            </div>
+                                        </td>
+                                    )}
                                 </tr>
                             ))}
                         </tbody>
@@ -1775,7 +1872,7 @@ export default function OptionHoldingPage() {
                                             </div>
                                         </td>
                                         <td className="px-3 py-2 text-center whitespace-nowrap">
-                                            <button onClick={() => setEditRecordModal({show: true, record: r, rawJson: JSON.stringify(r, null, 4)})} className="text-blue-600 hover:text-blue-800 mx-1 p-1 hover:bg-blue-50 rounded transition-colors" title="修改 JSON"><FileJson size={16}/></button>
+                                            <button onClick={() => setEditRecordModal({show: true, record: r, rawJson: JSON.stringify(r, null, 4), targetCollection: activeDbTab})} className="text-blue-600 hover:text-blue-800 mx-1 p-1 hover:bg-blue-50 rounded transition-colors" title="修改 JSON"><FileJson size={16}/></button>
                                             <button onClick={() => handleDeleteRecord(r.id)} className="text-red-600 hover:text-red-800 mx-1 p-1 hover:bg-red-50 rounded transition-colors" title="永久删除"><Trash2 size={16}/></button>
                                         </td>
                                     </tr>
@@ -1786,27 +1883,29 @@ export default function OptionHoldingPage() {
                 )}
             </div>
 
-            {/* 修改 Raw JSON 弹窗 */}
+            {/* 统一修改 Raw JSON 弹窗 (支持从持仓列表高级修改) */}
             {editRecordModal && (
                 <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
                     <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-5xl flex flex-col h-[85vh] max-h-[90vh]">
                         <div className="flex justify-between items-center mb-4 border-b pb-4">
-                            <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700">
-                                <FileJson size={20}/> 
-                                进阶修改记录 - {editRecordModal?.record?.id}
-                            </h3>
+                            <div>
+                                <h3 className="font-bold text-lg flex items-center gap-2 text-purple-700">
+                                    <FileJson size={20}/> 进阶修改底层参数
+                                </h3>
+                                <p className="text-xs text-gray-500 mt-1">
+                                    目标数据库: <code className="bg-gray-100 px-1 rounded text-purple-600">{editRecordModal.targetCollection || activeDbTab}</code> | Document ID: {editRecordModal.record.id}
+                                </p>
+                            </div>
                             <button onClick={() => setEditRecordModal(null)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
                         </div>
-                        <p className="text-xs text-gray-500 mb-2 border-l-2 border-orange-400 pl-2">
-                            警告：直接修改 Raw JSON 属于高阶操作，请确保 JSON 格式合法且结构正确，否则可能会导致页面崩溃或逻辑错误。
-                        </p>
-                        
+                        <div className="text-xs text-gray-600 mb-2 border-l-4 border-orange-400 bg-orange-50 p-2 rounded">
+                            <strong className="text-orange-700">高危操作警告：</strong> 您正在直接编辑底层源数据。保存后，必须返回页面顶端手动点击【刷新当前持仓】或【刷新历史持仓】，引擎才会利用这些新参数重新计算输出结果并重写资金流水。
+                        </div>
                         <textarea 
                             className="flex-1 w-full border border-gray-300 rounded-md p-3 text-xs font-mono mb-4 focus:ring-2 focus:ring-purple-500 outline-none resize-none" 
-                            value={editRecordModal?.rawJson || ''}
+                            value={editRecordModal.rawJson || ''}
                             onChange={(e) => setEditRecordModal(prev => prev ? {...prev, rawJson: e.target.value} : null)}
                         />
-                        
                         <div className="flex justify-end gap-3 pt-2 border-t">
                             <button onClick={() => setEditRecordModal(null)} className="px-5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-medium transition-colors">取消</button>
                             <button onClick={handleSaveRecordEdit} className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-sm font-bold flex items-center gap-2 transition-colors">
