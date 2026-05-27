@@ -206,7 +206,7 @@ function IndustryTooltip({ active, payload }: any) {
   if (!data) return null;
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-lg">
+    <div className="rounded-xl border border-slate-200 bg-white/95 p-3 text-xs shadow-xl shadow-slate-200/70 backdrop-blur">
       <div className="mb-2 font-bold text-gray-900">{data.name}</div>
       <div className="space-y-1 text-gray-600">
         <div>暴露市值：<span className="font-mono text-gray-900">{formatNumber(data.netMktValHKD)} HKD</span></div>
@@ -506,11 +506,13 @@ export default function ExposureIndustryPage() {
   }, [industryGroups]);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+    <div className="space-y-6 rounded-2xl bg-gradient-to-br from-slate-50 via-white to-emerald-50/50 p-1">
+      <div className="rounded-2xl border border-white/80 bg-white/75 p-6 shadow-sm backdrop-blur">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">行业暴露情况</h1>
-          <p className="mt-2 text-sm text-gray-500">
+          <div className="mb-3 inline-flex rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-100">Industry Heatmap</div>
+          <h1 className="text-3xl font-black tracking-tight text-slate-950">行业暴露情况</h1>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
             参考行业热力图展示组合暴露：面积代表暴露市值，颜色代表加权当日涨跌幅。
           </p>
         </div>
@@ -526,7 +528,7 @@ export default function ExposureIndustryPage() {
               </option>
             ))}
           </select>
-          <div className="rounded-md bg-gray-200 p-1">
+          <div className="rounded-xl bg-slate-200/80 p-1 shadow-inner">
             <button
               onClick={() => setLevel('level1')}
               className={`rounded px-3 py-1.5 text-xs font-bold transition-colors ${level === 'level1' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}
@@ -543,42 +545,43 @@ export default function ExposureIndustryPage() {
           <button
             onClick={refreshData}
             disabled={loading || !userReady}
-            className="inline-flex items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-50"
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-slate-200 transition-colors hover:bg-blue-700 disabled:opacity-50"
           >
             {loading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
             刷新行情与暴露
           </button>
         </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-5 shadow-sm shadow-slate-100">
           <div className="text-xs font-bold text-gray-400">行业数量</div>
-          <div className="mt-2 text-2xl font-black text-gray-900">{summary.groupsCount}</div>
+          <div className="mt-2 text-3xl font-black text-slate-950">{summary.groupsCount}</div>
         </div>
-        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-5 shadow-sm shadow-slate-100">
           <div className="text-xs font-bold text-gray-400">总暴露市值 HKD</div>
-          <div className="mt-2 text-2xl font-black text-gray-900">{formatNumber(summary.grossMktValHKD)}</div>
+          <div className="mt-2 text-3xl font-black text-slate-950">{formatNumber(summary.grossMktValHKD)}</div>
         </div>
-        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-5 shadow-sm shadow-slate-100">
           <div className="text-xs font-bold text-gray-400">组合加权当日涨跌</div>
-          <div className={`mt-2 text-2xl font-black ${getPnlClass(summary.weightedChange)}`}>{formatPercent(summary.weightedChange)}</div>
+          <div className={`mt-2 text-3xl font-black ${getPnlClass(summary.weightedChange)}`}>{formatPercent(summary.weightedChange)}</div>
         </div>
-        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-600 to-slate-950 p-5 text-white shadow-lg shadow-emerald-100">
           <div className="text-xs font-bold text-gray-400">最大行业暴露</div>
-          <div className="mt-2 text-2xl font-black text-gray-900">{summary.largestGroup}</div>
+          <div className="mt-2 text-3xl font-black">{summary.largestGroup}</div>
         </div>
       </div>
 
-      <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-200 px-4 py-3">
+      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-xl shadow-slate-200/60">
+        <div className="border-b border-slate-200 bg-slate-50/80 px-5 py-4">
           <h2 className="font-bold text-gray-900">{level === 'level1' ? '一级行业热力图' : '二级行业热力图'}</h2>
           <p className="mt-1 text-xs text-gray-500">
             {lastRefreshed ? `最后刷新：${lastRefreshed}` : '等待首次刷新'}
             {stockPoolLoading ? '；股票池加载中' : ''}
           </p>
         </div>
-        <div className="h-[620px] p-3">
+        <div className="h-[640px] bg-slate-950/5 p-3">
           {loading ? (
             <div className="flex h-full flex-col items-center justify-center text-gray-500">
               <Loader2 size={32} className="mb-3 animate-spin text-blue-600" />
@@ -606,9 +609,9 @@ export default function ExposureIndustryPage() {
       </div>
 
       {detailOpen && selectedGroup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
-          <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
-            <div className="flex items-start justify-between gap-4 border-b border-gray-200 bg-gray-50 px-6 py-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl shadow-slate-950/30">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 bg-gradient-to-r from-slate-50 to-blue-50 px-6 py-5">
               <div>
                 <h2 className="text-xl font-black text-gray-900">{selectedGroup.name}</h2>
                 <p className="mt-1 text-sm text-gray-500">
@@ -626,7 +629,7 @@ export default function ExposureIndustryPage() {
 
             <div className="overflow-auto">
               <table className="min-w-full whitespace-nowrap text-left text-sm">
-                <thead className="sticky top-0 z-10 bg-gray-50 text-xs font-bold text-gray-500 shadow-[0_1px_0_0_#e5e7eb]">
+                <thead className="sticky top-0 z-10 bg-slate-100 text-xs font-bold text-slate-500 shadow-[0_1px_0_0_#e5e7eb]">
                   <tr>
                     <th className="px-4 py-3">代码</th>
                     <th className="px-4 py-3">名称</th>
@@ -640,7 +643,7 @@ export default function ExposureIndustryPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100 bg-white">
                   {[...selectedGroup.rows].sort((a, b) => Math.abs(b.totalMktValHKD || 0) - Math.abs(a.totalMktValHKD || 0)).map((row) => (
-                    <tr key={row.key} className="hover:bg-blue-50/30">
+                    <tr key={row.key} className="transition-colors odd:bg-white even:bg-slate-50/40 hover:bg-blue-50">
                       <td className="px-4 py-3 font-mono font-bold text-blue-700">{row.symbol}</td>
                       <td className="px-4 py-3 font-medium text-gray-800">{row.name}</td>
                       <td className="px-4 py-3 font-mono text-gray-500">{row.market}</td>
@@ -658,8 +661,8 @@ export default function ExposureIndustryPage() {
         </div>
       )}
 
-      <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
-        <div className="border-b border-gray-200 px-4 py-3">
+      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-xl shadow-slate-200/60">
+        <div className="border-b border-slate-200 bg-slate-50/80 px-5 py-4">
           <h2 className="font-bold text-gray-900">行业汇总表</h2>
         </div>
         <div className="overflow-auto">
@@ -681,7 +684,7 @@ export default function ExposureIndustryPage() {
                 <tr
                   key={group.key}
                   onClick={() => setSelectedKey(group.key)}
-                  className={`cursor-pointer hover:bg-blue-50/30 ${selectedGroup?.key === group.key ? 'bg-blue-50' : ''}`}
+                  className={`cursor-pointer transition-colors odd:bg-white even:bg-slate-50/40 hover:bg-blue-50 ${selectedGroup?.key === group.key ? 'bg-blue-50' : ''}`}
                 >
                   <td className="px-3 py-3 font-bold text-gray-900">{group.name}</td>
                   {level === 'level2' && <td className="px-3 py-3 text-gray-600">{group.sectorLevel1}</td>}
@@ -696,7 +699,7 @@ export default function ExposureIndustryPage() {
             </tbody>
           </table>
         </div>
-        <div className="border-t border-gray-100 bg-gray-50 px-4 py-3 text-xs text-gray-500">
+        <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 text-xs text-slate-500">
           面积按绝对暴露市值计算，颜色按个股当日涨跌幅以绝对市值加权。绿涨红跌，和现有持仓页口径保持一致。
         </div>
       </div>

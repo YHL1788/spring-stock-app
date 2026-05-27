@@ -401,41 +401,44 @@ export default function ExposureUnderlyingPage() {
   );
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+    <div className="space-y-6 rounded-2xl bg-gradient-to-br from-slate-50 via-white to-blue-50/60 p-1">
+      <div className="rounded-2xl border border-white/80 bg-white/75 p-6 shadow-sm backdrop-blur">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">标的暴露情况</h1>
-          <p className="mt-2 text-sm text-gray-500">
+          <div className="mb-3 inline-flex rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700 ring-1 ring-blue-100">Underlying Exposure</div>
+          <h1 className="text-3xl font-black tracking-tight text-slate-950">标的暴露情况</h1>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
             合并 DQ-AQ、FCN、Option、Spot 四类底层标的暴露，并按实时价格与汇率折算为 HKD。
           </p>
         </div>
         <button
           onClick={refreshData}
           disabled={loading || !userReady}
-          className="inline-flex items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-50"
+          className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-slate-200 transition-colors hover:bg-blue-700 disabled:opacity-50"
         >
           {loading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
           刷新行情与暴露
         </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-5 shadow-sm shadow-slate-100">
           <div className="text-xs font-bold text-gray-400">底层标的数量</div>
-          <div className="mt-2 text-2xl font-black text-gray-900">{summary.count}</div>
+          <div className="mt-2 text-3xl font-black text-slate-950">{summary.count}</div>
         </div>
-        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-5 shadow-sm shadow-slate-100">
           <div className="text-xs font-bold text-gray-400">总暴露成本 HKD</div>
-          <div className="mt-2 text-2xl font-black text-gray-900">{formatNumber(summary.totalCostHKD)}</div>
+          <div className="mt-2 text-3xl font-black text-slate-950">{formatNumber(summary.totalCostHKD)}</div>
         </div>
-        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-5 shadow-sm shadow-slate-100">
           <div className="text-xs font-bold text-gray-400">总暴露市值 HKD</div>
-          <div className="mt-2 text-2xl font-black text-gray-900">{formatNumber(summary.totalMktValHKD)}</div>
+          <div className="mt-2 text-3xl font-black text-slate-950">{formatNumber(summary.totalMktValHKD)}</div>
         </div>
-        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-600 to-slate-950 p-5 text-white shadow-lg shadow-blue-100">
           <div className="text-xs font-bold text-gray-400">最大单一标的</div>
-          <div className="mt-2 text-2xl font-black text-gray-900">{summary.largestSymbol}</div>
-          <div className="mt-1 text-xs text-gray-500">{formatNumber(summary.largestCostHKD)} HKD</div>
+          <div className="mt-2 text-3xl font-black">{summary.largestSymbol}</div>
+          <div className="mt-1 text-xs text-blue-100">{formatNumber(summary.largestCostHKD)} HKD</div>
         </div>
       </div>
 
@@ -443,7 +446,7 @@ export default function ExposureUnderlyingPage() {
         {EXPOSURE_SOURCES.map((source) => {
           const status = sourceStatuses.find((item) => item.label === source.label);
           return (
-            <div key={source.key} className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
+            <div key={source.key} className="rounded-2xl border border-slate-200/70 bg-white/90 px-5 py-4 shadow-sm shadow-slate-100">
               <div className="flex items-start justify-between gap-3">
                 <span className="text-sm font-bold text-gray-800">{source.label}</span>
                 <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${status?.error ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
@@ -458,8 +461,8 @@ export default function ExposureUnderlyingPage() {
         })}
       </div>
 
-      <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
-        <div className="flex flex-col gap-3 border-b border-gray-200 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-xl shadow-slate-200/60">
+        <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/80 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h2 className="font-bold text-gray-900">综合标的暴露表</h2>
             <p className="mt-1 text-xs text-gray-500">
@@ -483,7 +486,7 @@ export default function ExposureUnderlyingPage() {
         ) : (
           <div className="max-h-[620px] overflow-auto">
             <table className="min-w-full whitespace-nowrap text-left text-sm">
-              <thead className="sticky top-0 z-10 bg-gray-50 text-xs font-bold text-gray-500 shadow-[0_1px_0_0_#e5e7eb]">
+              <thead className="sticky top-0 z-10 bg-slate-100 text-xs font-bold text-slate-500 shadow-[0_1px_0_0_#e5e7eb]">
                 <tr>
                   <FilterTh label="股票代码" filterKey="symbol" />
                   <FilterTh label="市场" filterKey="market" align="center" />
@@ -499,9 +502,9 @@ export default function ExposureUnderlyingPage() {
                   <FilterTh label="二级行业" filterKey="sectorLevel2" />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100 bg-white">
+              <tbody className="divide-y divide-slate-100 bg-white">
                 {filteredRows.map((row) => (
-                  <tr key={row.key} className="hover:bg-blue-50/30">
+                  <tr key={row.key} className="transition-colors odd:bg-white even:bg-slate-50/40 hover:bg-blue-50">
                     <td className="px-3 py-3 font-mono font-bold text-blue-700">{row.symbol}</td>
                     <td className="px-3 py-3 font-mono text-gray-500">{row.market}</td>
                     <td className="px-3 py-3 font-medium text-gray-800">{row.name}</td>
@@ -525,7 +528,7 @@ export default function ExposureUnderlyingPage() {
           </div>
         )}
 
-        <div className="border-t border-gray-100 bg-gray-50 px-4 py-3 text-xs text-gray-500">
+        <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 text-xs text-slate-500">
           行情来自现有 <span className="font-mono">/api/quote</span>，行业与名称来自 <span className="font-mono">useStockPool()</span>。本页只读展示，不写回数据库。
         </div>
       </div>
