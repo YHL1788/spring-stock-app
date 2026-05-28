@@ -49,6 +49,31 @@ const htmlToPreview = (html: string) => {
   return (div.textContent || div.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 180);
 };
 
+const isFullHtmlDocument = (html: string) => /<!doctype html|<html[\s>]/i.test(html);
+
+const sanitizeFullHtmlDocument = (html: string) => {
+  if (typeof window === 'undefined') return '';
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+
+  doc.querySelectorAll('script, iframe, object, embed').forEach((el) => el.remove());
+  doc.querySelectorAll('*').forEach((el) => {
+    Array.from(el.attributes).forEach((attr) => {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.trim();
+      const isEventHandler = name.startsWith('on');
+      const isUnsafeUrl = ['href', 'src'].includes(name) && /^javascript:/i.test(value);
+
+      if (isEventHandler || isUnsafeUrl) {
+        el.removeAttribute(attr.name);
+      }
+    });
+  });
+
+  return `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
+};
+
 const sanitizeHtml = (html: string) => {
   if (typeof window === 'undefined') return '';
 
@@ -227,6 +252,10 @@ export default function SipResearchLibraryPage() {
 
   const sanitizedDraft = useMemo(() => sanitizeHtml(draft.htmlContent), [draft.htmlContent]);
   const sanitizedViewer = useMemo(() => sanitizeHtml(viewerRecord?.htmlContent || ''), [viewerRecord]);
+  const draftIsFullDocument = useMemo(() => isFullHtmlDocument(draft.htmlContent), [draft.htmlContent]);
+  const viewerIsFullDocument = useMemo(() => isFullHtmlDocument(viewerRecord?.htmlContent || ''), [viewerRecord]);
+  const draftIframeDoc = useMemo(() => sanitizeFullHtmlDocument(draft.htmlContent), [draft.htmlContent]);
+  const viewerIframeDoc = useMemo(() => sanitizeFullHtmlDocument(viewerRecord?.htmlContent || ''), [viewerRecord]);
 
   return (
     <div className="space-y-6 rounded-2xl bg-gradient-to-br from-slate-50 via-white to-amber-50/50 p-1">
@@ -407,9 +436,18 @@ export default function SipResearchLibraryPage() {
 
               <div className="overflow-auto bg-slate-50 p-6">
                 <div className="mb-3 text-sm font-bold text-gray-700">实时预览</div>
-                <div className="prose prose-slate max-w-none rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <div dangerouslySetInnerHTML={{ __html: sanitizedDraft || '<p style="color:#94a3b8">HTML 预览将在这里显示。</p>' }} />
-                </div>
+                {draftIsFullDocument ? (
+                  <iframe
+                    title="HTML preview"
+                    sandbox=""
+                    srcDoc={draftIframeDoc}
+                    className="h-[620px] w-full rounded-2xl border border-slate-200 bg-white shadow-sm"
+                  />
+                ) : (
+                  <div className="prose prose-slate max-w-none rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                    <div dangerouslySetInnerHTML={{ __html: sanitizedDraft || '<p style="color:#94a3b8">HTML 预览将在这里显示。</p>' }} />
+                  </div>
+                )}
               </div>
             </div>
 
@@ -445,7 +483,16 @@ export default function SipResearchLibraryPage() {
               </div>
             )}
             <div className="overflow-auto p-6">
-              <div className="prose prose-slate max-w-none" dangerouslySetInnerHTML={{ __html: sanitizedViewer }} />
+              {viewerIsFullDocument ? (
+                <iframe
+                  title={viewerRecord.noteID}
+                  sandbox=""
+                  srcDoc={viewerIframeDoc}
+                  className="h-[72vh] w-full rounded-2xl border border-slate-200 bg-white"
+                />
+              ) : (
+                <div className="prose prose-slate max-w-none" dangerouslySetInnerHTML={{ __html: sanitizedViewer }} />
+              )}
             </div>
           </div>
         </div>
