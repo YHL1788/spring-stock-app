@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Code2, Edit3, Eye, Loader2, Plus, RefreshCw, Save, Search, Trash2, X } from 'lucide-react';
+import { AlertCircle, Code2, Edit3, Eye, Loader2, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { collection, deleteDoc, doc, getDocs, setDoc } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { db, auth, APP_ID } from '@/app/lib/stockService';
@@ -9,6 +9,7 @@ import { db, auth, APP_ID } from '@/app/lib/stockService';
 interface ResearchNote {
   noteID: string;
   target: string;
+  author: string;
   htmlContent: string;
   note: string;
   plainTextPreview: string;
@@ -22,6 +23,7 @@ const COLLECTION_NAME = 'sip_research_library';
 
 const emptyDraft = {
   target: '',
+  author: '',
   note: '',
   htmlContent: '',
 };
@@ -128,7 +130,11 @@ export default function SipResearchLibraryPage() {
   const [records, setRecords] = useState<ResearchNote[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [targetFilter, setTargetFilter] = useState('');
+  const [filters, setFilters] = useState({
+    target: '',
+    author: '',
+    note: '',
+  });
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [editorOpen, setEditorOpen] = useState(false);
   const [viewerRecord, setViewerRecord] = useState<ResearchNote | null>(null);
@@ -169,6 +175,7 @@ export default function SipResearchLibraryPage() {
         list.push({
           noteID: data.noteID || item.id,
           target: data.target || '',
+          author: data.author || '',
           htmlContent: data.htmlContent || '',
           note: data.note || '',
           plainTextPreview: data.plainTextPreview || '',
@@ -187,15 +194,21 @@ export default function SipResearchLibraryPage() {
   }, [userReady]);
 
   const filteredRecords = useMemo(() => {
-    const q = targetFilter.trim().toUpperCase();
-    const filtered = q ? records.filter((record) => record.target.toUpperCase().includes(q)) : records;
+    const targetQuery = filters.target.trim().toUpperCase();
+    const authorQuery = filters.author.trim().toUpperCase();
+    const noteQuery = filters.note.trim().toUpperCase();
+    const filtered = records.filter((record) => (
+      (!targetQuery || record.target.toUpperCase().includes(targetQuery)) &&
+      (!authorQuery || record.author.toUpperCase().includes(authorQuery)) &&
+      (!noteQuery || record.note.toUpperCase().includes(noteQuery))
+    ));
 
     return [...filtered].sort((a, b) => {
       const left = new Date(a.updatedAt || a.createdAt).getTime() || 0;
       const right = new Date(b.updatedAt || b.createdAt).getTime() || 0;
       return sortDir === 'asc' ? left - right : right - left;
     });
-  }, [records, sortDir, targetFilter]);
+  }, [filters, records, sortDir]);
 
   const openCreate = () => {
     setEditingRecord(null);
@@ -207,6 +220,7 @@ export default function SipResearchLibraryPage() {
     setEditingRecord(record);
     setDraft({
       target: record.target,
+      author: record.author,
       note: record.note,
       htmlContent: record.htmlContent,
     });
@@ -226,6 +240,7 @@ export default function SipResearchLibraryPage() {
       const payload: ResearchNote = {
         noteID,
         target: draft.target.trim(),
+        author: draft.author.trim(),
         note: draft.note.trim(),
         htmlContent: draft.htmlContent,
         plainTextPreview: htmlToPreview(draft.htmlContent),
@@ -250,6 +265,18 @@ export default function SipResearchLibraryPage() {
     await loadRecords();
   };
 
+  const FilterTh = ({ label, filterKey }: { label: string; filterKey: 'target' | 'author' | 'note' }) => (
+    <th className="px-4 py-3 align-top">
+      <div className="font-bold text-slate-500">{label}</div>
+      <input
+        value={filters[filterKey]}
+        onChange={(event) => setFilters((prev) => ({ ...prev, [filterKey]: event.target.value }))}
+        placeholder="筛选"
+        className="mt-1 w-full min-w-[90px] rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-normal text-gray-700 outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+      />
+    </th>
+  );
+
   const sanitizedDraft = useMemo(() => sanitizeHtml(draft.htmlContent), [draft.htmlContent]);
   const sanitizedViewer = useMemo(() => sanitizeHtml(viewerRecord?.htmlContent || ''), [viewerRecord]);
   const draftIsFullDocument = useMemo(() => isFullHtmlDocument(draft.htmlContent), [draft.htmlContent]);
@@ -265,7 +292,7 @@ export default function SipResearchLibraryPage() {
             <div className="mb-3 inline-flex rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700 ring-1 ring-amber-100">
               SIP Research Library
             </div>
-            <h1 className="text-3xl font-black tracking-tight text-slate-950">股票投研资料库</h1>
+            <h1 className="text-3xl font-black tracking-tight text-slate-950">SIP投研资料库</h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
               用 HTML 记录投研材料、会议纪要、估值片段和市场观察。每条资料都有稳定的 noteID，方便后续引用和追踪。
             </p>
@@ -311,16 +338,7 @@ export default function SipResearchLibraryPage() {
         <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/80 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h2 className="font-bold text-gray-900">投研资料索引</h2>
-            <p className="mt-1 text-xs text-gray-500">按标的筛选，按更新时间排序。</p>
-          </div>
-          <div className="relative w-full lg:w-80">
-            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input
-              value={targetFilter}
-              onChange={(event) => setTargetFilter(event.target.value)}
-              placeholder="模糊查询标的"
-              className="w-full rounded-xl border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm outline-none transition-colors focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
-            />
+            <p className="mt-1 text-xs text-gray-500">在表头按标的、作者、备注组合筛选，按更新时间排序。</p>
           </div>
         </div>
 
@@ -349,8 +367,9 @@ export default function SipResearchLibraryPage() {
                       <span className="text-amber-600">{sortDir === 'asc' ? '▲' : '▼'}</span>
                     </button>
                   </th>
-                  <th className="px-4 py-3">标的</th>
-                  <th className="px-4 py-3">备注/摘要</th>
+                  <FilterTh label="标的" filterKey="target" />
+                  <FilterTh label="作者" filterKey="author" />
+                  <FilterTh label="备注" filterKey="note" />
                   <th className="px-4 py-3 text-right">操作</th>
                 </tr>
               </thead>
@@ -360,11 +379,9 @@ export default function SipResearchLibraryPage() {
                     <td className="px-4 py-4 font-mono text-xs font-bold text-amber-700">{record.noteID}</td>
                     <td className="px-4 py-4 text-xs text-gray-500">{formatTime(record.updatedAt)}</td>
                     <td className="px-4 py-4 font-bold text-slate-900">{record.target}</td>
+                    <td className="px-4 py-4 text-sm font-medium text-gray-700">{record.author || '-'}</td>
                     <td className="max-w-xl px-4 py-4">
-                      <div className="truncate text-sm text-gray-700">{record.note || record.plainTextPreview || '-'}</div>
-                      {record.note && record.plainTextPreview && (
-                        <div className="mt-1 truncate text-xs text-gray-400">{record.plainTextPreview}</div>
-                      )}
+                      <div className="truncate text-sm text-gray-700">{record.note || '-'}</div>
                     </td>
                     <td className="px-4 py-4 text-right">
                       <div className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
@@ -408,6 +425,15 @@ export default function SipResearchLibraryPage() {
                     value={draft.target}
                     onChange={(event) => setDraft((prev) => ({ ...prev, target: event.target.value }))}
                     placeholder="例如 NVDA、恒生指数、美股大盘、AI产业链"
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-bold text-gray-700">作者</label>
+                  <input
+                    value={draft.author}
+                    onChange={(event) => setDraft((prev) => ({ ...prev, author: event.target.value }))}
+                    placeholder="请输入作者"
                     className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
                   />
                 </div>
