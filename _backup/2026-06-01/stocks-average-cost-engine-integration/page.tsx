@@ -10,7 +10,6 @@ import { collection, getDocs, query, onSnapshot, addDoc, deleteDoc, setDoc, doc,
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
-import { calculateAverageCostHoldings } from '@/app/book/SP_wjhh1/lib/averageCostEngine';
 import { useStockPool } from '@/app/hooks/useStockPool';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
@@ -487,20 +486,118 @@ export default function SpotHoldingsPage() {
     }
   }, [activeTrades, initialHoldings]);
 
-  // --- 核心计算 (期初底座 + 平均转移成本增量) ---
+  // --- 核心计算 (期初底座 + 先入先出增量) ---
   const calculatedHoldings = useMemo(() => {
-      return calculateAverageCostHoldings({
-          initialHoldings,
-          trades: activeTrades,
-          quotes: realTimeQuotes,
-          fxRates: globalFxRates,
-          stockPool,
-      }).holdings;
+      const holdingsMap: Record<string, StockHolding> = {};
+
+      initialHoldings.forEach(init => {
+          const key = init.code;
+          if (!holdingsMap[key]) {
+              const poolInfo = stockPool.find(s => s.symbol === key) || { sector_level_1: '未知', sector_level_2: '未知', name: key };
+              holdingsMap[key] = {
+                  market: init.market,
+                  code: key,
+                  name: poolInfo.name || key,
+                  sector_level_1: poolInfo.sector_level_1,
+                  sector_level_2: poolInfo.sector_level_2,
+                  quantity: 0,
+                  avgCost: 0,
+                  totalCostHKD: 0,
+                  currentPrice: 0,
+                  dailyChangePct: 0,
+                  mktValHKD: 0,
+                  unrealizedPnlHKD: 0,
+                  realizedPnlHKD: 0,
+                  unrealizedPnlLocal: 0,
+                  realizedPnlLocal: 0,
+                  pnlRatio: 0,
+                  accounts: {}
+              };
+          }
+          const h = holdingsMap[key];
+          
+          if (!h.accounts[init.account]) h.accounts[init.account] = 0;
+          h.accounts[init.account] += init.quantity;
+
+          const currentTotalCost = h.quantity * h.avgCost;
+          const addedCost = init.quantity * init.costPrice;
+          h.quantity += init.quantity;
+          h.avgCost = h.quantity > 0 ? (currentTotalCost + addedCost) / h.quantity : 0;
+      });
+
+      const chronological = [...activeTrades].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+      chronological.forEach(t => {
+          const key = t.code;
+          if (!holdingsMap[key]) {
+              const poolInfo = stockPool.find(s => s.symbol === t.code) || { sector_level_1: '未知', sector_level_2: '未知', name: t.name };
+              holdingsMap[key] = {
+                  market: t.market,
+                  code: t.code,
+                  name: poolInfo.name || t.name,
+                  sector_level_1: poolInfo.sector_level_1,
+                  sector_level_2: poolInfo.sector_level_2,
+                  quantity: 0,
+                  avgCost: 0,
+                  totalCostHKD: 0,
+                  currentPrice: 0,
+                  dailyChangePct: 0,
+                  mktValHKD: 0,
+                  unrealizedPnlHKD: 0,
+                  realizedPnlHKD: 0, 
+                  unrealizedPnlLocal: 0,
+                  realizedPnlLocal: 0,
+                  pnlRatio: 0,
+                  accounts: {}
+              };
+          }
+          const h = holdingsMap[key];
+          const rate = globalFxRates[t.market] || 1;
+
+          if (!h.accounts[t.account]) h.accounts[t.account] = 0;
+          h.accounts[t.account] += t.quantity;
+
+          if (t.direction === 'BUY') {
+              const totalCostLocal = (h.avgCost * h.quantity) + t.amount;
+              h.quantity += t.quantity;
+              h.avgCost = h.quantity > 0 ? totalCostLocal / h.quantity : 0;
+          } else if (t.direction === 'SELL') {
+              const sellQty = Math.abs(t.quantity);
+              const costOfGoodsSold = sellQty * h.avgCost; 
+              // 计算落袋：卖出的 t.amount 是带负号的，因此回笼资金 = Math.abs(t.amount)
+              const sellProceeds = Math.abs(t.amount); 
+              const realizedPnlLocal = sellProceeds - costOfGoodsSold;
+              h.realizedPnlLocal += realizedPnlLocal;
+              h.realizedPnlHKD += (realizedPnlLocal * rate);
+              h.quantity -= sellQty;
+
+              if (h.quantity <= 0) {
+                  h.quantity = 0;
+                  h.avgCost = 0;
+              }
+          }
+      });
+
+      Object.values(holdingsMap).forEach(h => {
+          const rate = globalFxRates[h.market] || 1;
+          const quote = realTimeQuotes[h.code];
+          
+          h.currentPrice = quote?.price || h.avgCost; 
+          h.dailyChangePct = quote?.changePercent || 0; 
+          
+          h.totalCostHKD = (h.quantity * h.avgCost) * rate;
+          h.mktValHKD = (h.quantity * h.currentPrice) * rate;
+          h.unrealizedPnlLocal = (h.currentPrice - h.avgCost) * h.quantity;
+          h.unrealizedPnlHKD = h.mktValHKD - h.totalCostHKD;
+          h.pnlRatio = h.totalCostHKD > 0 ? (h.mktValHKD / h.totalCostHKD) - 1 : 0;
+      });
+
+      return Object.values(holdingsMap).filter(h => h.quantity > 0 || Math.abs(h.realizedPnlHKD) > 0.01);
   }, [activeTrades, initialHoldings, stockPool, globalFxRates, realTimeQuotes]);
 
   // --- 模块 1: 持仓统计处理 ---
   const displayHoldings = useMemo(() => {
-      let result = [...calculatedHoldings].filter(h => Math.abs(h.quantity) > 0.000001); 
+      let result = [...calculatedHoldings].filter(h => h.quantity > 0); 
       
       Object.keys(holdingFilters).forEach(key => {
           const val = holdingFilters[key]?.toLowerCase();
@@ -509,7 +606,7 @@ export default function SpotHoldingsPage() {
                   // 特殊处理 "各账户持仓股数" 对象的模糊匹配
                   if (key === 'accounts') {
                       const accStr = Object.entries(item.accounts)
-                          .filter(([_k, qty]) => Math.abs(qty) > 0.000001)
+                          .filter(([_k, qty]) => qty > 0)
                           .map(([acc, qty]) => `${acc}:${qty}`)
                           .join(' | ')
                           .toLowerCase();
@@ -537,14 +634,12 @@ export default function SpotHoldingsPage() {
       return displayHoldings.reduce((acc, h) => {
           acc.totalCostHKD += h.totalCostHKD;
           acc.mktValHKD += h.mktValHKD;
-          acc.grossCostHKD += Math.abs(h.totalCostHKD);
-          acc.grossMktValHKD += Math.abs(h.mktValHKD);
           acc.unrealizedPnlHKD += h.unrealizedPnlHKD;
           return acc;
-      }, { totalCostHKD: 0, mktValHKD: 0, grossCostHKD: 0, grossMktValHKD: 0, unrealizedPnlHKD: 0 });
+      }, { totalCostHKD: 0, mktValHKD: 0, unrealizedPnlHKD: 0 });
   }, [displayHoldings]);
 
-  const totalUnrealizedPct = holdingSums.grossCostHKD > 0 ? holdingSums.unrealizedPnlHKD / holdingSums.grossCostHKD : 0;
+  const totalUnrealizedPct = holdingSums.totalCostHKD > 0 ? holdingSums.unrealizedPnlHKD / holdingSums.totalCostHKD : 0;
 
   // --- 生成风控暴露汇总数据 (映射 displayHoldings) ---
   const riskExposureSummary = useMemo(() => {
@@ -1084,7 +1179,7 @@ export default function SpotHoldingsPage() {
                     Spot Holdings (现货持仓与盈亏分析)
                 </h1>
                 <p className="mt-1 text-sm text-gray-500">
-                    以【期初底座】融合【增量流水】，实时计算平均转移成本与盈亏。
+                    以【期初底座】融合【增量流水】，实时计算先入先出持仓成本与盈亏。
                 </p>
             </div>
             <div className="flex gap-3">
@@ -1127,7 +1222,7 @@ export default function SpotHoldingsPage() {
                         </span>
                     )}
                 </div>
-                <span className="text-xs text-gray-500 bg-white px-2 py-1 border rounded shadow-sm">数值统一为 <b>HKD</b> 且按平均转移成本法结算</span>
+                <span className="text-xs text-gray-500 bg-white px-2 py-1 border rounded shadow-sm">数值统一为 <b>HKD</b> 且按先入先出算法结算</span>
             </div>
             
             <div className="overflow-x-auto overflow-y-auto max-h-[500px] relative scrollbar-thin">
@@ -1154,9 +1249,9 @@ export default function SpotHoldingsPage() {
                         {displayHoldings.length === 0 ? (
                             <tr><td colSpan={14} className="p-8 text-center text-gray-400">当前空仓或无符合条件数据</td></tr>
                         ) : displayHoldings.map(h => {
-                            const pctOfTotalMktVal = holdingSums.grossMktValHKD > 0 ? Math.abs(h.mktValHKD) / holdingSums.grossMktValHKD : 0;
-                            const pnlContribution = holdingSums.grossCostHKD > 0 ? h.unrealizedPnlHKD / holdingSums.grossCostHKD : 0;
-                            const accountsArr = Object.entries(h.accounts).filter(([_k, qty]) => Math.abs(qty) > 0.000001).map(([acc, qty]) => `'${acc}': ${qty.toLocaleString()}`);
+                            const pctOfTotalMktVal = holdingSums.mktValHKD > 0 ? h.mktValHKD / holdingSums.mktValHKD : 0;
+                            const pnlContribution = holdingSums.totalCostHKD > 0 ? h.unrealizedPnlHKD / holdingSums.totalCostHKD : 0;
+                            const accountsArr = Object.entries(h.accounts).filter(([_k, qty]) => qty > 0).map(([acc, qty]) => `'${acc}': ${qty.toLocaleString()}`);
                             
                             return (
                                 <tr key={h.code} className="hover:bg-indigo-50/30 transition-colors">
