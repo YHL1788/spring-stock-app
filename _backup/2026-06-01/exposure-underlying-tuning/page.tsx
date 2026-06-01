@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Loader2, RefreshCw } from 'lucide-react';
 import { doc, getDoc } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
@@ -86,18 +86,6 @@ const formatPercent = (value: number | null | undefined) => {
 
 const normalizeSymbol = (symbol: string) => symbol.trim().toUpperCase();
 
-const normalizeFilterText = (value: string) => value
-  .toUpperCase()
-  .replace(/[\s._\-\/]+/g, '');
-
-const fuzzyMatch = (value: string, keyword: string) => {
-  const normalizedKeyword = normalizeFilterText(keyword);
-  if (!normalizedKeyword) return true;
-
-  const normalizedValue = normalizeFilterText(value);
-  return normalizedValue.includes(normalizedKeyword);
-};
-
 const inferMarket = (symbol: string, fallback?: string) => {
   const normalizedFallback = fallback?.trim().toUpperCase();
   if (normalizedFallback) return normalizedFallback;
@@ -118,55 +106,6 @@ const displayTime = (value: any) => {
   return new Date(value).toLocaleString('zh-CN', { hour12: false });
 };
 
-const SortableTh = ({
-  label,
-  sortKey,
-  sortState,
-  onSort,
-}: {
-  label: string;
-  sortKey: SortKey;
-  sortState: SortState;
-  onSort: (key: SortKey) => void;
-}) => (
-  <th className="px-3 py-3 text-right">
-    <button
-      type="button"
-      onClick={() => onSort(sortKey)}
-      className="inline-flex items-center gap-1 font-bold text-gray-500 transition-colors hover:text-gray-900"
-    >
-      {label}
-      <span className={`text-[10px] ${sortState?.key === sortKey ? 'text-blue-600' : 'text-gray-300'}`}>
-        {sortState?.key === sortKey ? (sortState.dir === 'asc' ? '▲' : '▼') : '▲'}
-      </span>
-    </button>
-  </th>
-);
-
-const FilterTh = ({
-  label,
-  filterKey,
-  filters,
-  onFilter,
-  align = 'left',
-}: {
-  label: string;
-  filterKey: TextFilterKey;
-  filters: Record<TextFilterKey, string>;
-  onFilter: (key: TextFilterKey, value: string) => void;
-  align?: 'left' | 'center';
-}) => (
-  <th className={`px-3 py-3 align-top ${align === 'center' ? 'text-center' : 'text-left'}`}>
-    <div className="font-bold text-gray-500">{label}</div>
-    <input
-      value={filters[filterKey]}
-      onChange={(event) => onFilter(filterKey, event.target.value)}
-      placeholder="筛选"
-      className={`mt-1 w-full min-w-[72px] rounded border border-gray-300 bg-white px-2 py-1 text-xs font-normal text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 ${align === 'center' ? 'text-center' : ''}`}
-    />
-  </th>
-);
-
 export default function ExposureUnderlyingPage() {
   const { stocks: stockPool, loading: stockPoolLoading } = useStockPool();
   const [userReady, setUserReady] = useState(false);
@@ -183,7 +122,6 @@ export default function ExposureUnderlyingPage() {
     sectorLevel1: '',
     sectorLevel2: '',
   });
-  const deferredFilters = useDeferredValue(filters);
   const [sortState, setSortState] = useState<SortState>(null);
 
   useEffect(() => {
@@ -372,10 +310,6 @@ export default function ExposureUnderlyingPage() {
     });
   };
 
-  const updateFilter = useCallback((filterKey: TextFilterKey, value: string) => {
-    setFilters((prev) => ({ ...prev, [filterKey]: value }));
-  }, []);
-
   const getSortValue = (row: UnderlyingExposureRow, key: SortKey) => {
     const value = row[key];
     return value === null || value === undefined || Number.isNaN(value) ? -Infinity : value;
@@ -383,11 +317,11 @@ export default function ExposureUnderlyingPage() {
 
   const filteredRows = useMemo(() => {
     const searched = rows.filter((row) => (
-      fuzzyMatch(row.symbol, deferredFilters.symbol) &&
-      fuzzyMatch(row.market, deferredFilters.market) &&
-      fuzzyMatch(row.name, deferredFilters.name) &&
-      fuzzyMatch(row.sectorLevel1, deferredFilters.sectorLevel1) &&
-      fuzzyMatch(row.sectorLevel2, deferredFilters.sectorLevel2)
+      (!filters.symbol.trim() || row.symbol.includes(filters.symbol.trim().toUpperCase())) &&
+      (!filters.market.trim() || row.market.includes(filters.market.trim().toUpperCase())) &&
+      (!filters.name.trim() || row.name.toUpperCase().includes(filters.name.trim().toUpperCase())) &&
+      (!filters.sectorLevel1.trim() || row.sectorLevel1.toUpperCase().includes(filters.sectorLevel1.trim().toUpperCase())) &&
+      (!filters.sectorLevel2.trim() || row.sectorLevel2.toUpperCase().includes(filters.sectorLevel2.trim().toUpperCase()))
     ));
 
     if (!sortState) return searched;
@@ -397,23 +331,19 @@ export default function ExposureUnderlyingPage() {
       const right = getSortValue(b, sortState.key);
       return sortState.dir === 'asc' ? left - right : right - left;
     });
-  }, [deferredFilters, rows, sortState]);
+  }, [filters, rows, sortState]);
 
   const summary = useMemo(() => {
     const totalCostHKD = rows.reduce((sum, row) => sum + row.totalCostHKD, 0);
     const totalMktValHKD = rows.reduce((sum, row) => sum + (row.totalMktValHKD || 0), 0);
-    const largest = rows.reduce<UnderlyingExposureRow | null>((current, row) => {
-      if (row.totalMktValHKD === null) return current;
-      if (!current || current.totalMktValHKD === null) return row;
-      return Math.abs(row.totalMktValHKD) > Math.abs(current.totalMktValHKD) ? row : current;
-    }, null);
+    const largest = rows[0];
 
     return {
       count: rows.length,
       totalCostHKD,
       totalMktValHKD,
       largestSymbol: largest?.symbol || '-',
-      largestMktValHKD: largest?.totalMktValHKD || 0,
+      largestCostHKD: largest?.totalCostHKD || 0,
     };
   }, [rows]);
 
@@ -442,6 +372,33 @@ export default function ExposureUnderlyingPage() {
     if (value < 0) return 'text-rose-600';
     return 'text-gray-500';
   };
+
+  const SortableTh = ({ label, sortKey }: { label: string; sortKey: SortKey }) => (
+    <th className="px-3 py-3 text-right">
+      <button
+        type="button"
+        onClick={() => toggleSort(sortKey)}
+        className="inline-flex items-center gap-1 font-bold text-gray-500 transition-colors hover:text-gray-900"
+      >
+        {label}
+        <span className={`text-[10px] ${sortState?.key === sortKey ? 'text-blue-600' : 'text-gray-300'}`}>
+          {sortState?.key === sortKey ? (sortState.dir === 'asc' ? '▲' : '▼') : '▲'}
+        </span>
+      </button>
+    </th>
+  );
+
+  const FilterTh = ({ label, filterKey, align = 'left' }: { label: string; filterKey: TextFilterKey; align?: 'left' | 'center' }) => (
+    <th className={`px-3 py-3 align-top ${align === 'center' ? 'text-center' : 'text-left'}`}>
+      <div className="font-bold text-gray-500">{label}</div>
+      <input
+        value={filters[filterKey]}
+        onChange={(event) => setFilters((prev) => ({ ...prev, [filterKey]: event.target.value }))}
+        placeholder="筛选"
+        className={`mt-1 w-full min-w-[72px] rounded border border-gray-300 bg-white px-2 py-1 text-xs font-normal text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 ${align === 'center' ? 'text-center' : ''}`}
+      />
+    </th>
+  );
 
   return (
     <div className="space-y-6 rounded-2xl bg-gradient-to-br from-slate-50 via-white to-blue-50/60 p-1">
@@ -481,7 +438,7 @@ export default function ExposureUnderlyingPage() {
         <div className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-600 to-slate-950 p-5 text-white shadow-lg shadow-blue-100">
           <div className="text-xs font-bold text-gray-400">最大单一标的</div>
           <div className="mt-2 text-3xl font-black">{summary.largestSymbol}</div>
-          <div className="mt-1 text-xs text-blue-100">{formatNumber(summary.largestMktValHKD)} HKD</div>
+          <div className="mt-1 text-xs text-blue-100">{formatNumber(summary.largestCostHKD)} HKD</div>
         </div>
       </div>
 
@@ -521,34 +478,32 @@ export default function ExposureUnderlyingPage() {
             <Loader2 size={32} className="mb-3 animate-spin text-blue-600" />
             正在拉取暴露、行情与汇率...
           </div>
+        ) : filteredRows.length === 0 ? (
+          <div className="flex h-64 flex-col items-center justify-center text-gray-400">
+            <AlertCircle size={32} className="mb-3 text-amber-500" />
+            暂无可展示的标的暴露数据
+          </div>
         ) : (
           <div className="max-h-[620px] overflow-auto">
             <table className="min-w-full whitespace-nowrap text-left text-sm">
               <thead className="sticky top-0 z-10 bg-slate-100 text-xs font-bold text-slate-500 shadow-[0_1px_0_0_#e5e7eb]">
                 <tr>
-                  <FilterTh label="股票代码" filterKey="symbol" filters={filters} onFilter={updateFilter} />
-                  <FilterTh label="市场" filterKey="market" filters={filters} onFilter={updateFilter} align="center" />
-                  <FilterTh label="股票名称" filterKey="name" filters={filters} onFilter={updateFilter} />
+                  <FilterTh label="股票代码" filterKey="symbol" />
+                  <FilterTh label="市场" filterKey="market" align="center" />
+                  <FilterTh label="股票名称" filterKey="name" />
                   <th className="px-3 py-3 text-right">总暴露股数</th>
                   <th className="px-3 py-3 text-right">平均暴露成本</th>
                   <th className="px-3 py-3 text-right">现价</th>
-                  <SortableTh label="盈亏比%" sortKey="pnlRatio" sortState={sortState} onSort={toggleSort} />
-                  <SortableTh label="总暴露成本HKD" sortKey="totalCostHKD" sortState={sortState} onSort={toggleSort} />
-                  <SortableTh label="总暴露市值HKD" sortKey="totalMktValHKD" sortState={sortState} onSort={toggleSort} />
-                  <SortableTh label="总暴露盈亏HKD" sortKey="totalPnlHKD" sortState={sortState} onSort={toggleSort} />
-                  <FilterTh label="一级行业" filterKey="sectorLevel1" filters={filters} onFilter={updateFilter} />
-                  <FilterTh label="二级行业" filterKey="sectorLevel2" filters={filters} onFilter={updateFilter} />
+                  <SortableTh label="盈亏比%" sortKey="pnlRatio" />
+                  <SortableTh label="总暴露成本HKD" sortKey="totalCostHKD" />
+                  <SortableTh label="总暴露市值HKD" sortKey="totalMktValHKD" />
+                  <SortableTh label="总暴露盈亏HKD" sortKey="totalPnlHKD" />
+                  <FilterTh label="一级行业" filterKey="sectorLevel1" />
+                  <FilterTh label="二级行业" filterKey="sectorLevel2" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
-                {filteredRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={12} className="px-3 py-12 text-center text-gray-400">
-                      <AlertCircle size={28} className="mx-auto mb-3 text-amber-500" />
-                      无匹配标的，请调整表头筛选条件
-                    </td>
-                  </tr>
-                ) : filteredRows.map((row) => (
+                {filteredRows.map((row) => (
                   <tr key={row.key} className="transition-colors odd:bg-white even:bg-slate-50/40 hover:bg-blue-50">
                     <td className="px-3 py-3 font-mono font-bold text-blue-700">{row.symbol}</td>
                     <td className="px-3 py-3 font-mono text-gray-500">{row.market}</td>

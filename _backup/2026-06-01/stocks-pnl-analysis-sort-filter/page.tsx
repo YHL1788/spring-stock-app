@@ -76,14 +76,6 @@ const mapMarket = (m: string | undefined, defaultVal: string) => {
     return defaultVal;
 };
 
-const normalizeSearchText = (value: string) => value.toLowerCase().replace(/[\s._\-\/]+/g, '');
-
-const fuzzyIncludes = (value: string, keyword: string) => {
-    const normalizedKeyword = normalizeSearchText(keyword);
-    if (!normalizedKeyword) return true;
-    return normalizeSearchText(value).includes(normalizedKeyword);
-};
-
 // --- 时间辅助函数 ---
 const getTime = (val: any) => {
     if (!val) return 0;
@@ -198,8 +190,6 @@ export default function SpotHoldingsPage() {
   const [tradeFilters, setTradeFilters] = useState<Record<string, string>>({});
   const [holdingSort, setHoldingSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: 'mktValHKD', dir: 'desc'});
   const [holdingFilters, setHoldingFilters] = useState<Record<string, string>>({});
-  const [pnlSort, setPnlSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: 'totalPnl', dir: 'desc'});
-  const [pnlFilters, setPnlFilters] = useState<Record<string, string>>({});
 
   const toggleSort = (setSort: any) => (key: string) => {
       setSort((prev: any) => {
@@ -219,8 +209,6 @@ export default function SpotHoldingsPage() {
   const updateTradeFilter = handleFilter(setTradeFilters);
   const toggleHoldingSort = toggleSort(setHoldingSort);
   const updateHoldingFilter = handleFilter(setHoldingFilters);
-  const togglePnlSort = toggleSort(setPnlSort);
-  const updatePnlFilter = handleFilter(setPnlFilters);
 
   // --- 【新增】安全锁：判定是否有生效的模糊筛选 ---
   const hasActiveFilters = useMemo(() => {
@@ -719,33 +707,14 @@ export default function SpotHoldingsPage() {
       });
   }, [calculatedHoldings]);
 
-  const displayPnlData = useMemo(() => {
-      let result = [...pnlData];
-      const targetFilter = pnlFilters.target || '';
-
-      if (targetFilter.trim()) {
-          result = result.filter(p => fuzzyIncludes(`${p.code} ${p.name}`, targetFilter));
-      }
-
-      if (pnlSort.dir && pnlSort.key) {
-          result.sort((a, b) => {
-              const aVal = Number((a as any)[pnlSort.key]) || 0;
-              const bVal = Number((b as any)[pnlSort.key]) || 0;
-              return pnlSort.dir === 'asc' ? aVal - bVal : bVal - aVal;
-          });
-      }
-
-      return result;
-  }, [pnlData, pnlFilters, pnlSort]);
-
   const chartData = useMemo(() => {
-      const sorted = [...displayPnlData].sort((a, b) => b.totalPnl - a.totalPnl);
+      const sorted = [...pnlData].sort((a, b) => b.totalPnl - a.totalPnl);
       if (chartType === 'BEST') {
           return sorted.filter(p => p.totalPnl > 0).slice(0, 10);
       } else {
           return sorted.filter(p => p.totalPnl < 0).slice(-10).reverse(); 
       }
-  }, [displayPnlData, chartType]);
+  }, [pnlData, chartType]);
 
   const pnlSums = useMemo(() => {
       return pnlData.reduce((acc, p) => {
@@ -755,15 +724,6 @@ export default function SpotHoldingsPage() {
           return acc;
       }, { unrealized: 0, realized: 0, total: 0 });
   }, [pnlData]);
-
-  const displayPnlSums = useMemo(() => {
-      return displayPnlData.reduce((acc, p) => {
-          acc.unrealized += p.unrealized;
-          acc.realized += p.realized;
-          acc.total += p.totalPnl;
-          return acc;
-      }, { unrealized: 0, realized: 0, total: 0 });
-  }, [displayPnlData]);
 
   // --- 模块 3: 交易流水处理 ---
   const displayTrades = useMemo(() => {
@@ -1458,23 +1418,16 @@ export default function SpotHoldingsPage() {
                     <table className="w-full text-xs text-left">
                         <thead className="text-gray-500 font-medium bg-white sticky top-0 shadow-sm z-10">
                             <tr>
-                                <Th label="标的" sortKey={null} filterKey="target" currentSort={pnlSort} onSort={togglePnlSort} currentFilter={pnlFilters} onFilter={updatePnlFilter} />
-                                <Th label="浮动盈亏(未实现)" sortKey="unrealized" filterKey={null} currentSort={pnlSort} onSort={togglePnlSort} currentFilter={pnlFilters} onFilter={updatePnlFilter} align="right" />
-                                <Th label="已实现盈亏" sortKey="realized" filterKey={null} currentSort={pnlSort} onSort={togglePnlSort} currentFilter={pnlFilters} onFilter={updatePnlFilter} align="right" />
-                                <Th label="总盈亏 (HKD)" sortKey="totalPnl" filterKey={null} currentSort={pnlSort} onSort={togglePnlSort} currentFilter={pnlFilters} onFilter={updatePnlFilter} align="right" />
+                                <th className="px-4 py-2">标的</th>
+                                <th className="px-4 py-2 text-right">浮动盈亏(未实现)</th>
+                                <th className="px-4 py-2 text-right">已实现盈亏</th>
+                                <th className="px-4 py-2 text-right">总盈亏 (HKD)</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
-                            {displayPnlData.length === 0 ? (
-                                <tr>
-                                    <td colSpan={4} className="px-4 py-8 text-center text-gray-400">无匹配标的，请调整筛选条件</td>
-                                </tr>
-                            ) : displayPnlData.map(p => (
+                            {pnlData.map(p => (
                                 <tr key={p.code} className="hover:bg-gray-50">
-                                    <td className="px-4 py-2">
-                                        <div className="font-bold text-gray-800">{p.code}</div>
-                                        <div className="text-[10px] text-gray-400 truncate max-w-[180px]" title={p.name}>{p.name}</div>
-                                    </td>
+                                    <td className="px-4 py-2 font-bold text-gray-800">{p.code}</td>
                                     <td className={`px-4 py-2 text-right font-mono ${p.unrealized > 0 ? 'text-red-500' : p.unrealized < 0 ? 'text-green-500' : 'text-gray-400'}`}>{p.unrealized > 0 ? '+' : ''}{formatMoney(p.unrealized, true)}</td>
                                     <td className={`px-4 py-2 text-right font-mono ${p.realized > 0 ? 'text-red-500' : p.realized < 0 ? 'text-green-500' : 'text-gray-400'}`}>{p.realized > 0 ? '+' : ''}{formatMoney(p.realized, true)}</td>
                                     <td className={`px-4 py-2 text-right font-mono font-bold ${p.totalPnl > 0 ? 'text-red-600' : p.totalPnl < 0 ? 'text-green-600' : 'text-gray-500'}`}>{p.totalPnl > 0 ? '+' : ''}{formatMoney(p.totalPnl, true)}</td>
@@ -1484,9 +1437,9 @@ export default function SpotHoldingsPage() {
                         <tfoot className="bg-rose-50 border-t-2 border-rose-200 sticky bottom-0">
                             <tr>
                                 <td className="px-4 py-3 font-bold text-rose-900">总计 SUM</td>
-                                <td className={`px-4 py-3 text-right font-mono font-bold ${displayPnlSums.unrealized >= 0 ? 'text-red-600' : 'text-green-600'}`}>{displayPnlSums.unrealized > 0 ? '+' : ''}{formatMoney(displayPnlSums.unrealized, true)}</td>
-                                <td className={`px-4 py-3 text-right font-mono font-bold ${displayPnlSums.realized >= 0 ? 'text-red-600' : 'text-green-600'}`}>{displayPnlSums.realized > 0 ? '+' : ''}{formatMoney(displayPnlSums.realized, true)}</td>
-                                <td className={`px-4 py-3 text-right font-mono font-bold text-lg ${displayPnlSums.total >= 0 ? 'text-red-600' : 'text-green-600'}`}>{displayPnlSums.total > 0 ? '+' : ''}{formatMoney(displayPnlSums.total, true)}</td>
+                                <td className={`px-4 py-3 text-right font-mono font-bold ${pnlSums.unrealized >= 0 ? 'text-red-600' : 'text-green-600'}`}>{pnlSums.unrealized > 0 ? '+' : ''}{formatMoney(pnlSums.unrealized, true)}</td>
+                                <td className={`px-4 py-3 text-right font-mono font-bold ${pnlSums.realized >= 0 ? 'text-red-600' : 'text-green-600'}`}>{pnlSums.realized > 0 ? '+' : ''}{formatMoney(pnlSums.realized, true)}</td>
+                                <td className={`px-4 py-3 text-right font-mono font-bold text-lg ${pnlSums.total >= 0 ? 'text-red-600' : 'text-green-600'}`}>{pnlSums.total > 0 ? '+' : ''}{formatMoney(pnlSums.total, true)}</td>
                             </tr>
                         </tfoot>
                     </table>
