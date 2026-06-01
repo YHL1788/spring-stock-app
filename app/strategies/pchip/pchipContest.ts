@@ -28,6 +28,8 @@ export type ResearcherView = {
   allowNonMonotonic: boolean;
   status: 'active' | 'paused';
   note: string;
+  hasResearchNote?: boolean;
+  researchNoteID?: string;
   points: PriceTargetPoint[];
   createdAt: string;
   updatedAt: string;

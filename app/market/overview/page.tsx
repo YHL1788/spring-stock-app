@@ -52,6 +52,56 @@ const CURRENCIES = ['USD', 'CNY', 'JPY', 'HKD', 'CHF', 'EUR'];
 const COUNTRIES = Array.from(new Set(MARKET_INDICES.map(i => JSON.stringify({ name: i.country, region: i.region, flag: i.flag }))))
   .map(s => JSON.parse(s));
 
+type FearGreedIndicator = {
+  key: string;
+  label?: string;
+  score: number | null;
+  rating: string;
+  value?: number | null;
+};
+
+type FearGreedData = {
+  id: string;
+  title: string;
+  shortTitle: string;
+  source: string;
+  sourceUrl: string;
+  score: number | null;
+  rawValue?: number | null;
+  rating: string;
+  timestamp: string | number | null;
+  previous?: {
+    close: number | null;
+    oneWeek: number | null;
+    oneMonth: number | null;
+    oneYear: number | null;
+  };
+  description?: string;
+  higherMeans?: 'greed' | 'fear' | 'neutral';
+  indicators: FearGreedIndicator[];
+  history: Array<{ date: string | number; score: number; rating: string }>;
+  updatedAt: string;
+  error?: string;
+};
+
+const FEAR_GREED_LABELS: Record<string, string> = {
+  market_momentum_sp500: '市场动能',
+  stock_price_strength: '股价强度',
+  stock_price_breadth: '市场宽度',
+  put_call_options: '期权情绪',
+  market_volatility_vix: '波动率',
+  junk_bond_demand: '垃圾债需求',
+  safe_haven_demand: '避险需求',
+};
+
+const OVERVIEW_SECTIONS = [
+  { id: 'global-indices', label: '全球核心指数', eyebrow: 'Indices' },
+  { id: 'forex-matrix', label: '外汇交叉矩阵', eyebrow: 'FX' },
+  { id: 'crypto-assets', label: '数字货币', eyebrow: 'Crypto' },
+  { id: 'commodities', label: '大宗期货', eyebrow: 'Commodities' },
+  { id: 'sentiment-indicators', label: '大行编制指标', eyebrow: 'Sentiment' },
+];
+
 // --- 2. 辅助函数 ---
 
 const formatNum = (num: number, digits = 2) => {
@@ -111,6 +161,9 @@ export default function MarketOverviewPage() {
   const [forexData, setForexData] = useState<Record<string, number>>({}); 
   const [cryptoData, setCryptoData] = useState<any[]>([]);
   const [commodityData, setCommodityData] = useState<any[]>([]);
+  const [sentimentMetrics, setSentimentMetrics] = useState<FearGreedData[]>([]);
+  const [sentimentError, setSentimentError] = useState('');
+  const [selectedSentimentId, setSelectedSentimentId] = useState('cnn-fear-greed');
 
   // 状态：时间范围控制
   const [cryptoRange, setCryptoRange] = useState<'1d' | '1y'>('1y');
@@ -121,6 +174,8 @@ export default function MarketOverviewPage() {
   const [lastUpdated, setLastUpdated] = useState<string>("--:--");
   const [isLoading, setIsLoading] = useState(false);
   const [isMounted, setIsMounted] = useState(false);
+  const [showFearGreedDetail, setShowFearGreedDetail] = useState(false);
+  const [activeOverviewSection, setActiveOverviewSection] = useState('global-indices');
 
   // 初始化基础数据
   const fetchBasics = async () => {
@@ -184,10 +239,26 @@ export default function MarketOverviewPage() {
     setCommodityData(res);
   }, [commRange]);
 
+  const fetchMarketSentiments = useCallback(async () => {
+    try {
+      setSentimentError('');
+      const res = await fetch('/api/market-sentiment');
+      if (!res.ok) throw new Error('市场情绪指标数据获取失败');
+      const data = await res.json();
+      const metrics = Array.isArray(data?.metrics) ? data.metrics : [];
+      setSentimentMetrics(metrics);
+      if (!metrics.some((item: FearGreedData) => item.id === selectedSentimentId) && metrics[0]?.id) {
+        setSelectedSentimentId(metrics[0].id);
+      }
+    } catch (error: any) {
+      setSentimentError(error?.message || '市场情绪指标数据获取失败');
+    }
+  }, [selectedSentimentId]);
+
   useEffect(() => {
     setIsMounted(true);
     setIsLoading(true);
-    Promise.all([fetchBasics(), fetchCrypto(), fetchCommodities()]).finally(() => setIsLoading(false));
+    Promise.all([fetchBasics(), fetchCrypto(), fetchCommodities(), fetchMarketSentiments()]).finally(() => setIsLoading(false));
   }, []);
 
   useEffect(() => { if(isMounted) fetchCrypto(); }, [fetchCrypto]);
@@ -201,6 +272,26 @@ export default function MarketOverviewPage() {
     }
   }, [selectedRegion, marketData]);
 
+  useEffect(() => {
+    if (!isMounted) return;
+    const observer = new IntersectionObserver(
+      entries => {
+        const visible = entries
+          .filter(entry => entry.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (visible?.target?.id) setActiveOverviewSection(visible.target.id);
+      },
+      { rootMargin: '-25% 0px -55% 0px', threshold: [0.1, 0.3, 0.6] }
+    );
+
+    OVERVIEW_SECTIONS.forEach(section => {
+      const element = document.getElementById(section.id);
+      if (element) observer.observe(element);
+    });
+
+    return () => observer.disconnect();
+  }, [isMounted]);
+
   const getCrossRate = (base: string, quote: string) => {
     if (!forexData[base] || !forexData[quote]) return '--';
     const rate = forexData[base] / forexData[quote];
@@ -211,7 +302,12 @@ export default function MarketOverviewPage() {
 
   const handleRefreshAll = () => {
     setIsLoading(true);
-    Promise.all([fetchBasics(), fetchCrypto(), fetchCommodities()]).finally(() => setIsLoading(false));
+    Promise.all([fetchBasics(), fetchCrypto(), fetchCommodities(), fetchMarketSentiments()]).finally(() => setIsLoading(false));
+  };
+
+  const scrollToOverviewSection = (sectionId: string) => {
+    setActiveOverviewSection(sectionId);
+    document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   // 核心卡片组件：处理动态涨跌幅逻辑
@@ -302,6 +398,382 @@ export default function MarketOverviewPage() {
     </div>
   );
 
+  const OverviewSidebar = () => (
+    <aside className="lg:sticky lg:top-24 h-fit">
+      <div className="rounded-3xl border border-gray-200 bg-white/90 p-3 shadow-sm backdrop-blur">
+        <div className="px-3 py-2">
+          <div className="text-[11px] font-black uppercase tracking-[0.18em] text-gray-400">Overview</div>
+          <div className="mt-1 text-sm font-black text-gray-900">页面目录</div>
+        </div>
+        <div className="mt-2 flex gap-2 overflow-x-auto lg:flex-col lg:overflow-visible">
+          {OVERVIEW_SECTIONS.map((section, index) => {
+            const active = activeOverviewSection === section.id;
+            return (
+              <button
+                key={section.id}
+                type="button"
+                onClick={() => scrollToOverviewSection(section.id)}
+                className={`group flex min-w-[150px] items-center gap-3 rounded-2xl px-3 py-3 text-left transition-all lg:min-w-0 ${
+                  active
+                    ? 'bg-slate-900 text-white shadow-sm'
+                    : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+                }`}
+              >
+                <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-black ${
+                  active ? 'bg-white text-slate-900' : 'bg-gray-100 text-gray-400 group-hover:bg-white'
+                }`}>
+                  {index + 1}
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-black">{section.label}</span>
+                  <span className={`block text-[10px] font-bold uppercase tracking-[0.12em] ${active ? 'text-slate-300' : 'text-gray-300'}`}>
+                    {section.eyebrow}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </aside>
+  );
+
+  const getFearGreedMeta = (score: number | null) => {
+    if (score === null || !Number.isFinite(score)) {
+      return {
+        label: '暂无数据',
+        textClass: 'text-gray-500',
+        bgClass: 'bg-gray-100',
+        barClass: 'from-gray-300 to-gray-500',
+        ringClass: 'ring-gray-200',
+      };
+    }
+    if (score <= 25) {
+      return {
+        label: 'Extreme Fear',
+        textClass: 'text-rose-700',
+        bgClass: 'bg-rose-50',
+        barClass: 'from-rose-500 to-red-700',
+        ringClass: 'ring-rose-200',
+      };
+    }
+    if (score <= 45) {
+      return {
+        label: 'Fear',
+        textClass: 'text-orange-700',
+        bgClass: 'bg-orange-50',
+        barClass: 'from-orange-400 to-rose-500',
+        ringClass: 'ring-orange-200',
+      };
+    }
+    if (score < 55) {
+      return {
+        label: 'Neutral',
+        textClass: 'text-slate-700',
+        bgClass: 'bg-slate-100',
+        barClass: 'from-slate-400 to-slate-600',
+        ringClass: 'ring-slate-200',
+      };
+    }
+    if (score < 75) {
+      return {
+        label: 'Greed',
+        textClass: 'text-emerald-700',
+        bgClass: 'bg-emerald-50',
+        barClass: 'from-lime-400 to-emerald-600',
+        ringClass: 'ring-emerald-200',
+      };
+    }
+    return {
+      label: 'Extreme Greed',
+      textClass: 'text-green-700',
+      bgClass: 'bg-green-50',
+      barClass: 'from-emerald-400 to-green-700',
+      ringClass: 'ring-green-200',
+    };
+  };
+
+  const formatFearGreedDate = (value: string | number | null | undefined) => {
+    if (!value) return '--';
+    const normalizedValue = typeof value === 'number' && value < 10000000000 ? value * 1000 : value;
+    const date = new Date(normalizedValue);
+    return Number.isNaN(date.getTime()) ? '--' : date.toLocaleString();
+  };
+
+  const formatFearGreedRating = (rating: string | undefined, fallback: string) => {
+    const normalized = (rating || fallback).toLowerCase();
+    if (normalized.includes('extreme fear')) return '极度恐惧';
+    if (normalized.includes('fear')) return '恐惧';
+    if (normalized.includes('neutral')) return '中性';
+    if (normalized.includes('extreme greed')) return '极度贪婪';
+    if (normalized.includes('greed')) return '贪婪';
+    return fallback;
+  };
+
+  const formatFearGreedShortDate = (value: string | number | null | undefined) => {
+    if (!value) return '--';
+    const normalizedValue = typeof value === 'number' && value < 10000000000 ? value * 1000 : value;
+    const date = new Date(normalizedValue);
+    return Number.isNaN(date.getTime())
+      ? '--'
+      : date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  const FearGreedTrendChart = ({ history }: { history: FearGreedData['history'] }) => {
+    const cleanHistory = (history || []).filter(item => Number.isFinite(item.score));
+    if (cleanHistory.length < 2) {
+      return (
+        <div className="h-72 rounded-2xl bg-gray-50 border border-gray-100 flex items-center justify-center text-sm text-gray-400">
+          暂无足够历史数据
+        </div>
+      );
+    }
+
+    const width = 760;
+    const height = 300;
+    const padding = { top: 20, right: 28, bottom: 42, left: 44 };
+    const innerWidth = width - padding.left - padding.right;
+    const innerHeight = height - padding.top - padding.bottom;
+    const xFor = (idx: number) => padding.left + (idx / (cleanHistory.length - 1)) * innerWidth;
+    const yFor = (scoreValue: number) => padding.top + (1 - Math.max(0, Math.min(100, scoreValue)) / 100) * innerHeight;
+    const points = cleanHistory.map((item, idx) => `${xFor(idx)},${yFor(item.score)}`).join(' ');
+    const last = cleanHistory[cleanHistory.length - 1];
+    const first = cleanHistory[0];
+    const middle = cleanHistory[Math.floor(cleanHistory.length / 2)];
+    const bands = [
+      { from: 75, to: 100, fill: '#dcfce7', label: 'Extreme Greed' },
+      { from: 55, to: 75, fill: '#ecfdf5', label: 'Greed' },
+      { from: 45, to: 55, fill: '#f8fafc', label: 'Neutral' },
+      { from: 25, to: 45, fill: '#fff7ed', label: 'Fear' },
+      { from: 0, to: 25, fill: '#fff1f2', label: 'Extreme Fear' },
+    ];
+    const yTicks = [0, 25, 50, 75, 100];
+
+    return (
+      <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-72" role="img" aria-label="CNN Fear and Greed two year trend">
+          {bands.map(band => {
+            const yTop = yFor(band.to);
+            const yBottom = yFor(band.from);
+            return (
+              <g key={band.label}>
+                <rect x={padding.left} y={yTop} width={innerWidth} height={yBottom - yTop} fill={band.fill} />
+                <text x={padding.left + 10} y={yTop + 16} className="fill-slate-400 text-[10px] font-bold">
+                  {band.label}
+                </text>
+              </g>
+            );
+          })}
+
+          {yTicks.map(tick => (
+            <g key={tick}>
+              <line x1={padding.left} x2={padding.left + innerWidth} y1={yFor(tick)} y2={yFor(tick)} stroke="#e5e7eb" strokeDasharray="4 4" />
+              <text x={padding.left - 12} y={yFor(tick) + 4} textAnchor="end" className="fill-slate-400 text-[11px] font-bold">
+                {tick}
+              </text>
+            </g>
+          ))}
+
+          <polyline points={points} fill="none" stroke="#0f172a" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx={xFor(cleanHistory.length - 1)} cy={yFor(last.score)} r="6" fill="#0f172a" />
+          <circle cx={xFor(cleanHistory.length - 1)} cy={yFor(last.score)} r="11" fill="#0f172a" opacity="0.12" />
+          <text x={xFor(cleanHistory.length - 1) - 8} y={yFor(last.score) - 14} textAnchor="end" className="fill-slate-900 text-[13px] font-black">
+            {Math.round(last.score)}
+          </text>
+
+          <line x1={padding.left} x2={padding.left + innerWidth} y1={padding.top + innerHeight} y2={padding.top + innerHeight} stroke="#cbd5e1" />
+          <text x={padding.left} y={height - 14} textAnchor="start" className="fill-slate-400 text-[11px] font-bold">
+            {formatFearGreedShortDate(first.date)}
+          </text>
+          <text x={padding.left + innerWidth / 2} y={height - 14} textAnchor="middle" className="fill-slate-400 text-[11px] font-bold">
+            {formatFearGreedShortDate(middle.date)}
+          </text>
+          <text x={padding.left + innerWidth} y={height - 14} textAnchor="end" className="fill-slate-400 text-[11px] font-bold">
+            {formatFearGreedShortDate(last.date)}
+          </text>
+        </svg>
+      </div>
+    );
+  };
+
+  const FearGreedModule = () => {
+    const cnnFearGreed = sentimentMetrics.find(item => item.id === selectedSentimentId) || sentimentMetrics[0] || null;
+    const cnnFearGreedError = sentimentError || cnnFearGreed?.error || '';
+    const score = cnnFearGreed?.score ?? null;
+    const safeScore = score === null ? 0 : Math.max(0, Math.min(100, score));
+    const meta = getFearGreedMeta(score);
+
+    return (
+      <div>
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2 mb-4">
+          <div>
+            <h2 className="text-xl font-bold text-gray-900">5. 大行编制指标</h2>
+            <p className="text-sm text-gray-500 mt-1">切换查看不同市场情绪与风险偏好指标。</p>
+          </div>
+          <a
+            href={cnnFearGreed?.sourceUrl || 'https://edition.cnn.com/markets/fear-and-greed'}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs font-bold text-gray-700 bg-gray-100 hover:bg-gray-200 px-3 py-2 rounded-lg transition-colors"
+          >
+            查看来源
+          </a>
+        </div>
+
+        <div className="mb-4 flex gap-2 overflow-x-auto rounded-2xl border border-gray-100 bg-gray-50 p-2">
+          {sentimentMetrics.length === 0 ? (
+            <div className="px-3 py-2 text-xs font-bold text-gray-400">指标加载中...</div>
+          ) : sentimentMetrics.map(metric => (
+            <button
+              key={metric.id}
+              type="button"
+              onClick={() => {
+                setSelectedSentimentId(metric.id);
+                setShowFearGreedDetail(false);
+              }}
+              className={`shrink-0 rounded-xl px-3 py-2 text-xs font-black transition-all ${
+                selectedSentimentId === metric.id
+                  ? 'bg-slate-900 text-white shadow-sm'
+                  : 'bg-white text-gray-500 hover:text-gray-900'
+              }`}
+            >
+              {metric.shortTitle || metric.title}
+            </button>
+          ))}
+        </div>
+
+        <div className="rounded-2xl border border-gray-200 bg-gradient-to-br from-white via-slate-50 to-white shadow-sm overflow-hidden">
+          <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr]">
+            <div className="p-6 border-b lg:border-b-0 lg:border-r border-gray-100">
+              <div className="flex items-center justify-between gap-3 mb-6">
+                <div>
+                  <div className="text-xs uppercase tracking-[0.18em] text-gray-400 font-black">{cnnFearGreed?.title || 'Market Sentiment'}</div>
+                  <div className="text-sm text-gray-500 mt-1">更新时间：{formatFearGreedDate(cnnFearGreed?.timestamp)}</div>
+                </div>
+                <span className={`px-3 py-1.5 rounded-full text-xs font-black ring-1 ${meta.bgClass} ${meta.textClass} ${meta.ringClass}`}>
+                  {formatFearGreedRating(cnnFearGreed?.rating, meta.label)}
+                </span>
+              </div>
+
+              {cnnFearGreedError ? (
+                <div className="rounded-xl bg-rose-50 text-rose-700 text-sm p-4 border border-rose-100">
+                  {cnnFearGreedError}
+                </div>
+              ) : !cnnFearGreed ? (
+                <div className="h-48 rounded-xl bg-gray-100 animate-pulse" />
+              ) : (
+                <>
+                  <div className="flex items-end gap-3 mb-5">
+                    <div className={`text-6xl font-black tracking-tight ${meta.textClass}`}>
+                      {score === null ? '--' : Math.round(score)}
+                    </div>
+                    <div className="pb-2 text-gray-400 font-bold">/ 100</div>
+                  </div>
+
+                  <div className="h-4 rounded-full bg-gray-100 overflow-hidden ring-1 ring-gray-200">
+                    <div
+                      className={`h-full rounded-full bg-gradient-to-r ${meta.barClass}`}
+                      style={{ width: `${safeScore}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-gray-400 font-bold mt-2">
+                    <span>Extreme Fear</span>
+                    <span>Neutral</span>
+                    <span>Extreme Greed</span>
+                  </div>
+
+                  <div className="mt-6">
+                    <div className="rounded-xl bg-white border border-gray-100 p-3 text-xs text-gray-500 leading-relaxed">
+                      {cnnFearGreed?.description || '解释口径：0 代表极度恐惧，100 代表极度贪婪。它更适合做风险偏好温度计，不建议单独作为买卖信号。'}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="font-black text-gray-900">2年情绪趋势</h3>
+                  <p className="text-xs text-gray-500 mt-1">用时间序列观察风险偏好从恐惧到贪婪的切换。</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowFearGreedDetail(true)}
+                  disabled={!cnnFearGreed}
+                  className="text-xs font-bold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 px-3 py-2 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  子指标拆解
+                </button>
+              </div>
+
+              {!cnnFearGreed && !cnnFearGreedError ? (
+                <div className="h-72 rounded-2xl bg-gray-100 animate-pulse" />
+              ) : cnnFearGreedError ? (
+                <div className="h-72 rounded-2xl bg-rose-50 border border-rose-100 flex items-center justify-center text-sm text-rose-600">
+                  暂无法绘制 CNN Fear & Greed 趋势
+                </div>
+              ) : (
+                <FearGreedTrendChart history={cnnFearGreed?.history || []} />
+              )}
+            </div>
+          </div>
+        </div>
+
+        {showFearGreedDetail && cnnFearGreed && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4 py-6">
+            <div className="w-full max-w-4xl max-h-[88vh] overflow-y-auto rounded-3xl bg-white shadow-2xl">
+              <div className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-gray-100 bg-white/95 px-6 py-4 backdrop-blur">
+                <div>
+                  <h3 className="text-lg font-black text-gray-900">{cnnFearGreed.title} 子指标拆解</h3>
+                  <p className="text-xs text-gray-500 mt-1">查看该指标的组成项、原始读数和情绪分数。</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowFearGreedDetail(false)}
+                  className="rounded-full bg-gray-100 px-3 py-1.5 text-sm font-black text-gray-600 hover:bg-gray-200"
+                >
+                  关闭
+                </button>
+              </div>
+
+              <div className="p-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {(cnnFearGreed.indicators || []).map(indicator => {
+                    const indicatorMeta = getFearGreedMeta(indicator.score);
+                    return (
+                      <div key={indicator.key} className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="font-black text-gray-900 text-sm">{indicator.label || FEAR_GREED_LABELS[indicator.key] || indicator.key}</div>
+                            <div className={`text-xs font-bold mt-1 ${indicatorMeta.textClass}`}>
+                              {formatFearGreedRating(indicator.rating, indicatorMeta.label)}
+                            </div>
+                          </div>
+                          <div className={`text-3xl font-black ${indicatorMeta.textClass}`}>{indicator.score === null ? '--' : Math.round(indicator.score)}</div>
+                        </div>
+                        <div className="mt-4 h-2.5 rounded-full bg-gray-100 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full bg-gradient-to-r ${indicatorMeta.barClass}`}
+                            style={{ width: `${Math.max(0, Math.min(100, indicator.score ?? 0))}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-5 rounded-2xl bg-slate-900 text-slate-100 p-4 text-xs leading-relaxed">
+                  子指标只用于解释当前综合分数的来源。实际投资判断里，建议结合宏观流动性、估值位置、盈利预期和组合自身风险暴露一起看。
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   if (!isMounted) return <div className="min-h-screen bg-white pt-24 px-6 flex items-center justify-center"><div className="animate-pulse text-gray-400">Loading Markets...</div></div>;
 
   return (
@@ -326,8 +798,12 @@ export default function MarketOverviewPage() {
           </div>
         </div>
 
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[240px_1fr] lg:items-start">
+          <OverviewSidebar />
+
+          <main className="min-w-0">
         {/* 1. Global Indices */}
-        <div className="mb-10">
+        <section id="global-indices" className="scroll-mt-28 mb-10">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-4">
             <h2 className="text-xl font-bold text-gray-900 shrink-0">1. 全球核心指数</h2>
             
@@ -360,48 +836,44 @@ export default function MarketOverviewPage() {
             </div>
           </div>
 
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-             <div className="overflow-x-auto">
-               <table className="w-full text-left whitespace-nowrap">
-                  <thead className="bg-gray-50 border-b border-gray-200">
-                     <tr className="text-xs font-semibold text-gray-500 uppercase">
-                        <th className="px-6 py-3">指数名称</th>
-                        <th className="px-6 py-3 text-right">最新价</th>
-                        <th className="px-6 py-3 text-right">涨跌幅</th>
-                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                     {filteredData.length === 0 ? (
-                        <tr><td colSpan={3} className="px-6 py-8 text-center text-gray-400 text-sm">该地区暂无数据</td></tr>
-                     ) : (
-                       filteredData.map((item, idx) => (
-                          <tr key={idx} className="hover:bg-gray-50 transition-colors">
-                             <td className="px-6 py-4">
-                                <div className="flex items-center gap-3">
-                                   <span className="text-2xl">{item.flag}</span>
-                                   <div>
-                                      <div className="font-bold text-gray-900 text-sm">{item.name}</div>
-                                      <div className="text-xs text-gray-400 font-mono">{item.ticker}</div>
-                                   </div>
-                                </div>
-                             </td>
-                             <td className="px-6 py-4 text-right font-mono font-medium text-sm">{formatNum(item.price)}</td>
-                             <td className="px-6 py-4 text-right">
-                                <span className={`px-2 py-1 rounded text-xs font-bold ${item.changePercent >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
-                                   {item.changePercent >= 0 ? '+' : ''}{formatNum(item.changePercent)}%
-                                </span>
-                             </td>
-                          </tr>
-                       ))
-                     )}
-                  </tbody>
-               </table>
-             </div>
+          <div className="rounded-2xl border border-gray-200 bg-gradient-to-br from-white via-slate-50 to-white p-3 shadow-sm">
+             {filteredData.length === 0 ? (
+                <div className="px-6 py-8 text-center text-gray-400 text-sm">该地区暂无数据</div>
+             ) : (
+               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                 {filteredData.map((item, idx) => {
+                   const isUp = item.changePercent >= 0;
+                   return (
+                     <div key={idx} className="group rounded-xl border border-gray-100 bg-white px-4 py-3 shadow-sm hover:-translate-y-0.5 hover:shadow-md transition-all">
+                       <div className="flex items-start justify-between gap-3">
+                         <div className="min-w-0">
+                           <div className="flex items-center gap-2">
+                             <span className="text-lg leading-none">{item.flag}</span>
+                             <div className="font-black text-gray-900 text-sm truncate">{item.name}</div>
+                           </div>
+                           <div className="mt-1 text-[10px] text-gray-400 font-mono truncate">{item.ticker}</div>
+                         </div>
+                         <span className={`shrink-0 px-2 py-1 rounded-full text-[11px] font-black ${isUp ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                           {isUp ? '+' : ''}{formatNum(item.changePercent)}%
+                         </span>
+                       </div>
+
+                       <div className="mt-3 flex items-end justify-between gap-3">
+                         <div className="font-mono text-lg font-black text-gray-950 leading-none">{formatNum(item.price)}</div>
+                         <div className={`h-1.5 w-16 rounded-full ${isUp ? 'bg-emerald-100' : 'bg-rose-100'}`}>
+                           <div className={`h-full w-2/3 rounded-full ${isUp ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                         </div>
+                       </div>
+                     </div>
+                   );
+                 })}
+               </div>
+             )}
           </div>
-        </div>
+        </section>
 
         {/* 2. Forex Matrix */}
-        <div className="mb-10">
+        <section id="forex-matrix" className="scroll-mt-28 mb-10">
           <h2 className="text-xl font-bold text-gray-900 mb-4">2. 外汇交叉矩阵</h2>
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
              <table className="w-full text-center whitespace-nowrap">
@@ -428,13 +900,13 @@ export default function MarketOverviewPage() {
                 </tbody>
              </table>
           </div>
-        </div>
+        </section>
 
         {/* 3. Crypto & 4. Commodities */}
         <div className="flex flex-col gap-10">
             
             {/* 3. Crypto */}
-            <div>
+            <section id="crypto-assets" className="scroll-mt-28">
                <div className="flex items-center mb-4">
                   <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
                      3. 数字货币
@@ -451,10 +923,10 @@ export default function MarketOverviewPage() {
                     />
                   ))}
                </div>
-            </div>
+            </section>
 
             {/* 4. Commodities */}
-            <div>
+            <section id="commodities" className="scroll-mt-28">
                <div className="flex items-center mb-4">
                   <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
                      4. 大宗期货
@@ -471,8 +943,14 @@ export default function MarketOverviewPage() {
                     />
                   ))}
                </div>
-            </div>
+            </section>
 
+            <section id="sentiment-indicators" className="scroll-mt-28">
+              <FearGreedModule />
+            </section>
+
+        </div>
+          </main>
         </div>
 
       </div>

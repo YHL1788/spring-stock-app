@@ -53,6 +53,7 @@ const VIEWS_COLLECTION = 'pchip_researcher_views';
 const RUNS_COLLECTION = 'pchip_simulation_runs';
 const TRADES_COLLECTION = 'pchip_simulation_trades';
 const REAFFIRM_COLLECTION = 'pchip_reaffirm_logs';
+const SIP_RESEARCH_COLLECTION = 'sip_research_library';
 
 const DEFAULT_CONFIG: PchipContestConfig = {
   startDate: todayInput(),
@@ -77,6 +78,8 @@ const EMPTY_VIEW: ResearcherView = {
   allowNonMonotonic: false,
   status: 'active',
   note: '',
+  hasResearchNote: false,
+  researchNoteID: '',
   points: [
     { price: 10, targetValueHKD: 5_000_000 },
     { price: 15, targetValueHKD: 3_000_000 },
@@ -112,6 +115,17 @@ type RunReport = {
   generatedTradeCount: number;
 };
 
+type SipResearchNote = {
+  noteID: string;
+  target: string;
+  author: string;
+  note: string;
+  htmlContent: string;
+  plainTextPreview?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export default function PchipContestPage() {
   const { stocks: stockPool } = useStockPool();
   const [config, setConfig] = useState<PchipContestConfig>(DEFAULT_CONFIG);
@@ -129,6 +143,9 @@ export default function PchipContestPage() {
   const [runReport, setRunReport] = useState<RunReport | null>(null);
   const [showRunReportModal, setShowRunReportModal] = useState(false);
   const [selectedAccount, setSelectedAccount] = useState('');
+  const [selectedResearchNote, setSelectedResearchNote] = useState<SipResearchNote | null>(null);
+  const [researchNoteLoading, setResearchNoteLoading] = useState(false);
+  const [researchNoteError, setResearchNoteError] = useState('');
   const [tradeSort, setTradeSort] = useState<{ key: string; dir: 'asc' | 'desc' | null }>({ key: 'date', dir: 'desc' });
   const [tradeFilters, setTradeFilters] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -265,6 +282,42 @@ export default function PchipContestPage() {
     }
   }
 
+  async function openResearchNote(noteID: string) {
+    const normalizedNoteID = noteID.trim();
+    if (!normalizedNoteID) {
+      setResearchNoteError('请输入 noteID 后再查看。');
+      return;
+    }
+
+    setResearchNoteLoading(true);
+    setResearchNoteError('');
+    try {
+      await ensureAuth();
+      const snap = await getDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', SIP_RESEARCH_COLLECTION, normalizedNoteID));
+      if (!snap.exists()) {
+        setSelectedResearchNote(null);
+        setResearchNoteError(`未找到 noteID：${normalizedNoteID}`);
+        return;
+      }
+      const data = snap.data();
+      setSelectedResearchNote({
+        noteID: data.noteID || snap.id,
+        target: data.target || '',
+        author: data.author || '',
+        note: data.note || '',
+        htmlContent: data.htmlContent || '',
+        plainTextPreview: data.plainTextPreview || '',
+        createdAt: data.createdAt || '',
+        updatedAt: data.updatedAt || '',
+      });
+    } catch (err: any) {
+      setSelectedResearchNote(null);
+      setResearchNoteError(err?.message || '读取SIP研究文档失败');
+    } finally {
+      setResearchNoteLoading(false);
+    }
+  }
+
   async function saveView() {
     const points = normalizePoints(viewForm.points);
     if (!viewForm.researcherName.trim() || !viewForm.symbol.trim() || points.length < 2) {
@@ -273,6 +326,10 @@ export default function PchipContestPage() {
     }
     if (!viewForm.allowNonMonotonic && hasNonMonotonicValue(points)) {
       setError('当前曲线不是单调递减。如确认为右侧/区间策略，请勾选“允许非单调曲线”。');
+      return;
+    }
+    if (viewForm.hasResearchNote && !viewForm.researchNoteID?.trim()) {
+      setError('已勾选添加研究文档，请填写 SIP 投研资料库的 noteID。');
       return;
     }
     setSaving(true);
@@ -288,6 +345,7 @@ export default function PchipContestPage() {
         item.market.trim().toUpperCase() === (viewForm.market.trim().toUpperCase() || viewForm.priceCurrency)
       ));
       const nextVersionNo = viewForm.id ? viewForm.versionNo || 1 : Math.max(0, ...existingVersions.map((item) => item.versionNo || 1)) + 1;
+      const hasResearchNote = !!viewForm.hasResearchNote && !!viewForm.researchNoteID?.trim();
       const payload: ResearcherView = {
         ...viewForm,
         id,
@@ -297,6 +355,8 @@ export default function PchipContestPage() {
         stockName: viewForm.stockName.trim() || viewForm.symbol.trim().toUpperCase(),
         effectiveDate: viewForm.effectiveDate || runDate,
         versionNo: nextVersionNo,
+        hasResearchNote,
+        researchNoteID: hasResearchNote ? viewForm.researchNoteID?.trim() : '',
         points,
         createdAt: viewForm.createdAt || now,
         updatedAt: now,
@@ -809,6 +869,9 @@ export default function PchipContestPage() {
               updatePoint={updatePoint}
               saveView={saveView}
               saving={saving}
+              openResearchNote={openResearchNote}
+              researchNoteLoading={researchNoteLoading}
+              researchNoteError={researchNoteError}
               openImport={() => setShowImportModal(true)}
               openExport={() => setShowExportModal(true)}
             />
@@ -822,6 +885,7 @@ export default function PchipContestPage() {
               reaffirmView={reaffirmView}
               toggleViewStatus={toggleViewStatus}
               deleteView={deleteView}
+              openResearchNote={openResearchNote}
               openHistory={setHistoryGroupKey}
             />
           </Panel>
@@ -900,6 +964,10 @@ export default function PchipContestPage() {
         <RunReportModal report={runReport} close={() => setShowRunReportModal(false)} />
       )}
 
+      {selectedResearchNote && (
+        <ResearchNoteModal note={selectedResearchNote} close={() => setSelectedResearchNote(null)} />
+      )}
+
       <style jsx global>{`
         .input { width: 100%; border-radius: 1rem; border: 1px solid #e7e5e4; background: #fff; padding: 0.7rem 0.9rem; color: #0f172a; outline: none; transition: border-color .15s ease, box-shadow .15s ease; }
         .input:focus { border-color: #0f766e; box-shadow: 0 0 0 3px rgba(15, 118, 110, .14); }
@@ -925,10 +993,26 @@ function ViewEditor(props: {
   updatePoint: (index: number, point: PriceTargetPoint) => void;
   saveView: () => void;
   saving: boolean;
+  openResearchNote: (noteID: string) => void;
+  researchNoteLoading: boolean;
+  researchNoteError: string;
   openImport: () => void;
   openExport: () => void;
 }) {
-  const { stockPool, viewForm, setViewForm, applyStockSuggestion, updatePoint, saveView, saving, openImport, openExport } = props;
+  const {
+    stockPool,
+    viewForm,
+    setViewForm,
+    applyStockSuggestion,
+    updatePoint,
+    saveView,
+    saving,
+    openResearchNote,
+    researchNoteLoading,
+    researchNoteError,
+    openImport,
+    openExport,
+  } = props;
   return (
     <>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -959,6 +1043,39 @@ function ViewEditor(props: {
         <input type="checkbox" checked={viewForm.allowNonMonotonic} onChange={(e) => setViewForm({ ...viewForm, allowNonMonotonic: e.target.checked })} />
         允许非单调曲线
       </label>
+      <div className="mt-4 rounded-3xl border border-amber-100 bg-amber-50/60 p-4">
+        <label className="flex items-center gap-2 text-sm font-black text-slate-800">
+          <input
+            type="checkbox"
+            checked={!!viewForm.hasResearchNote}
+            onChange={(e) => setViewForm({
+              ...viewForm,
+              hasResearchNote: e.target.checked,
+              researchNoteID: e.target.checked ? viewForm.researchNoteID || '' : '',
+            })}
+          />
+          添加研究文档
+        </label>
+        {viewForm.hasResearchNote && (
+          <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+            <input
+              className="input font-mono"
+              value={viewForm.researchNoteID || ''}
+              onChange={(e) => setViewForm({ ...viewForm, researchNoteID: e.target.value })}
+              placeholder="输入 SIP 投研资料库 noteID，例如 SIP-NOTE-20260528-ABCD"
+            />
+            <button
+              className="btn-secondary justify-center"
+              type="button"
+              onClick={() => openResearchNote(viewForm.researchNoteID || '')}
+              disabled={researchNoteLoading || !viewForm.researchNoteID?.trim()}
+            >
+              {researchNoteLoading ? '读取中...' : '查看noteID'}
+            </button>
+          </div>
+        )}
+        {researchNoteError && <div className="mt-2 text-xs font-bold text-rose-700">{researchNoteError}</div>}
+      </div>
       <div className="mt-4 space-y-2">
         <div className="flex items-center justify-between">
           <div className="text-sm font-black text-slate-700">价格-目标市值点</div>
@@ -993,18 +1110,19 @@ function ViewsTable(props: {
   reaffirmView: (view: ResearcherView) => void;
   toggleViewStatus: (view: ResearcherView) => void;
   deleteView: (view: ResearcherView) => void;
+  openResearchNote: (noteID: string) => void;
   openHistory: (groupKey: string) => void;
 }) {
-  const { views, runDate, setSelectedSymbol, setViewForm, reaffirmView, toggleViewStatus, deleteView, openHistory } = props;
+  const { views, runDate, setSelectedSymbol, setViewForm, reaffirmView, toggleViewStatus, deleteView, openResearchNote, openHistory } = props;
   const groups = useMemo(() => groupViewsByResearcherStock(views, runDate), [views, runDate]);
   return (
     <div className="overflow-auto rounded-3xl border border-stone-200">
       <table className="min-w-[820px] w-full text-sm">
         <thead className="bg-stone-100 text-left text-xs uppercase tracking-wide text-slate-500">
-          <tr><th className="px-4 py-3">研究员</th><th className="px-4 py-3">股票</th><th className="px-4 py-3">版本</th><th className="px-4 py-3">生效日</th><th className="px-4 py-3">信心日</th><th className="px-4 py-3">状态</th><th className="px-4 py-3 text-right">操作</th></tr>
+          <tr><th className="px-4 py-3">研究员</th><th className="px-4 py-3">股票</th><th className="px-4 py-3">版本</th><th className="px-4 py-3">生效日</th><th className="px-4 py-3">研究文档</th><th className="px-4 py-3">信心日</th><th className="px-4 py-3">状态</th><th className="px-4 py-3 text-right">操作</th></tr>
         </thead>
         <tbody className="divide-y divide-stone-100 bg-white">
-          {groups.length === 0 ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">暂无观点。</td></tr> : groups.map((group) => {
+          {groups.length === 0 ? <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-500">暂无观点。</td></tr> : groups.map((group) => {
             const view = group.currentView;
             const staleDays = businessDaysBetween(view.lastConfidenceAt || view.updatedAt, runDate);
             return (
@@ -1013,6 +1131,13 @@ function ViewsTable(props: {
                 <td className="px-4 py-3"><button className="font-bold text-teal-700" onClick={() => setSelectedSymbol(symbolKey(view.symbol, view.market))}>{view.symbol}</button><div className="text-xs text-slate-500">{view.stockName}</div></td>
                 <td className="px-4 py-3">v{view.versionNo || 1}<div className="text-xs text-slate-400">{group.versions.length} 个版本</div></td>
                 <td className="px-4 py-3">{view.effectiveDate || '--'}</td>
+                <td className="px-4 py-3">
+                  {view.hasResearchNote && view.researchNoteID ? (
+                    <button className="font-mono text-xs font-black text-amber-700 underline decoration-amber-300 underline-offset-4" onClick={() => openResearchNote(view.researchNoteID || '')}>
+                      {view.researchNoteID}
+                    </button>
+                  ) : '--'}
+                </td>
                 <td className="px-4 py-3">{view.lastConfidenceAt}<div className="text-xs text-slate-400">{staleDays} 工作日</div></td>
                 <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-bold ${view.status === 'active' ? 'bg-emerald-50 text-emerald-700' : 'bg-stone-100 text-stone-500'}`}>{view.status === 'active' ? '有效' : '暂停'}</span></td>
                 <td className="px-4 py-3 text-right"><div className="flex justify-end gap-2"><button className="table-btn" onClick={() => openHistory(group.groupKey)}>历史版本</button><button className="table-btn" onClick={() => setViewForm(view)}>编辑当前</button><button className="table-btn" onClick={() => reaffirmView(view)}>重申</button><button className="table-btn" onClick={() => toggleViewStatus(view)}>{view.status === 'active' ? '暂停' : '启用'}</button><button className="table-btn-danger" onClick={() => deleteView(view)}>删除</button></div></td>
@@ -1431,6 +1556,44 @@ function RunReportModal({ report, close }: { report: RunReport; close: () => voi
           <ReportList title="跳过日期" emptyText="无跳过日期" items={report.skippedDays.map((item) => `${item.date}：${item.reason}`)} />
           <ReportList title="市场休市" emptyText="无市场休市提示" items={report.marketHolidays.map((item) => `${item.date} ${item.market}：${item.symbols.join(', ')}`)} />
           <ReportList title="缺少历史行情" emptyText="无缺行情提示" items={report.missingQuotes.map((item) => `${item.date}：${item.symbols.join(', ')}`)} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ResearchNoteModal({ note, close }: { note: SipResearchNote; close: () => void }) {
+  const isFullDocument = useMemo(() => isFullHtmlDocument(note.htmlContent || ''), [note.htmlContent]);
+  const sanitizedHtml = useMemo(() => sanitizeResearchHtml(note.htmlContent || ''), [note.htmlContent]);
+  const sanitizedDoc = useMemo(() => sanitizeResearchFullHtmlDocument(note.htmlContent || ''), [note.htmlContent]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6 backdrop-blur-sm">
+      <div className="max-h-[90vh] w-full max-w-6xl overflow-hidden rounded-[2rem] bg-white shadow-2xl">
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-stone-200 bg-amber-50 px-6 py-5">
+          <div>
+            <div className="font-mono text-xs font-black uppercase tracking-wide text-amber-700">{note.noteID}</div>
+            <h3 className="mt-1 text-2xl font-black text-slate-900">{note.target || 'SIP研究文档'}</h3>
+            <p className="mt-1 text-sm text-slate-500">
+              作者：{note.author || '--'} · 更新：{note.updatedAt ? new Date(note.updatedAt).toLocaleString('zh-CN', { hour12: false }) : '--'}
+            </p>
+            {note.note && <p className="mt-2 max-w-3xl text-sm text-slate-600">{note.note}</p>}
+          </div>
+          <button className="rounded-full border border-stone-300 bg-white px-4 py-2 text-sm font-bold text-slate-700" onClick={close}>关闭</button>
+        </div>
+        <div className="max-h-[72vh] overflow-auto bg-slate-50 p-5">
+          {isFullDocument ? (
+            <iframe
+              title={note.noteID}
+              className="h-[68vh] w-full rounded-3xl border border-stone-200 bg-white"
+              srcDoc={sanitizedDoc}
+              sandbox=""
+            />
+          ) : (
+            <div className="rounded-3xl border border-stone-200 bg-white p-6">
+              <div className="prose prose-slate max-w-none" dangerouslySetInnerHTML={{ __html: sanitizedHtml || '<p style="color:#94a3b8">该 note 暂无 HTML 内容。</p>' }} />
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1974,6 +2137,70 @@ function getTradeField(trade: SimulationTradeLedger, key: string): string | numb
   return '';
 }
 
+function isFullHtmlDocument(html: string) {
+  return /<!doctype html|<html[\s>]/i.test(html);
+}
+
+function sanitizeResearchFullHtmlDocument(html: string) {
+  if (typeof window === 'undefined') return '';
+  const parser = new DOMParser();
+  const parsed = parser.parseFromString(html, 'text/html');
+
+  parsed.querySelectorAll('script, iframe, object, embed').forEach((el) => el.remove());
+  parsed.querySelectorAll('*').forEach((el) => {
+    Array.from(el.attributes).forEach((attr) => {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.trim();
+      const isEventHandler = name.startsWith('on');
+      const isUnsafeUrl = ['href', 'src'].includes(name) && /^javascript:/i.test(value);
+      if (isEventHandler || isUnsafeUrl) el.removeAttribute(attr.name);
+    });
+  });
+
+  return `<!DOCTYPE html>\n${parsed.documentElement.outerHTML}`;
+}
+
+function sanitizeResearchHtml(html: string) {
+  if (typeof window === 'undefined') return '';
+  const allowedTags = new Set([
+    'A', 'B', 'BLOCKQUOTE', 'BR', 'CODE', 'DIV', 'EM', 'H1', 'H2', 'H3', 'H4',
+    'HR', 'I', 'IMG', 'LI', 'OL', 'P', 'PRE', 'SPAN', 'STRONG', 'TABLE', 'TBODY',
+    'TD', 'TH', 'THEAD', 'TR', 'U', 'UL',
+  ]);
+  const allowedAttrs = new Set(['href', 'src', 'alt', 'title', 'target', 'rel', 'colspan', 'rowspan']);
+  const template = document.createElement('template');
+  template.innerHTML = html;
+
+  const cleanNode = (node: Node) => {
+    Array.from(node.childNodes).forEach((child) => {
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        const el = child as HTMLElement;
+        if (!allowedTags.has(el.tagName)) {
+          el.replaceWith(...Array.from(el.childNodes));
+          return;
+        }
+        Array.from(el.attributes).forEach((attr) => {
+          const name = attr.name.toLowerCase();
+          const value = attr.value.trim();
+          const isEventHandler = name.startsWith('on');
+          const isUnsafeUrl = ['href', 'src'].includes(name) && /^javascript:/i.test(value);
+          if (!allowedAttrs.has(name) || isEventHandler || isUnsafeUrl) el.removeAttribute(attr.name);
+        });
+        if (el.tagName === 'A') {
+          el.setAttribute('target', '_blank');
+          el.setAttribute('rel', 'noopener noreferrer');
+        }
+        cleanNode(el);
+      } else if (child.nodeType !== Node.TEXT_NODE) {
+        child.remove();
+      }
+    });
+  };
+
+  cleanNode(template.content);
+  return template.innerHTML;
+}
+
 function normalizeCurrency(value: any): PriceCurrency {
   const currency = String(value || 'HKD').toUpperCase();
   if (currency === 'USD' || currency === 'CNY' || currency === 'JPY' || currency === 'HKD') return currency;
@@ -1987,6 +2214,8 @@ function normalizeLoadedView(view: ResearcherView): ResearcherView {
     effectiveDate: view.effectiveDate || fallbackDate,
     versionNo: view.versionNo || 1,
     lastConfidenceAt: view.lastConfidenceAt || fallbackDate,
+    hasResearchNote: !!view.hasResearchNote || !!view.researchNoteID,
+    researchNoteID: view.researchNoteID || '',
   };
 }
 
