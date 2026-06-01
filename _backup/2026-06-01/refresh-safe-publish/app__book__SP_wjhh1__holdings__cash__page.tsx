@@ -31,7 +31,6 @@ import {
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
-import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 
 // --- 时间辅助函数 ---
 const getTime = (val: any) => {
@@ -446,7 +445,7 @@ export default function CashHoldingsPage() {
               rawMatrix: currentCashStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_mktvalue', payload, refreshGroup: 'holdings-cash', sourcePage: '/book/SP_wjhh1/holdings/cash' });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_mktvalue', 'latest_summary'), payload);
           if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存现金市值失败", e);
@@ -465,7 +464,7 @@ export default function CashHoldingsPage() {
               rawMatrix: currentPlStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_pl', payload, refreshGroup: 'holdings-cash', sourcePage: '/book/SP_wjhh1/holdings/cash' });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_pl', 'latest_summary'), payload);
           if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存收益统计失败:", e);

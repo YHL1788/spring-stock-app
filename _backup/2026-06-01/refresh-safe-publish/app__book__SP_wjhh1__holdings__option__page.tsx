@@ -22,7 +22,6 @@ import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, addDoc, onSnaps
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
-import { publishLatestSummarySafely, replaceCollectionDocsSafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 
 // --- 時間のパース補助関数 ---
 const getTime = (val: any) => {
@@ -639,16 +638,19 @@ export default function OptionHoldingPage() {
     const handleConfirmDeliveries = async () => {
         setSyncingDeliveries(true);
         try {
+            const getStockRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_output_get-stock');
             const tradeIds = [...new Set(pendingDeliveries.map(d => d.tradeId))];
-            await replaceCollectionDocsSafely({
-                db,
-                collectionName: 'sip_holding_option_output_get-stock',
-                records: pendingDeliveries.map((rec) => replaceUndefinedWithNull(rec)),
-                matchField: 'tradeId',
-                matchValues: tradeIds,
-                refreshGroup: 'holdings-option-get-stock',
-                sourcePage: '/book/SP_wjhh1/holdings/option',
-            });
+            
+            for (const tid of tradeIds) {
+                const q = query(getStockRef, where('tradeId', '==', tid));
+                const snap = await getDocs(q);
+                for(const d of snap.docs) await deleteDoc(d.ref);
+            }
+
+            for (const rec of pendingDeliveries) {
+                const clean = replaceUndefinedWithNull(rec);
+                await addDoc(getStockRef, clean); 
+            }
 
             alert("交收流水已成功精准覆盖至 get-stock 接货库！");
             setShowDeliveryModal(false);
@@ -1040,7 +1042,7 @@ export default function OptionHoldingPage() {
                 rawMatrix: currentMktStats.rawMatrix,
                 updatedAt: new Date().toISOString()
             };
-            await publishLatestSummarySafely({ db, collectionName: 'sip_holding_option_mktvalue', payload, refreshGroup: 'holdings-option', sourcePage: '/book/SP_wjhh1/holdings/option' });
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_mktvalue', 'latest_summary'), payload);
             if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存当前市值统计失败:", e);
@@ -1058,7 +1060,7 @@ export default function OptionHoldingPage() {
                 rawMatrix: currentPlStats.rawMatrix,
                 updatedAt: new Date().toISOString()
             };
-            await publishLatestSummarySafely({ db, collectionName: 'sip_holding_option_pl', payload, refreshGroup: 'holdings-option', sourcePage: '/book/SP_wjhh1/holdings/option' });
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_option_pl', 'latest_summary'), payload);
             if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存当前收益统计失败:", e);
@@ -1077,7 +1079,7 @@ export default function OptionHoldingPage() {
                 rawMatrix: cashStats.rawMatrix,
                 updatedAt: new Date().toISOString()
             };
-            await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_option', payload, refreshGroup: 'holdings-option', sourcePage: '/book/SP_wjhh1/holdings/option' });
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_option', 'latest_summary'), payload);
             if (!isAuto) {
                 setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
             }
@@ -1096,7 +1098,7 @@ export default function OptionHoldingPage() {
                 data: riskExposureSummary,
                 updatedAt: new Date().toISOString()
             };
-            await publishLatestSummarySafely({ db, collectionName: 'sip_exposure_option', payload, refreshGroup: 'holdings-option', sourcePage: '/book/SP_wjhh1/holdings/option' });
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_option', 'latest_summary'), payload);
             if (!isAuto) setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存暴露汇总失败:", e);

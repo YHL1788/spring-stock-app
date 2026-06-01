@@ -33,6 +33,7 @@ import { collection, getDocs, query, onSnapshot, addDoc, deleteDoc, setDoc, doc,
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
+import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 
 // --- 统一的交易数据类型 ---
 interface UnifiedPETrade {
@@ -692,7 +693,7 @@ export default function PEHoldingsPage() {
               rawMatrix: cashStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_pe', 'latest_summary'), payload);
+          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_pe', payload, refreshGroup: 'holdings-pe', sourcePage: '/book/SP_wjhh1/holdings/pe' });
           if (!isAuto) {
               setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
           }
@@ -713,7 +714,7 @@ export default function PEHoldingsPage() {
               rawMatrix: currentMktStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_mktvalue', 'latest_summary'), payload);
+          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_pe_mktvalue', payload, refreshGroup: 'holdings-pe', sourcePage: '/book/SP_wjhh1/holdings/pe' });
           if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前市值统计失败:", e);
@@ -731,7 +732,7 @@ export default function PEHoldingsPage() {
               rawMatrix: currentPlStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_pl', 'latest_summary'), payload);
+          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_pe_pl', payload, refreshGroup: 'holdings-pe', sourcePage: '/book/SP_wjhh1/holdings/pe' });
           if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前收益统计失败:", e);

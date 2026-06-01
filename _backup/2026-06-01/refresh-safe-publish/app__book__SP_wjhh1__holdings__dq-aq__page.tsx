@@ -5,7 +5,6 @@ import { RefreshCw, Database, FileJson, Trash2, X, Save, Loader2, AlertCircle, T
 import { collection, getDocs, doc, updateDoc, addDoc, deleteDoc, setDoc, query, where, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { db, auth, APP_ID } from '@/app/lib/stockService';
-import { publishLatestSummarySafely, replaceCollectionDocsSafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 import { DQAQValuator, Period, BasicInfo, UnderlyingInfo, SimulationParams, ValuationResult, calculateVolatility, PlotData } from '@/app/lib/DQ-AQPricer';
 
 // --- 时间解析辅助函数 ---
@@ -556,17 +555,18 @@ export default function DQAQHoldingPage() {
     const handleConfirmDeliveries = async () => {
         setSyncingDeliveries(true);
         try {
+            const getStockRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_dqaq_output_get-stock');
             const tradeIds = [...new Set(pendingDeliveries.map(d => d.tradeId))];
-            await replaceCollectionDocsSafely({
-                db,
-                collectionName: 'sip_holding_dqaq_output_get-stock',
-                records: pendingDeliveries.map((rec) => replaceUndefinedWithNull(rec)),
-                matchField: 'tradeId',
-                matchValues: tradeIds,
-                refreshGroup: 'holdings-dq-aq-get-stock',
-                sourcePage: '/book/SP_wjhh1/holdings/dq-aq',
-                addCreatedAt: true,
-            });
+            
+            for (const tid of tradeIds) {
+                const q = query(getStockRef, where('tradeId', '==', tid));
+                const snap = await getDocs(q);
+                for(const d of snap.docs) await deleteDoc(d.ref);
+            }
+            for (const rec of pendingDeliveries) {
+                const clean = replaceUndefinedWithNull(rec);
+                await addDoc(getStockRef, {...clean, createdAt: new Date()});
+            }
             alert("交收流水已成功精准覆盖至 get-stock 接货库！");
             setShowDeliveryModal(false);
             setPendingDeliveries([]);
@@ -865,7 +865,7 @@ export default function DQAQHoldingPage() {
                 data: riskExposureSummary,
                 updatedAt: new Date().toISOString()
             };
-            await publishLatestSummarySafely({ db, collectionName: 'sip_exposure_dqaq', payload, refreshGroup: 'holdings-dq-aq', sourcePage: '/book/SP_wjhh1/holdings/dq-aq' });
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_dqaq', 'latest_summary'), payload);
             if (!isAuto) setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存暴露汇总失败:", e);
@@ -885,7 +885,7 @@ export default function DQAQHoldingPage() {
                 rawMatrix: currentMktStats.rawMatrix,
                 updatedAt: new Date().toISOString()
             };
-            await publishLatestSummarySafely({ db, collectionName: 'sip_holding_dqaq_mktvalue', payload, refreshGroup: 'holdings-dq-aq', sourcePage: '/book/SP_wjhh1/holdings/dq-aq' });
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_dqaq_mktvalue', 'latest_summary'), payload);
             if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存当前市值统计失败:", e);
@@ -903,7 +903,7 @@ export default function DQAQHoldingPage() {
                 rawMatrix: currentPlStats.rawMatrix,
                 updatedAt: new Date().toISOString()
             };
-            await publishLatestSummarySafely({ db, collectionName: 'sip_holding_dqaq_pl', payload, refreshGroup: 'holdings-dq-aq', sourcePage: '/book/SP_wjhh1/holdings/dq-aq' });
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_dqaq_pl', 'latest_summary'), payload);
             if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存当前收益统计失败:", e);

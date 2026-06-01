@@ -9,7 +9,6 @@ import {
 import { collection, getDocs, query, onSnapshot, addDoc, deleteDoc, setDoc, doc, updateDoc, writeBatch } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { db, auth, APP_ID } from '@/app/lib/stockService';
-import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 import { useStockPool } from '@/app/hooks/useStockPool';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
@@ -876,7 +875,7 @@ export default function SpotHoldingsPage() {
               rawMatrix: netBuyStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_stock', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_stock', 'latest_summary'), payload);
           if (!isAuto) setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存资金净买入统计失败:", e);
@@ -895,7 +894,7 @@ export default function SpotHoldingsPage() {
               rawMatrix: currentMktStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_stock_mktvalue', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_stock_mktvalue', 'latest_summary'), payload);
           if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前市值统计失败:", e);
@@ -913,7 +912,7 @@ export default function SpotHoldingsPage() {
               rawMatrix: currentPlStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_stock_pl', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_stock_pl', 'latest_summary'), payload);
           if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前收益统计失败:", e);
@@ -932,7 +931,7 @@ export default function SpotHoldingsPage() {
               rawMatrix: initialStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_spot_start', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start', 'latest_summary'), payload);
           if (!isAuto) setLastInitialSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存期初投入统计失败:", e);
@@ -949,7 +948,7 @@ export default function SpotHoldingsPage() {
               data: riskExposureSummary,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_exposure_spot', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_spot', 'latest_summary'), payload);
           if (!isAuto) setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存现货风控暴露失败:", e);

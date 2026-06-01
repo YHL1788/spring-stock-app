@@ -8,7 +8,6 @@ import {
 import { collection, getDocs, doc, updateDoc, addDoc, deleteDoc, setDoc, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { db, auth, APP_ID } from '@/app/lib/stockService';
-import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 import { FCNPricer, FCNParams, FCNResult } from '@/app/lib/fcnPricer';
 
 // --- 時間解析輔助函數 ---
@@ -995,7 +994,7 @@ export default function FCNHoldingPage() {
                 data: riskExposureSummary,
                 updatedAt: new Date().toISOString()
             };
-            await publishLatestSummarySafely({ db, collectionName: 'sip_exposure_fcn', payload, refreshGroup: 'holdings-fcn', sourcePage: '/book/SP_wjhh1/holdings/fcn' });
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_exposure_fcn', 'latest_summary'), payload);
             if (!isAuto) setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存暴露汇总失败:", e);
@@ -1121,7 +1120,7 @@ export default function FCNHoldingPage() {
                 rawMatrix: currentMktStats.rawMatrix,
                 updatedAt: new Date().toISOString()
             };
-            await publishLatestSummarySafely({ db, collectionName: 'sip_holding_fcn_mktvalue', payload, refreshGroup: 'holdings-fcn', sourcePage: '/book/SP_wjhh1/holdings/fcn' });
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_mktvalue', 'latest_summary'), payload);
             if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存当前市值统计失败:", e);
@@ -1139,7 +1138,7 @@ export default function FCNHoldingPage() {
               rawMatrix: currentPlStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_fcn_pl', payload, refreshGroup: 'holdings-fcn', sourcePage: '/book/SP_wjhh1/holdings/fcn' });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_pl', 'latest_summary'), payload);
           if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前收益统计失败:", e);
@@ -1159,7 +1158,7 @@ export default function FCNHoldingPage() {
                 rawMatrix: cashStats.rawMatrix,
                 updatedAt: new Date().toISOString()
             };
-            await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_fcn', payload, refreshGroup: 'holdings-fcn', sourcePage: '/book/SP_wjhh1/holdings/fcn' });
+            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_fcn', 'latest_summary'), payload);
             if (!isAuto) {
                 setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
             }

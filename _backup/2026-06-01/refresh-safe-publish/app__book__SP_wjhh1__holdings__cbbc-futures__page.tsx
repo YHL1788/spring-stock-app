@@ -33,7 +33,6 @@ import { collection, getDocs, query, onSnapshot, addDoc, deleteDoc, setDoc, doc,
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
-import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 
 // --- 统一的交易数据类型 ---
 interface UnifiedCBBCTrade {
@@ -693,7 +692,7 @@ export default function CBBCHoldingsPage() {
               rawMatrix: cashStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_cbbc', payload, refreshGroup: 'holdings-cbbc-futures', sourcePage: '/book/SP_wjhh1/holdings/cbbc-futures' });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_cbbc', 'latest_summary'), payload);
           if (!isAuto) {
               setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
           }
@@ -714,7 +713,7 @@ export default function CBBCHoldingsPage() {
               rawMatrix: currentMktStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cbbc_mktvalue', payload, refreshGroup: 'holdings-cbbc-futures', sourcePage: '/book/SP_wjhh1/holdings/cbbc-futures' });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_mktvalue', 'latest_summary'), payload);
           if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前市值统计失败:", e);
@@ -732,7 +731,7 @@ export default function CBBCHoldingsPage() {
               rawMatrix: currentPlStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cbbc_pl', payload, refreshGroup: 'holdings-cbbc-futures', sourcePage: '/book/SP_wjhh1/holdings/cbbc-futures' });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_pl', 'latest_summary'), payload);
           if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前收益统计失败:", e);
