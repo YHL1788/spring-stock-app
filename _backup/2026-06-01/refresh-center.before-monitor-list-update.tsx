@@ -1,0 +1,300 @@
+'use client';
+
+import React, { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+import { doc, onSnapshot } from 'firebase/firestore';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Clock,
+  Database,
+  ExternalLink,
+  Loader2,
+  RefreshCw,
+} from 'lucide-react';
+import { auth, db, APP_ID } from '@/app/lib/stockService';
+
+type SummaryStatus = {
+  key: string;
+  label: string;
+  collection: string;
+  docId: string;
+  module: string;
+  pageHref: string;
+  exists: boolean;
+  updatedAt: number | null;
+  count?: number | null;
+  error?: string;
+};
+
+const SUMMARY_TARGETS = [
+  { module: '股票持仓', label: '股票市值', collection: 'sip_holding_stock_mktvalue', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/stocks' },
+  { module: '股票持仓', label: '股票盈亏', collection: 'sip_holding_stock_pl', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/stocks' },
+  { module: '股票持仓', label: '股票现金净买入', collection: 'sip_holding_cash_stock', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/stocks' },
+  { module: '股票持仓', label: '现货暴露', collection: 'sip_exposure_spot', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/stocks' },
+  { module: 'FCN', label: 'FCN 市值', collection: 'sip_holding_fcn_mktvalue', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/fcn' },
+  { module: 'FCN', label: 'FCN 盈亏', collection: 'sip_holding_fcn_pl', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/fcn' },
+  { module: 'FCN', label: 'FCN 暴露', collection: 'sip_exposure_fcn', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/fcn' },
+  { module: 'DQ-AQ', label: 'DQ-AQ 市值', collection: 'sip_holding_dqaq_mktvalue', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/dq-aq' },
+  { module: 'DQ-AQ', label: 'DQ-AQ 盈亏', collection: 'sip_holding_dqaq_pl', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/dq-aq' },
+  { module: 'DQ-AQ', label: 'DQ-AQ 暴露', collection: 'sip_exposure_dqaq', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/dq-aq' },
+  { module: 'Option', label: 'Option 市值', collection: 'sip_holding_option_mktvalue', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/option' },
+  { module: 'Option', label: 'Option 盈亏', collection: 'sip_holding_option_pl', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/option' },
+  { module: 'Option', label: 'Option 暴露', collection: 'sip_exposure_option', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/option' },
+  { module: '现金', label: '现金市值', collection: 'sip_holding_cash_mktvalue', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/cash' },
+  { module: '现金', label: '现金盈亏', collection: 'sip_holding_cash_pl', docId: 'latest_summary', pageHref: '/book/SP_wjhh1/holdings/cash' },
+];
+
+const STALE_HOURS = 8;
+
+const toMillis = (value: any): number | null => {
+  if (!value) return null;
+  if (typeof value?.toMillis === 'function') return value.toMillis();
+  if (typeof value?.toDate === 'function') return value.toDate().getTime();
+  if (typeof value?.seconds === 'number') return value.seconds * 1000;
+  if (typeof value === 'number') return value < 10000000000 ? value * 1000 : value;
+  if (typeof value === 'string') {
+    const time = new Date(value).getTime();
+    return Number.isNaN(time) ? null : time;
+  }
+  return null;
+};
+
+const formatTime = (value: number | null) => {
+  if (!value) return '暂无快照';
+  return new Date(value).toLocaleString('zh-CN', { hour12: false });
+};
+
+const formatAge = (value: number | null) => {
+  if (!value) return '--';
+  const diff = Date.now() - value;
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diff < minute) return '刚刚';
+  if (diff < hour) return `${Math.floor(diff / minute)}分钟前`;
+  if (diff < day) return `${Math.floor(diff / hour)}小时前`;
+  return `${Math.floor(diff / day)}天前`;
+};
+
+const getPayloadCount = (payload: any) => {
+  if (!payload) return null;
+  if (Array.isArray(payload.data)) return payload.data.length;
+  if (Array.isArray(payload.markets)) return payload.markets.length;
+  if (payload.rawMatrix && typeof payload.rawMatrix === 'object') return Object.keys(payload.rawMatrix).length;
+  return null;
+};
+
+const buildInitialStatuses = () => {
+  return SUMMARY_TARGETS.reduce<Record<string, SummaryStatus>>((acc, target) => {
+    const key = `${target.collection}/${target.docId}`;
+    acc[key] = {
+      ...target,
+      key,
+      exists: false,
+      updatedAt: null,
+      count: null,
+    };
+    return acc;
+  }, {});
+};
+
+export default function RefreshCenterPage() {
+  const [loading, setLoading] = useState(true);
+  const [statuses, setStatuses] = useState<Record<string, SummaryStatus>>(() => buildInitialStatuses());
+
+  useEffect(() => {
+    let unsubs: Array<() => void> = [];
+    let cancelled = false;
+
+    const init = async () => {
+      try {
+        if (!auth.currentUser) {
+          // @ts-ignore
+          if (typeof window !== 'undefined' && window.__initial_auth_token) {
+            // @ts-ignore
+            await signInWithCustomToken(auth, window.__initial_auth_token);
+          } else {
+            await signInAnonymously(auth);
+          }
+        }
+
+        const unsubAuth = onAuthStateChanged(auth, (user) => {
+          if (!user || cancelled) return;
+          SUMMARY_TARGETS.forEach((target) => {
+            const key = `${target.collection}/${target.docId}`;
+            const unsub = onSnapshot(
+              doc(db, 'artifacts', APP_ID, 'public', 'data', target.collection, target.docId),
+              (snap) => {
+                const payload = snap.exists() ? snap.data() : null;
+                setStatuses((prev) => ({
+                  ...prev,
+                  [key]: {
+                    ...target,
+                    key,
+                    exists: snap.exists(),
+                    updatedAt: toMillis(payload?.updatedAt),
+                    count: getPayloadCount(payload),
+                  },
+                }));
+              },
+              (error) => {
+                setStatuses((prev) => ({
+                  ...prev,
+                  [key]: {
+                    ...target,
+                    key,
+                    exists: false,
+                    updatedAt: null,
+                    count: null,
+                    error: error.message,
+                  },
+                }));
+              }
+            );
+            unsubs.push(unsub);
+          });
+
+          setStatuses((prev) => ({ ...buildInitialStatuses(), ...prev }));
+          setLoading(false);
+        });
+
+        unsubs.push(unsubAuth);
+      } catch (error) {
+        console.error('Refresh center init failed:', error);
+        setLoading(false);
+      }
+    };
+
+    init();
+    return () => {
+      cancelled = true;
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, []);
+
+  const rows = useMemo(() => SUMMARY_TARGETS.map((target) => statuses[`${target.collection}/${target.docId}`]).filter(Boolean), [statuses]);
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, SummaryStatus[]>();
+    rows.forEach((row) => {
+      const list = map.get(row.module) || [];
+      list.push(row);
+      map.set(row.module, list);
+    });
+    return Array.from(map.entries());
+  }, [rows]);
+
+  const summary = useMemo(() => {
+    const missing = rows.filter((row) => !row.exists).length;
+    const stale = rows.filter((row) => row.updatedAt && Date.now() - row.updatedAt > STALE_HOURS * 60 * 60 * 1000).length;
+    const healthy = rows.length - missing - stale;
+    return { missing, stale, healthy, total: rows.length };
+  }, [rows]);
+
+  const getStatusMeta = (row: SummaryStatus) => {
+    if (row.error) return { label: '读取失败', className: 'bg-red-50 text-red-700 border-red-100', icon: AlertCircle };
+    if (!row.exists) return { label: '暂无快照', className: 'bg-gray-50 text-gray-500 border-gray-100', icon: AlertCircle };
+    if (row.updatedAt && Date.now() - row.updatedAt > STALE_HOURS * 60 * 60 * 1000) {
+      return { label: '可能过期', className: 'bg-amber-50 text-amber-700 border-amber-100', icon: Clock };
+    }
+    return { label: '正常', className: 'bg-emerald-50 text-emerald-700 border-emerald-100', icon: CheckCircle2 };
+  };
+
+  return (
+    <div className="p-8 max-w-7xl mx-auto space-y-8">
+      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+        <div>
+          <div className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700 border border-blue-100">
+            <RefreshCw size={14} />
+            Refresh Center
+          </div>
+          <h1 className="mt-3 text-3xl font-black text-gray-950">SP_wjhh1 刷新中心</h1>
+          <p className="mt-2 text-sm text-gray-500 max-w-3xl">
+            第一版先做 summary 快照状态看板：检查每个模块的 latest_summary 是否存在、是否过期，并提供跳转入口。
+            这一步不改原持仓页面计算逻辑，后续再逐步把核心计算抽成 API，实现真正不用打开页面的自动刷新。
+          </p>
+        </div>
+        <div className="text-xs text-gray-400">
+          过期阈值：{STALE_HOURS} 小时
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="text-xs font-bold text-gray-400">监控快照</div>
+          <div className="mt-2 text-3xl font-black text-gray-950">{summary.total}</div>
+        </div>
+        <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-5 shadow-sm">
+          <div className="text-xs font-bold text-emerald-600">正常</div>
+          <div className="mt-2 text-3xl font-black text-emerald-700">{summary.healthy}</div>
+        </div>
+        <div className="rounded-2xl border border-amber-100 bg-amber-50 p-5 shadow-sm">
+          <div className="text-xs font-bold text-amber-600">可能过期</div>
+          <div className="mt-2 text-3xl font-black text-amber-700">{summary.stale}</div>
+        </div>
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="text-xs font-bold text-gray-400">暂无快照</div>
+          <div className="mt-2 text-3xl font-black text-gray-700">{summary.missing}</div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="rounded-2xl border border-gray-200 bg-white p-12 text-center text-gray-400">
+          <Loader2 className="mx-auto animate-spin mb-3" />
+          正在读取 Firebase 快照状态...
+        </div>
+      ) : (
+        <div className="space-y-5">
+          {grouped.map(([module, moduleRows]) => (
+            <div key={module} className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+              <div className="flex items-center justify-between gap-4 border-b border-gray-100 bg-gray-50 px-5 py-4">
+                <div>
+                  <h2 className="font-black text-gray-900">{module}</h2>
+                  <p className="text-xs text-gray-500 mt-1">打开对应页面后，现有前端计算逻辑会继续生成/更新相关快照。</p>
+                </div>
+                <Link
+                  href={moduleRows[0]?.pageHref || '/book/SP_wjhh1'}
+                  className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-3 py-2 text-xs font-bold text-white hover:bg-gray-800"
+                >
+                  打开模块
+                  <ExternalLink size={14} />
+                </Link>
+              </div>
+
+              <div className="divide-y divide-gray-100">
+                {moduleRows.map((row) => {
+                  const meta = getStatusMeta(row);
+                  const Icon = meta.icon;
+                  return (
+                    <div key={row.key} className="grid grid-cols-1 lg:grid-cols-[220px_1fr_160px_140px] gap-3 px-5 py-4 items-center">
+                      <div className="flex items-center gap-2">
+                        <Database size={16} className="text-gray-400" />
+                        <div>
+                          <div className="font-bold text-sm text-gray-900">{row.label}</div>
+                          <div className="text-[11px] text-gray-400 font-mono">{row.collection}</div>
+                        </div>
+                      </div>
+                      <div className="text-sm text-gray-500">
+                        最近更新时间：<span className="font-mono text-gray-700">{formatTime(row.updatedAt)}</span>
+                        <span className="ml-3 text-xs text-gray-400">{formatAge(row.updatedAt)}</span>
+                      </div>
+                      <div className="text-xs text-gray-400">
+                        数据项：{row.count ?? '--'}
+                      </div>
+                      <div className={`inline-flex items-center justify-center gap-1 rounded-full border px-3 py-1 text-xs font-black ${meta.className}`}>
+                        <Icon size={13} />
+                        {meta.label}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

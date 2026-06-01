@@ -6,8 +6,7 @@ import {
   LayoutDashboard, 
   TrendingUp, 
   Briefcase, 
-  ShieldAlert,
-  RefreshCw
+  ShieldAlert 
 } from 'lucide-react';
 
 export default function SPWjhh1Layout({ children }: { children: React.ReactNode }) {
@@ -65,18 +64,6 @@ export default function SPWjhh1Layout({ children }: { children: React.ReactNode 
           >
             <ShieldAlert size={16} />
             风控中心 (Risk)
-          </Link>
-
-          <Link
-            href="/book/SP_wjhh1/refresh-center"
-            className={`pb-3 pt-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
-              isActive('/book/SP_wjhh1/refresh-center')
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-          >
-            <RefreshCw size={16} />
-            刷新中心
           </Link>
         </nav>
       </header>
