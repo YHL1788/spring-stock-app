@@ -25,6 +25,7 @@ export type ResearcherView = {
   priceCurrency: PriceCurrency;
   effectiveDate: string;
   versionNo: number;
+  minTradeShares?: number;
   allowNonMonotonic: boolean;
   status: 'active' | 'paused';
   note: string;
@@ -65,6 +66,7 @@ export type SimulationTradeLedger = {
   finalTargetValueHKD: number;
   previousShares: number;
   targetShares: number;
+  minTradeShares?: number;
   tradeShares: number;
   quantity: number;
   tradePrice: number;
@@ -126,6 +128,19 @@ export type VoiceWeight = {
 export type GeneratedTrade = Omit<SimulationTradeLedger, 'id' | 'createdAt'>;
 
 const EPSILON = 1e-9;
+
+function normalizeMinTradeShares(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function roundTradeSharesToLotSize(shares: number, lotSize: number): number {
+  if (!Number.isFinite(shares) || Math.abs(shares) < EPSILON) return 0;
+  const normalizedLot = normalizeMinTradeShares(lotSize);
+  const roundedAbs = Math.floor(Math.abs(shares) / normalizedLot) * normalizedLot;
+  if (roundedAbs < EPSILON) return 0;
+  return shares > 0 ? roundedAbs : -roundedAbs;
+}
 
 export function normalizePoints(points: PriceTargetPoint[]): PriceTargetPoint[] {
   const valid = points
@@ -474,9 +489,11 @@ export function generateDailyTrades(params: {
       const finalTargetValueHKD = rawTargetValueHKD * scaleRatio;
       const targetShares = finalTargetValueHKD / (quote.close * quote.fxToHKD);
       const plannedTradeShares = targetShares - previousShares;
-      const plannedTradeValueHKD = plannedTradeShares * quote.close * quote.fxToHKD;
+      const minTradeShares = normalizeMinTradeShares(view.minTradeShares);
+      const roundedTradeShares = roundTradeSharesToLotSize(plannedTradeShares, minTradeShares);
+      const plannedTradeValueHKD = roundedTradeShares * quote.close * quote.fxToHKD;
       const skipByMinTrade = Math.abs(plannedTradeValueHKD) < params.config.minTradeValueHKD && !forcedByCapitalConstraint;
-      const tradeShares = skipByMinTrade ? 0 : plannedTradeShares;
+      const tradeShares = skipByMinTrade ? 0 : roundedTradeShares;
       const tradeValueHKD = tradeShares * quote.close * quote.fxToHKD;
       const side = tradeShares > EPSILON ? 'BUY' : tradeShares < -EPSILON ? 'SELL' : 'NONE';
       const tradingCostHKD = side === 'NONE' ? 0 : Math.abs(tradeValueHKD) * params.config.tradingCostRate;
@@ -500,6 +517,7 @@ export function generateDailyTrades(params: {
         finalTargetValueHKD,
         previousShares,
         targetShares,
+        minTradeShares,
         tradeShares,
         quantity: tradeShares,
         tradePrice: quote.close,
