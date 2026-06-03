@@ -100,72 +100,6 @@ const replaceUndefinedWithNull = (obj: any): any => {
     return newObj;
 };
 
-const normalizeExcelDate = (raw: any): string => {
-    const text = String(raw ?? '').trim();
-    if (!text) return '';
-
-    if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(text)) {
-        const [year, month, day] = text.replace(/\//g, '-').split('-');
-        return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-    }
-
-    if (/^\d+(\.\d+)?$/.test(text)) {
-        const serial = Number(text);
-        if (serial > 20_000 && serial < 80_000) {
-            const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
-            return date.toISOString().slice(0, 10);
-        }
-    }
-
-    const parsed = new Date(text);
-    if (!Number.isNaN(parsed.getTime())) {
-        return parsed.toISOString().slice(0, 10);
-    }
-
-    return '';
-};
-
-const parsePeriodExcelText = (text: string): { periods: Period[]; errors: string[] } => {
-    const errors: string[] = [];
-    const rows = text
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean);
-
-    const periods = rows.flatMap((line, index) => {
-        const cells = (line.includes('\t') ? line.split('\t') : line.split(',')).map((cell) => cell.trim());
-        const joined = cells.join(' ').toLowerCase();
-        if (index === 0 && /(id|start|obs|end|settle|days|期数|开始|结束|结算|天数)/i.test(joined)) return [];
-
-        const hasIdColumn = cells.length >= 5 && /^\d+$/.test(cells[0]);
-        const [startRaw, endRaw, settleRaw, daysRaw] = hasIdColumn ? cells.slice(1, 5) : cells.slice(0, 4);
-        const obs_start = normalizeExcelDate(startRaw);
-        const obs_end = normalizeExcelDate(endRaw);
-        const settle_date = normalizeExcelDate(settleRaw);
-        const trading_days = Number(daysRaw);
-        const rowNo = index + 1;
-
-        if (!obs_start || !obs_end || !settle_date || !Number.isFinite(trading_days) || trading_days <= 0) {
-            errors.push(`第 ${rowNo} 行格式错误：需要 Start / End / Settle / Days`);
-            return [];
-        }
-
-        return [{
-            period_id: 0,
-            obs_start,
-            obs_end,
-            settle_date,
-            trading_days,
-        }];
-    }).map((period, index) => ({ ...period, period_id: index + 1 }));
-
-    if (rows.length > 0 && periods.length === 0 && errors.length === 0) {
-        errors.push('没有识别到有效日期行。');
-    }
-
-    return { periods, errors };
-};
-
 // ==========================================
 // 模拟图表元件 (复用自 Panel)
 // ==========================================
@@ -237,8 +171,6 @@ export default function DQAQTradePage() {
     const [riskFreeInput, setRiskFreeInput] = useState<string>(""); const [fxRateInput, setFxRateInput] = useState<string>("");
     const [historyStartInput, setHistoryStartInput] = useState<string>("");
     const [periods, setPeriods] = useState<Period[]>([]);
-    const [showPeriodImportModal, setShowPeriodImportModal] = useState(false);
-    const [periodImportText, setPeriodImportText] = useState("");
 
     // --- State: 2. UI & Valuation ---
     const [loading, setLoading] = useState(false);
@@ -261,7 +193,6 @@ export default function DQAQTradePage() {
     const [dbRecords, setDbRecords] = useState<any[]>([]);
     const [loadingDb, setLoadingDb] = useState(false);
     const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
-    const parsedPeriodImport = parsePeriodExcelText(periodImportText);
 
     // ==========================================
     // Auth & DB Fetching
@@ -317,19 +248,6 @@ export default function DQAQTradePage() {
     const updatePeriod = (idx: number, field: keyof Period, val: any) => {
         const p = [...periods]; p[idx] = { ...p[idx], [field]: val };
         setPeriods(p);
-    };
-
-    const applyPeriodImport = () => {
-        if (parsedPeriodImport.periods.length === 0 || parsedPeriodImport.errors.length > 0) return;
-        if (periods.length > 0 && !confirm('导入会覆盖当前日期信息，是否继续？')) return;
-        setPeriods(parsedPeriodImport.periods);
-        setShowPeriodImportModal(false);
-        setPeriodImportText('');
-        setErrors(prev => {
-            const next = { ...prev };
-            delete next.periods;
-            return next;
-        });
     };
 
     const fetchQuotePrice = async (symbol: string): Promise<number | null> => {
@@ -790,10 +708,7 @@ export default function DQAQTradePage() {
                         <div>
                             <div className="flex justify-between items-center mb-2">
                                 <h3 className="text-sm font-bold text-gray-800 border-l-4 border-blue-500 pl-2">3. 日期信息</h3>
-                                <div className="flex items-center gap-2">
-                                    <button onClick={() => setShowPeriodImportModal(true)} className="text-xs text-emerald-600 hover:text-emerald-800 font-medium">Excel导入</button>
-                                    <button onClick={addPeriod} className="text-xs text-blue-600 hover:text-blue-800 font-medium">+ 添加期数</button>
-                                </div>
+                                <button onClick={addPeriod} className="text-xs text-blue-600 hover:text-blue-800 font-medium">+ 添加期数</button>
                             </div>
                             <div className="space-y-1 max-h-48 overflow-y-auto pr-1 border border-gray-200 rounded">
                                 <table className="min-w-full text-xs text-center divide-y divide-gray-200">
@@ -877,81 +792,6 @@ export default function DQAQTradePage() {
                     </button>
                 </div>
             </div>
-
-            {showPeriodImportModal && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[88vh] overflow-hidden flex flex-col">
-                        <div className="px-6 py-4 border-b bg-gray-50 flex items-start justify-between gap-4">
-                            <div>
-                                <h3 className="text-xl font-bold text-gray-900">日期信息 Excel 导入</h3>
-                                <p className="mt-1 text-sm text-gray-500">支持列：Start / End / Settle / Days；也兼容 ID / Start / End / Settle / Days。</p>
-                            </div>
-                            <button onClick={() => setShowPeriodImportModal(false)} className="text-gray-400 hover:text-gray-600 bg-white p-1 rounded-full shadow-sm border"><X size={22}/></button>
-                        </div>
-                        <div className="grid gap-5 overflow-auto p-6 lg:grid-cols-[0.9fr_1.1fr]">
-                            <div>
-                                <textarea
-                                    className="min-h-[360px] w-full rounded-lg border border-gray-300 bg-gray-50 p-3 font-mono text-xs outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-                                    value={periodImportText}
-                                    onChange={(e) => setPeriodImportText(e.target.value)}
-                                    placeholder={'从Excel复制日期区域后粘贴，例如：\n2025-10-09\\t2025-10-22\\t2025-10-23\\t10\n2025-10-23\\t2025-11-05\\t2025-11-06\\t10'}
-                                />
-                                <div className="mt-3 rounded-lg bg-gray-100 p-3 text-xs leading-5 text-gray-600">
-                                    <div className="font-bold text-gray-800">说明</div>
-                                    <div>如果第一行是表头，会自动跳过。</div>
-                                    <div>导入后会自动按顺序生成 period_id。</div>
-                                    <div>确认导入会覆盖当前日期信息。</div>
-                                </div>
-                            </div>
-                            <div>
-                                <div className="mb-3 flex items-center justify-between gap-3">
-                                    <div className="text-sm font-bold text-gray-800">
-                                        预览：{parsedPeriodImport.periods.length} 期 / {parsedPeriodImport.errors.length} 个错误
-                                    </div>
-                                    <button
-                                        onClick={applyPeriodImport}
-                                        disabled={parsedPeriodImport.periods.length === 0 || parsedPeriodImport.errors.length > 0}
-                                        className="rounded bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-gray-300"
-                                    >
-                                        确认导入
-                                    </button>
-                                </div>
-                                {parsedPeriodImport.errors.length > 0 && (
-                                    <div className="mb-3 rounded-lg bg-red-50 p-3 text-xs font-bold text-red-700">
-                                        {parsedPeriodImport.errors.map((err, index) => <div key={index}>{err}</div>)}
-                                    </div>
-                                )}
-                                <div className="max-h-[430px] overflow-auto rounded-lg border border-gray-200">
-                                    <table className="min-w-full text-xs text-center">
-                                        <thead className="sticky top-0 bg-gray-100 text-gray-600">
-                                            <tr>
-                                                <th className="p-2">ID</th>
-                                                <th className="p-2">Start</th>
-                                                <th className="p-2">End</th>
-                                                <th className="p-2">Settle</th>
-                                                <th className="p-2">Days</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-gray-100 bg-white">
-                                            {parsedPeriodImport.periods.length === 0 ? (
-                                                <tr><td colSpan={5} className="p-8 text-gray-400">粘贴后显示预览。</td></tr>
-                                            ) : parsedPeriodImport.periods.map((period) => (
-                                                <tr key={period.period_id}>
-                                                    <td className="p-2 font-mono">{period.period_id}</td>
-                                                    <td className="p-2">{period.obs_start}</td>
-                                                    <td className="p-2">{period.obs_end}</td>
-                                                    <td className="p-2 text-blue-700">{period.settle_date}</td>
-                                                    <td className="p-2 font-mono">{period.trading_days}</td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
 
             {/* === 子操作框 Modal === */}
             {showResultModal && currentResult && (

@@ -29,6 +29,7 @@ import {
 import { auth, db, APP_ID } from '@/app/lib/stockService';
 import { useStockPool } from '@/app/hooks/useStockPool';
 import {
+  ContestPlayer,
   MarketQuote,
   PchipContestConfig,
   PriceCurrency,
@@ -66,11 +67,16 @@ const DEFAULT_CONFIG: PchipContestConfig = {
   startDate: todayInput(),
   maxCapitalHKD: 10_000_000,
   tradingCostRate: 0.001,
+  feeMode: 'custom',
+  customFixedFeeHKD: 0,
+  customFeeRate: 0.001,
+  includeStampDuty: true,
   minTradeValueHKD: 10_000,
   weightPnlToleranceRatio: 0.001,
   reaffirmCycleDays: 20,
   halfLifeTradingDays: 20,
   targetCurrency: 'HKD',
+  players: [],
 };
 
 const EMPTY_VIEW: ResearcherView = {
@@ -150,6 +156,8 @@ type SipResearchNote = {
   updatedAt?: string;
 };
 
+type TableSort = { key: string; dir: 'asc' | 'desc' | null };
+
 export default function PchipContestPage() {
   const { stocks: stockPool } = useStockPool();
   const [config, setConfig] = useState<PchipContestConfig>(DEFAULT_CONFIG);
@@ -161,6 +169,7 @@ export default function PchipContestPage() {
   const [runDate, setRunDate] = useState(todayInput());
   const [selectedSymbol, setSelectedSymbol] = useState('');
   const [symbolSearch, setSymbolSearch] = useState('');
+  const [showSymbolDropdown, setShowSymbolDropdown] = useState(false);
   const [historyGroupKey, setHistoryGroupKey] = useState('');
   const [showImportModal, setShowImportModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
@@ -168,6 +177,7 @@ export default function PchipContestPage() {
   const [showRunReportModal, setShowRunReportModal] = useState(false);
   const [configUnlocked, setConfigUnlocked] = useState(false);
   const [runUnlocked, setRunUnlocked] = useState(false);
+  const [newPlayerName, setNewPlayerName] = useState('');
   const [selectedAccount, setSelectedAccount] = useState('');
   const [selectedResearchNote, setSelectedResearchNote] = useState<SipResearchNote | null>(null);
   const [researchNoteLoading, setResearchNoteLoading] = useState(false);
@@ -189,10 +199,6 @@ export default function PchipContestPage() {
   useEffect(() => {
     void loadAll();
   }, []);
-
-  useEffect(() => {
-    if (!selectedSymbol && views.length > 0) setSelectedSymbol(symbolKey(views[0].symbol, views[0].market));
-  }, [selectedSymbol, views]);
 
   useEffect(() => {
     setRealExposureComparison(null);
@@ -217,6 +223,7 @@ export default function PchipContestPage() {
   const selectedViews = useMemo(() => effectiveViews.filter((view) => symbolKey(view.symbol, view.market) === selectedSymbol), [effectiveViews, selectedSymbol]);
   const selectedQuote = selectedViews[0] ? quotes[symbolKey(selectedViews[0].symbol, selectedViews[0].market)] : undefined;
   const selectedWeights = useMemo(() => voiceWeights.filter((weight) => symbolKey(weight.symbol, weight.market) === selectedSymbol), [voiceWeights, selectedSymbol]);
+  const visibleVoiceWeights = selectedSymbol ? selectedWeights : voiceWeights;
   const chartData = useMemo(() => buildCurveChartData(selectedViews, selectedWeights, selectedQuote), [selectedViews, selectedWeights, selectedQuote]);
   const displayTrades = useMemo(() => filterAndSortTrades(trades, tradeFilters, tradeSort), [trades, tradeFilters, tradeSort]);
   const reminders = useMemo(() => activeViews.map((view) => {
@@ -243,6 +250,12 @@ export default function PchipContestPage() {
     return symbols.filter((item) => `${item.symbol} ${item.stockName} ${item.market}`.toLowerCase().includes(needle));
   }, [symbols, symbolSearch]);
 
+  function chooseSymbol(key: string, fallback?: { symbol: string; market: string; stockName?: string }) {
+    const item = symbols.find((symbol) => symbol.key === key) || fallback;
+    setSelectedSymbol(key);
+    if (item) setSymbolSearch(`${item.symbol}${item.stockName ? ` ${item.stockName}` : ''} ${item.market}`.trim());
+  }
+
   async function ensureAuth() {
     if (!auth.currentUser) await signInAnonymously(auth);
   }
@@ -261,7 +274,7 @@ export default function PchipContestPage() {
       const loadedViews = viewSnap.docs.map((item) => normalizeLoadedView({ id: item.id, ...item.data() } as ResearcherView));
       const loadedTrades = tradeSnap.docs.map((item) => ({ id: item.id, ...item.data() } as SimulationTradeLedger));
       const loadedRuns = runSnap.docs.map((item) => ({ id: item.id, ...item.data() } as SimulationRunRecord));
-      setConfig(configSnap.exists() ? { ...DEFAULT_CONFIG, ...configSnap.data() } as PchipContestConfig : DEFAULT_CONFIG);
+      setConfig(configSnap.exists() ? normalizeConfig(configSnap.data()) : DEFAULT_CONFIG);
       setViews(loadedViews.sort((a, b) => `${a.symbol}-${a.researcherName}`.localeCompare(`${b.symbol}-${b.researcherName}`)));
       setTrades(loadedTrades.sort((a, b) => `${a.date}-${a.createdAt}`.localeCompare(`${b.date}-${b.createdAt}`)));
       setRuns(loadedRuns.sort((a, b) => String(b.runDate || '').localeCompare(String(a.runDate || ''))));
@@ -387,19 +400,41 @@ export default function PchipContestPage() {
   async function saveConfig() {
     if (!configUnlocked) {
       setError('请先通过管理员密码展开全局比赛参数。');
-      return;
+      return false;
+    }
+    const normalizedConfig = normalizeConfig(config);
+    const names = (normalizedConfig.players || []).map((player) => normalizePlayerName(player.name));
+    if (names.some((name) => !name)) {
+      setError('参赛选手姓名不能为空。');
+      return false;
+    }
+    if (new Set(names).size !== names.length) {
+      setError('参赛选手姓名不能重复。');
+      return false;
+    }
+    if ((normalizedConfig.players || []).some((player) => !player.password.trim())) {
+      setError('参赛选手观点密码不能为空。');
+      return false;
     }
     setSaving(true);
     setError('');
     try {
       await ensureAuth();
-      await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', CONFIG_COLLECTION, 'global'), config, { merge: true });
+      await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', CONFIG_COLLECTION, 'global'), normalizedConfig, { merge: true });
+      setConfig(normalizedConfig);
       setMessage('全局参数已保存');
+      return true;
     } catch (err: any) {
       setError(err?.message || '保存参数失败');
+      return false;
     } finally {
       setSaving(false);
     }
+  }
+
+  async function collapseConfigPanel() {
+    const saved = await saveConfig();
+    if (saved) setConfigUnlocked(false);
   }
 
   function unlockConfigPanel() {
@@ -410,6 +445,50 @@ export default function PchipContestPage() {
   function unlockRunPanel() {
     if (!confirmAdminAction('展开管理员运行')) return;
     setRunUnlocked(true);
+  }
+
+  function addContestPlayer() {
+    const name = newPlayerName.trim();
+    if (!name) {
+      setError('请输入参赛选手姓名。');
+      return;
+    }
+    const exists = (config.players || []).some((player) => normalizePlayerName(player.name) === normalizePlayerName(name));
+    if (exists) {
+      setError(`参赛选手 ${name} 已存在。`);
+      return;
+    }
+    const now = new Date().toISOString();
+    setConfig({
+      ...config,
+      players: [
+        ...(config.players || []),
+        { name, password: '999999', status: 'active', createdAt: now, updatedAt: now },
+      ],
+    });
+    setNewPlayerName('');
+    setError('');
+  }
+
+  function updateContestPlayer(index: number, patch: Partial<ContestPlayer>) {
+    const now = new Date().toISOString();
+    setConfig({
+      ...config,
+      players: (config.players || []).map((player, playerIndex) => (
+        playerIndex === index ? normalizeContestPlayer({ ...player, ...patch, updatedAt: now }) : player
+      )),
+    });
+  }
+
+  function deleteContestPlayer(index: number) {
+    const player = (config.players || [])[index];
+    if (!player) return;
+    const hasViews = views.some((view) => normalizePlayerName(view.researcherName) === normalizePlayerName(player.name));
+    if (hasViews && typeof window !== 'undefined' && !window.confirm(`${player.name} 已有观点记录。删除参赛选手不会删除历史观点，但之后不能再以该姓名保存新观点。确定删除吗？`)) return;
+    setConfig({
+      ...config,
+      players: (config.players || []).filter((_, playerIndex) => playerIndex !== index),
+    });
   }
 
   async function openResearchNote(noteID: string) {
@@ -454,6 +533,18 @@ export default function PchipContestPage() {
       setError('请至少填写研究员、股票代码，并输入两个有效价格点。');
       return;
     }
+    const player = findContestPlayer(config.players || [], viewForm.researcherName);
+    if (!player || player.status !== 'active') {
+      setError('研究员姓名必须是管理员参数中已启用的参赛选手。');
+      return;
+    }
+    if (typeof window === 'undefined') return;
+    const viewPassword = window.prompt(`保存 ${player.name} 的观点，请输入观点密码：`);
+    if (viewPassword === null) return;
+    if (viewPassword.trim() !== player.password) {
+      setError('观点密码错误，保存已取消。');
+      return;
+    }
     if (!viewForm.allowNonMonotonic && hasNonMonotonicValue(points)) {
       setError('当前曲线不是单调递减。如确认为右侧/区间策略，请勾选“允许非单调曲线”。');
       return;
@@ -479,7 +570,7 @@ export default function PchipContestPage() {
       const payload: ResearcherView = {
         ...viewForm,
         id,
-        researcherName: viewForm.researcherName.trim(),
+        researcherName: player.name.trim(),
         symbol: viewForm.symbol.trim().toUpperCase(),
         market: viewForm.market.trim().toUpperCase() || viewForm.priceCurrency,
         stockName: viewForm.stockName.trim() || viewForm.symbol.trim().toUpperCase(),
@@ -496,7 +587,7 @@ export default function PchipContestPage() {
       await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', VIEWS_COLLECTION, id), payload, { merge: true });
       setViews((prev) => [payload, ...prev.filter((item) => item.id !== id)].sort((a, b) => `${a.symbol}-${a.researcherName}`.localeCompare(`${b.symbol}-${b.researcherName}`)));
       setViewForm({ ...EMPTY_VIEW, effectiveDate: runDate });
-      setSelectedSymbol(symbolKey(payload.symbol, payload.market));
+      chooseSymbol(symbolKey(payload.symbol, payload.market), payload);
       await refreshQuotes([payload]);
       setMessage('研究员观点已保存');
     } catch (err: any) {
@@ -601,6 +692,10 @@ export default function PchipContestPage() {
       });
       const runPayload: SimulationRunRecord & {
         tradingCostRate: number;
+        feeMode?: PchipContestConfig['feeMode'];
+        customFixedFeeHKD?: number;
+        customFeeRate?: number;
+        includeStampDuty?: boolean;
         minTradeValueHKD: number;
         maxCapitalHKD: number;
       } = {
@@ -609,6 +704,10 @@ export default function PchipContestPage() {
         status: 'success',
         createdAt: now,
         tradingCostRate: config.tradingCostRate,
+        feeMode: config.feeMode || 'custom',
+        customFixedFeeHKD: config.customFixedFeeHKD || 0,
+        customFeeRate: config.customFeeRate ?? config.tradingCostRate,
+        includeStampDuty: config.includeStampDuty !== false,
         minTradeValueHKD: config.minTradeValueHKD,
         maxCapitalHKD: config.maxCapitalHKD,
         tradeCount: persistedTrades.length,
@@ -700,6 +799,10 @@ export default function PchipContestPage() {
         }));
         const runPayload: SimulationRunRecord & {
           tradingCostRate: number;
+          feeMode?: PchipContestConfig['feeMode'];
+          customFixedFeeHKD?: number;
+          customFeeRate?: number;
+          includeStampDuty?: boolean;
           minTradeValueHKD: number;
           maxCapitalHKD: number;
         } = {
@@ -708,6 +811,10 @@ export default function PchipContestPage() {
           status: 'success',
           createdAt: now,
           tradingCostRate: config.tradingCostRate,
+          feeMode: config.feeMode || 'custom',
+          customFixedFeeHKD: config.customFixedFeeHKD || 0,
+          customFeeRate: config.customFeeRate ?? config.tradingCostRate,
+          includeStampDuty: config.includeStampDuty !== false,
           minTradeValueHKD: config.minTradeValueHKD,
           maxCapitalHKD: config.maxCapitalHKD,
           tradeCount: persistedTrades.length,
@@ -868,130 +975,88 @@ export default function PchipContestPage() {
           </div>
         )}
 
-        <section className="grid gap-5 lg:grid-cols-[1fr_1.1fr_0.9fr]">
-          <Panel title="全局比赛参数" icon={<SlidersHorizontal className="h-5 w-5" />}>
-            <div className="rounded-3xl border border-dashed border-stone-300 bg-stone-50 p-4">
-              <div className="grid gap-3 text-sm sm:grid-cols-2">
-                <AccountMetric label="起始日" value={config.startDate || '--'} />
-                <AccountMetric label="模拟运行日" value={runDate || '--'} />
-                <AccountMetric label="最大资金" value={formatHKD(config.maxCapitalHKD)} />
-                <AccountMetric label="最低交易额" value={formatHKD(config.minTradeValueHKD)} />
-              </div>
-              <p className="mt-4 text-xs leading-5 text-slate-500">
-                管理员参数负责比赛配置；管理员运行负责选择模拟运行日并执行模拟。展开前均需要管理员密码。
-              </p>
-              <div className="mt-4 flex flex-wrap gap-3">
-                <button
-                  type="button"
-                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-black transition ${
-                    configUnlocked ? 'border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100' : 'bg-slate-950 text-white hover:bg-teal-700'
-                  }`}
-                  onClick={configUnlocked ? () => setConfigUnlocked(false) : unlockConfigPanel}
-                >
-                  <Shield className="h-4 w-4" />
-                  {configUnlocked ? '收起管理员参数' : '管理员参数'}
-                </button>
-                <button
-                  type="button"
-                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-black transition ${
-                    runUnlocked ? 'border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100' : 'bg-slate-950 text-white hover:bg-teal-700'
-                  }`}
-                  onClick={runUnlocked ? () => setRunUnlocked(false) : unlockRunPanel}
-                >
-                  <Play className="h-4 w-4" />
-                  {runUnlocked ? '收起管理员运行' : '管理员运行'}
-                </button>
-              </div>
+        <section>
+          {reminders.length === 0 ? (
+            <div className="flex items-center gap-3 rounded-[1.7rem] border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm font-bold text-emerald-800">
+              <CheckCircle2 className="h-5 w-5" />
+              当前没有超过维护周期的观点。
             </div>
-
-            {configUnlocked && (
-              <div className="mt-4 rounded-3xl border border-emerald-100 bg-emerald-50/50 p-4">
-                <div className="mb-4 text-xs font-black uppercase tracking-wide text-emerald-800">管理员参数</div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="起始日"><input className="input" type="date" value={config.startDate} onChange={(e) => setConfig({ ...config, startDate: e.target.value })} /></Field>
-                  <Field label="可使用最大资金 HKD"><input className="input" type="number" value={config.maxCapitalHKD} onChange={(e) => setConfig({ ...config, maxCapitalHKD: Number(e.target.value) || 0 })} /></Field>
-                  <Field label="单边交易成本率 %"><input className="input" type="number" step="0.01" value={config.tradingCostRate * 100} onChange={(e) => setConfig({ ...config, tradingCostRate: (Number(e.target.value) || 0) / 100 })} /></Field>
-                  <Field label="最低交易额 HKD"><input className="input" type="number" value={config.minTradeValueHKD} onChange={(e) => setConfig({ ...config, minTradeValueHKD: Number(e.target.value) || 0 })} /></Field>
-                  <Field label="权重PnL容忍比例 %"><input className="input" type="number" step="0.01" value={(config.weightPnlToleranceRatio || 0) * 100} onChange={(e) => setConfig({ ...config, weightPnlToleranceRatio: (Number(e.target.value) || 0) / 100 })} /></Field>
-                  <Field label="维护周期 工作日"><input className="input" type="number" value={config.reaffirmCycleDays} onChange={(e) => setConfig({ ...config, reaffirmCycleDays: Number(e.target.value) || 1 })} /></Field>
-                </div>
-                <div className="mt-4 flex flex-wrap gap-3">
-                  <button className="btn-secondary" onClick={saveConfig} disabled={saving}><Save className="h-4 w-4" /> 保存参数</button>
-                </div>
+          ) : (
+            <div className="rounded-[1.7rem] border border-amber-200 bg-amber-50 p-4">
+              <div className="mb-3 flex items-center gap-2 text-sm font-black text-amber-900">
+                <AlertTriangle className="h-5 w-5" />
+                待重申提醒
               </div>
-            )}
-
-            {runUnlocked && (
-              <div className="mt-4 rounded-3xl border border-amber-100 bg-amber-50/50 p-4">
-                <div className="mb-4 text-xs font-black uppercase tracking-wide text-amber-800">管理员运行</div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="模拟运行日"><input className="input" type="date" value={runDate} onChange={(e) => setRunDate(e.target.value || todayInput())} /></Field>
-                </div>
-                <div className="mt-4 flex flex-wrap gap-3">
-                  <button className="btn-primary" onClick={runSimulation} disabled={running || saving}><Play className="h-4 w-4" /> {running ? '运行中...' : '模拟运行'}</button>
-                  <button className="btn-secondary" onClick={runSimulationToToday} disabled={running || saving || bulkRunning}>
-                    <RefreshCw className={`h-4 w-4 ${bulkRunning ? 'animate-spin' : ''}`} /> {bulkRunning ? '补跑中...' : '一键模拟至今'}
-                  </button>
-                  <button className="btn-danger" onClick={resetContest} disabled={running || saving || resetting}>
-                    <RefreshCw className="h-4 w-4" /> {resetting ? '重置中...' : '重置比赛'}
-                  </button>
-                </div>
-                {bulkProgress && <div className="mt-3 rounded-2xl bg-teal-50 px-4 py-2 text-sm font-bold text-teal-700">{bulkProgress}</div>}
-                {runReport && <RunReportPanel report={runReport} openDetails={() => setShowRunReportModal(true)} />}
-              </div>
-            )}
-          </Panel>
-
-          <Panel title="研究员账户排名" icon={<Shield className="h-5 w-5" />}>
-            <div className="grid gap-3 sm:grid-cols-3">
-              {accounts.length === 0 ? <EmptyHint text="暂无账户流水。先录入观点并运行一次模拟。" /> : accounts.slice(0, 3).map((account, index) => (
-                <div key={account.researcherName} className="rounded-3xl border border-stone-200 bg-gradient-to-br from-white to-stone-50 p-4">
-                  <div className="flex items-center justify-between text-xs text-slate-500"><span>#{index + 1}</span><span>{account.stockCount} 股票</span></div>
-                  <div className="mt-2 text-lg font-black">{account.researcherName}</div>
-                  <div className={`mt-2 text-xl font-black ${account.totalPnlHKD >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatHKD(account.totalPnlHKD)}</div>
-                  <div className="mt-2 text-xs text-slate-500">市值 {formatHKD(account.grossMarketValueHKD)}</div>
-                </div>
-              ))}
-            </div>
-          </Panel>
-
-          <Panel title="待重申提醒" icon={<Clock3 className="h-5 w-5" />}>
-            {reminders.length === 0 ? (
-              <div className="flex items-center gap-2 rounded-3xl bg-emerald-50 p-4 text-sm text-emerald-700"><CheckCircle2 className="h-5 w-5" /> 当前没有超过维护周期的观点。</div>
-            ) : (
-              <div className="space-y-3">
-                {reminders.slice(0, 4).map(({ view, staleDays }) => (
-                  <div key={view.id} className="rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm">
-                    <div className="flex items-start gap-2 font-bold text-amber-800"><AlertTriangle className="mt-0.5 h-4 w-4" /> {view.researcherName} / {view.symbol}</div>
-                    <div className="mt-1 text-amber-700">观点已持续 {staleDays} 个工作日。</div>
+              <div className="flex gap-3 overflow-x-auto pb-1">
+                {reminders.slice(0, 6).map(({ view, staleDays }) => (
+                  <div key={view.id} className="min-w-[230px] rounded-2xl border border-amber-200 bg-white/70 p-3 text-sm">
+                    <div className="font-black text-amber-900">{view.researcherName} / {view.symbol}</div>
+                    <div className="mt-1 text-xs text-amber-700">观点已持续 {staleDays} 个工作日。</div>
                     <button className="mt-3 rounded-full bg-amber-900 px-3 py-1.5 text-xs font-bold text-white" onClick={() => reaffirmView(view)}>重申观点</button>
                   </div>
                 ))}
               </div>
-            )}
-          </Panel>
+            </div>
+          )}
         </section>
 
         <section className="grid gap-5 lg:grid-cols-[0.95fr_1.05fr]">
           <Panel title="股票话语权" icon={<Database className="h-5 w-5" />}>
-            <div className="mb-4 grid gap-3 sm:grid-cols-[1fr_1.1fr]">
-              <input
-                className="input"
-                value={symbolSearch}
-                onChange={(event) => setSymbolSearch(event.target.value)}
-                placeholder="搜索股票代码 / 名称 / 市场"
-              />
-              <select className="input" value={selectedSymbol} onChange={(event) => setSelectedSymbol(event.target.value)}>
-                <option value="">选择股票</option>
-                {filteredSymbols.map((item) => (
-                  <option key={item.key} value={item.key}>{item.symbol} · {item.stockName || item.market}</option>
-                ))}
-              </select>
-              <div className="text-xs text-slate-500 sm:col-span-2">
-                当前容忍金额：{formatHKD(config.maxCapitalHKD * (config.weightPnlToleranceRatio || 0))}。轻微亏损不会直接让话语权归零。
+            <div className="mb-4 grid gap-3">
+              <div className="relative">
+                <input
+                  className="input pr-28"
+                  value={symbolSearch}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setSymbolSearch(value);
+                    if (!value.trim()) setSelectedSymbol('');
+                    setShowSymbolDropdown(true);
+                  }}
+                  onFocus={() => setShowSymbolDropdown(true)}
+                  onBlur={() => window.setTimeout(() => setShowSymbolDropdown(false), 120)}
+                  placeholder="输入股票代码 / 名称 / 市场，自动筛选"
+                />
+                <div className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                  {filteredSymbols.length} 个结果
+                </div>
+                {showSymbolDropdown && (
+                  <div className="absolute z-40 mt-2 max-h-72 w-full overflow-auto rounded-3xl border border-stone-200 bg-white p-2 shadow-2xl shadow-slate-900/15">
+                    {filteredSymbols.length === 0 ? (
+                      <div className="px-4 py-5 text-center text-sm text-slate-500">没有匹配的股票。</div>
+                    ) : filteredSymbols.map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          chooseSymbol(item.key, item);
+                          setShowSymbolDropdown(false);
+                        }}
+                        className={`flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left transition ${
+                          selectedSymbol === item.key ? 'bg-teal-50 text-teal-800' : 'text-slate-700 hover:bg-stone-50'
+                        }`}
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-black">{item.symbol}</span>
+                          <span className="block truncate text-xs text-slate-500">{item.stockName || '未匹配名称'}</span>
+                        </span>
+                        <span className="shrink-0 rounded-full bg-stone-100 px-2.5 py-1 text-xs font-bold text-slate-500">{item.market}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="text-xs text-slate-500">
+                {selectedSymbol ? '当前展示所选股票的话语权。' : '当前未选择股票，展示全部股票的话语权记录；右侧曲线会在选择股票后显示。'}
+                {' '}容忍金额：{formatHKD(config.maxCapitalHKD * (config.weightPnlToleranceRatio || 0))}。
               </div>
             </div>
-            <SimpleWeightTable weights={selectedWeights} />
+            <SimpleWeightTable
+              weights={visibleVoiceWeights}
+              showStockColumn={!selectedSymbol}
+              onSelectStock={(weight) => chooseSymbol(symbolKey(weight.symbol, weight.market), weight)}
+            />
           </Panel>
 
           <Panel
@@ -1100,10 +1165,44 @@ export default function PchipContestPage() {
           </Panel>
         </section>
 
-        <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+        <section className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+          <Panel title="账户概览" icon={<Activity className="h-5 w-5" />}>
+            <AccountOverview accounts={accounts} openAccount={setSelectedAccount} />
+          </Panel>
+
+          <Panel title="研究员账户排名" icon={<Shield className="h-5 w-5" />}>
+            <div className="grid gap-3">
+              {accounts.length === 0 ? <EmptyHint text="暂无账户流水。先录入观点并运行一次模拟。" /> : accounts.slice(0, 5).map((account, index) => (
+                <div key={account.researcherName} className="rounded-3xl border border-stone-200 bg-gradient-to-br from-white to-stone-50 p-4">
+                  <div className="flex items-center justify-between text-xs text-slate-500"><span>#{index + 1}</span><span>{account.stockCount} 股票</span></div>
+                  <div className="mt-2 text-lg font-black">{account.researcherName}</div>
+                  <div className={`mt-2 text-xl font-black ${account.totalPnlHKD >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatHKD(account.totalPnlHKD)}</div>
+                  <div className="mt-2 text-xs text-slate-500">市值 {formatHKD(account.grossMarketValueHKD)}</div>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        </section>
+
+        <section className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
+          <Panel title="观点清单" icon={<Database className="h-5 w-5" />}>
+            <ViewsTable
+              views={views}
+              runDate={runDate}
+              setSelectedSymbol={chooseSymbol}
+              setViewForm={setViewForm}
+              reaffirmView={reaffirmView}
+              toggleViewStatus={toggleViewStatus}
+              deleteView={deleteView}
+              openResearchNote={openResearchNote}
+              openHistory={setHistoryGroupKey}
+            />
+          </Panel>
+
           <Panel title={viewForm.id ? '编辑研究员观点' : '新增研究员观点'} icon={<Save className="h-5 w-5" />}>
             <ViewEditor
               stockPool={stockPool}
+              players={config.players || []}
               viewForm={viewForm}
               setViewForm={setViewForm}
               applyStockSuggestion={applyStockSuggestion}
@@ -1117,24 +1216,153 @@ export default function PchipContestPage() {
               openExport={() => setShowExportModal(true)}
             />
           </Panel>
-          <Panel title="观点清单" icon={<Database className="h-5 w-5" />}>
-            <ViewsTable
-              views={views}
-              runDate={runDate}
-              setSelectedSymbol={setSelectedSymbol}
-              setViewForm={setViewForm}
-              reaffirmView={reaffirmView}
-              toggleViewStatus={toggleViewStatus}
-              deleteView={deleteView}
-              openResearchNote={openResearchNote}
-              openHistory={setHistoryGroupKey}
-            />
-          </Panel>
         </section>
 
         <section>
-          <Panel title="账户概览" icon={<Activity className="h-5 w-5" />}>
-            <AccountOverview accounts={accounts} openAccount={setSelectedAccount} />
+          <Panel title="全局比赛参数" icon={<SlidersHorizontal className="h-5 w-5" />}>
+            <div className="rounded-3xl border border-dashed border-stone-300 bg-stone-50 p-4">
+              <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-5">
+                <AccountMetric label="起始日" value={config.startDate || '--'} />
+                <AccountMetric label="模拟运行日" value={runDate || '--'} />
+                <AccountMetric label="最大资金" value={formatHKD(config.maxCapitalHKD)} />
+                <AccountMetric label="最低交易额" value={formatHKD(config.minTradeValueHKD)} />
+                <AccountMetric label="参赛选手" value={`${(config.players || []).filter((player) => player.status === 'active').length} 人`} />
+              </div>
+              <p className="mt-4 text-xs leading-5 text-slate-500">
+                管理员参数负责比赛配置；管理员运行负责选择模拟运行日并执行模拟。展开前均需要管理员密码。
+              </p>
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-black transition ${
+                    configUnlocked ? 'border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100' : 'bg-slate-950 text-white hover:bg-teal-700'
+                  }`}
+                  onClick={configUnlocked ? collapseConfigPanel : unlockConfigPanel}
+                  disabled={saving}
+                >
+                  <Shield className="h-4 w-4" />
+                  {configUnlocked ? (saving ? '保存中...' : '收起管理员参数') : '管理员参数'}
+                </button>
+                <button
+                  type="button"
+                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-black transition ${
+                    runUnlocked ? 'border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100' : 'bg-slate-950 text-white hover:bg-teal-700'
+                  }`}
+                  onClick={runUnlocked ? () => setRunUnlocked(false) : unlockRunPanel}
+                >
+                  <Play className="h-4 w-4" />
+                  {runUnlocked ? '收起管理员运行' : '管理员运行'}
+                </button>
+              </div>
+            </div>
+
+            {configUnlocked && (
+              <div className="mt-4 rounded-3xl border border-emerald-100 bg-emerald-50/50 p-4">
+                <div className="mb-4 text-xs font-black uppercase tracking-wide text-emerald-800">管理员参数</div>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <Field label="起始日"><input className="input" type="date" value={config.startDate} onChange={(e) => setConfig({ ...config, startDate: e.target.value })} /></Field>
+                  <Field label="可使用最大资金 HKD"><input className="input" type="number" value={config.maxCapitalHKD} onChange={(e) => setConfig({ ...config, maxCapitalHKD: Number(e.target.value) || 0 })} /></Field>
+                  <Field label="费用模式">
+                    <select className="input" value={config.feeMode || 'custom'} onChange={(e) => setConfig({ ...config, feeMode: e.target.value as PchipContestConfig['feeMode'] })}>
+                      <option value="realistic">真实模拟费</option>
+                      <option value="custom">自定义费</option>
+                    </select>
+                  </Field>
+                  {(config.feeMode || 'custom') === 'custom' ? (
+                    <>
+                      <Field label="固定费用 HKD/笔"><input className="input" type="number" value={config.customFixedFeeHKD ?? 0} onChange={(e) => setConfig({ ...config, customFixedFeeHKD: Number(e.target.value) || 0 })} /></Field>
+                      <Field label="成交额费率 %"><input className="input" type="number" step="0.01" value={(config.customFeeRate ?? config.tradingCostRate ?? 0) * 100} onChange={(e) => setConfig({ ...config, customFeeRate: (Number(e.target.value) || 0) / 100, tradingCostRate: (Number(e.target.value) || 0) / 100 })} /></Field>
+                    </>
+                  ) : (
+                    <Field label="印花税">
+                      <select className="input" value={config.includeStampDuty === false ? 'no' : 'yes'} onChange={(e) => setConfig({ ...config, includeStampDuty: e.target.value === 'yes' })}>
+                        <option value="yes">计入印花税</option>
+                        <option value="no">不计入印花税</option>
+                      </select>
+                    </Field>
+                  )}
+                  <Field label="最低交易额 HKD"><input className="input" type="number" value={config.minTradeValueHKD} onChange={(e) => setConfig({ ...config, minTradeValueHKD: Number(e.target.value) || 0 })} /></Field>
+                  <Field label="权重PnL容忍比例 %"><input className="input" type="number" step="0.01" value={(config.weightPnlToleranceRatio || 0) * 100} onChange={(e) => setConfig({ ...config, weightPnlToleranceRatio: (Number(e.target.value) || 0) / 100 })} /></Field>
+                  <Field label="维护周期 工作日"><input className="input" type="number" value={config.reaffirmCycleDays} onChange={(e) => setConfig({ ...config, reaffirmCycleDays: Number(e.target.value) || 1 })} /></Field>
+                </div>
+                <div className="mt-5 rounded-3xl border border-emerald-100 bg-white/70 p-4">
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-black text-slate-900">参赛选手</div>
+                      <p className="mt-1 text-xs text-slate-500">新增观点时只能选择已启用选手；观点密码默认为 999999，保存观点时需要输入。</p>
+                    </div>
+                    <div className="flex min-w-[280px] flex-1 gap-2 sm:flex-none">
+                      <input className="input" value={newPlayerName} onChange={(e) => setNewPlayerName(e.target.value)} placeholder="新增研究员姓名" />
+                      <button type="button" className="btn-secondary shrink-0" onClick={addContestPlayer}>新增</button>
+                    </div>
+                  </div>
+                  <div className="mt-4 overflow-auto rounded-2xl border border-stone-200">
+                    <table className="min-w-[680px] w-full text-sm">
+                      <thead className="bg-stone-100 text-left text-xs uppercase tracking-wide text-slate-500">
+                        <tr>
+                          <th className="px-4 py-3">研究员</th>
+                          <th className="px-4 py-3">观点密码</th>
+                          <th className="px-4 py-3">状态</th>
+                          <th className="px-4 py-3 text-right">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-stone-100 bg-white">
+                        {(config.players || []).length === 0 ? (
+                          <tr><td colSpan={4} className="px-4 py-6 text-center text-slate-500">暂无参赛选手。</td></tr>
+                        ) : (config.players || []).map((player, index) => (
+                          <tr key={`${player.name}-${index}`}>
+                            <td className="px-4 py-3">
+                              <input
+                                className="input"
+                                value={player.name}
+                                onChange={(e) => updateContestPlayer(index, { name: e.target.value })}
+                              />
+                            </td>
+                            <td className="px-4 py-3">
+                              <input
+                                className="input font-mono"
+                                value={player.password}
+                                onChange={(e) => updateContestPlayer(index, { password: e.target.value })}
+                                placeholder="999999"
+                              />
+                            </td>
+                            <td className="px-4 py-3">
+                              <select className="input" value={player.status} onChange={(e) => updateContestPlayer(index, { status: e.target.value as ContestPlayer['status'] })}>
+                                <option value="active">启用</option>
+                                <option value="paused">暂停</option>
+                              </select>
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              <button type="button" className="table-btn-danger" onClick={() => deleteContestPlayer(index)}>删除</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {runUnlocked && (
+              <div className="mt-4 rounded-3xl border border-amber-100 bg-amber-50/50 p-4">
+                <div className="mb-4 text-xs font-black uppercase tracking-wide text-amber-800">管理员运行</div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="模拟运行日"><input className="input" type="date" value={runDate} onChange={(e) => setRunDate(e.target.value || todayInput())} /></Field>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button className="btn-primary" onClick={runSimulation} disabled={running || saving}><Play className="h-4 w-4" /> {running ? '运行中...' : '模拟运行'}</button>
+                  <button className="btn-secondary" onClick={runSimulationToToday} disabled={running || saving || bulkRunning}>
+                    <RefreshCw className={`h-4 w-4 ${bulkRunning ? 'animate-spin' : ''}`} /> {bulkRunning ? '补跑中...' : '一键模拟至今'}
+                  </button>
+                  <button className="btn-danger" onClick={resetContest} disabled={running || saving || resetting}>
+                    <RefreshCw className="h-4 w-4" /> {resetting ? '重置中...' : '重置比赛'}
+                  </button>
+                </div>
+                {bulkProgress && <div className="mt-3 rounded-2xl bg-teal-50 px-4 py-2 text-sm font-bold text-teal-700">{bulkProgress}</div>}
+                {runReport && <RunReportPanel report={runReport} openDetails={() => setShowRunReportModal(true)} />}
+              </div>
+            )}
           </Panel>
         </section>
 
@@ -1157,7 +1385,7 @@ export default function PchipContestPage() {
           views={views}
           runDate={runDate}
           close={() => setHistoryGroupKey('')}
-          setSelectedSymbol={setSelectedSymbol}
+          setSelectedSymbol={chooseSymbol}
           editView={(view) => {
             setViewForm(view);
             setHistoryGroupKey('');
@@ -1182,12 +1410,13 @@ export default function PchipContestPage() {
         <ExcelImportModal
           close={() => setShowImportModal(false)}
           stockPool={stockPool}
+          players={config.players || []}
           existingViews={views}
           runDate={runDate}
           ensureAuth={ensureAuth}
           onImported={(importedViews) => {
             setViews((prev) => [...importedViews, ...prev].sort((a, b) => `${a.symbol}-${a.researcherName}`.localeCompare(`${b.symbol}-${b.researcherName}`)));
-            if (importedViews[0]) setSelectedSymbol(symbolKey(importedViews[0].symbol, importedViews[0].market));
+            if (importedViews[0]) chooseSymbol(symbolKey(importedViews[0].symbol, importedViews[0].market), importedViews[0]);
             void refreshQuotes(importedViews);
             setMessage(`已导入 ${importedViews.length} 条研究员观点。`);
           }}
@@ -1228,6 +1457,7 @@ export default function PchipContestPage() {
 
 function ViewEditor(props: {
   stockPool: any[];
+  players: ContestPlayer[];
   viewForm: ResearcherView;
   setViewForm: (view: ResearcherView) => void;
   applyStockSuggestion: (symbol: string) => void;
@@ -1242,6 +1472,7 @@ function ViewEditor(props: {
 }) {
   const {
     stockPool,
+    players,
     viewForm,
     setViewForm,
     applyStockSuggestion,
@@ -1257,7 +1488,19 @@ function ViewEditor(props: {
   return (
     <>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="研究员"><input className="input" value={viewForm.researcherName} onChange={(e) => setViewForm({ ...viewForm, researcherName: e.target.value })} placeholder="例如 张三" /></Field>
+        <Field label="研究员">
+          <select
+            className="input"
+            value={viewForm.researcherName}
+            onChange={(e) => setViewForm({ ...viewForm, researcherName: e.target.value })}
+          >
+            <option value="">选择参赛选手</option>
+            {players.filter((player) => player.status === 'active').map((player) => (
+              <option key={player.name} value={player.name}>{player.name}</option>
+            ))}
+          </select>
+          {players.length === 0 && <div className="mt-1 text-xs text-amber-700">请先在管理员参数中添加参赛选手。</div>}
+        </Field>
         <Field label="股票代码">
           <input className="input" list="pchip-stock-pool" value={viewForm.symbol} onChange={(e) => applyStockSuggestion(e.target.value)} placeholder="例如 0175.HK" />
           <datalist id="pchip-stock-pool">
@@ -1368,6 +1611,11 @@ function ViewsTable(props: {
   const { views, runDate, setSelectedSymbol, setViewForm, reaffirmView, toggleViewStatus, deleteView, openResearchNote, openHistory } = props;
   const groups = useMemo(() => groupViewsByResearcherStock(views, runDate), [views, runDate]);
   const [adminTarget, setAdminTarget] = useState<{ groupKey: string; view: ResearcherView } | null>(null);
+  const [viewSort, setViewSort] = useState<TableSort>({ key: 'symbol', dir: 'asc' });
+  const [viewFilters, setViewFilters] = useState<Record<string, string>>({});
+  const displayGroups = useMemo(() => filterAndSortViewGroups(groups, viewFilters, viewSort, runDate), [groups, viewFilters, viewSort, runDate]);
+  const toggleSort = (key: string) => setViewSort((prev) => nextTableSort(prev, key));
+  const updateFilter = (key: string, value: string) => setViewFilters((prev) => ({ ...prev, [key]: value }));
 
   function runViewAction(action: string, groupKey: string, view: ResearcherView) {
     if (action === 'admin') {
@@ -1394,20 +1642,20 @@ function ViewsTable(props: {
         <table className="min-w-[940px] w-full whitespace-nowrap text-sm">
           <thead className="bg-stone-100 text-left text-xs uppercase tracking-wide text-slate-500">
             <tr>
-              <th className="px-4 py-3">研究员</th>
-              <th className="px-4 py-3">股票</th>
-              <th className="px-4 py-3">版本</th>
-              <th className="px-4 py-3">生效日</th>
-              <th className="px-4 py-3">研究文档</th>
-              <th className="px-4 py-3">信心日</th>
-              <th className="px-4 py-3">状态</th>
+              <TradeTh label="研究员" sortKey="researcherName" filterKey="researcherName" tradeSort={viewSort} toggleSort={toggleSort} filters={viewFilters} updateFilter={updateFilter} />
+              <TradeTh label="股票" sortKey="symbol" filterKey="stock" tradeSort={viewSort} toggleSort={toggleSort} filters={viewFilters} updateFilter={updateFilter} />
+              <TradeTh label="版本" sortKey="versionNo" tradeSort={viewSort} toggleSort={toggleSort} filters={viewFilters} updateFilter={updateFilter} />
+              <TradeTh label="生效日" sortKey="effectiveDate" tradeSort={viewSort} toggleSort={toggleSort} filters={viewFilters} updateFilter={updateFilter} />
+              <TradeTh label="研究文档" sortKey="researchNoteID" filterKey="researchNoteID" tradeSort={viewSort} toggleSort={toggleSort} filters={viewFilters} updateFilter={updateFilter} />
+              <TradeTh label="信心日" sortKey="lastConfidenceAt" tradeSort={viewSort} toggleSort={toggleSort} filters={viewFilters} updateFilter={updateFilter} />
+              <TradeTh label="状态" sortKey="status" filterKey="status" tradeSort={viewSort} toggleSort={toggleSort} filters={viewFilters} updateFilter={updateFilter} />
               <th className="w-24 px-3 py-3 text-right">操作</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-stone-100 bg-white">
-            {groups.length === 0 ? (
-              <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-500">暂无观点。</td></tr>
-            ) : groups.map((group) => {
+            {displayGroups.length === 0 ? (
+              <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-500">{groups.length === 0 ? '暂无观点。' : '没有匹配的观点。'}</td></tr>
+            ) : displayGroups.map((group) => {
               const view = group.currentView;
               const staleDays = businessDaysBetween(view.lastConfidenceAt || view.updatedAt, runDate);
               return (
@@ -1470,18 +1718,51 @@ function ViewsTable(props: {
   );
 }
 
-function SimpleWeightTable({ weights }: { weights: VoiceWeight[] }) {
+function SimpleWeightTable({
+  weights,
+  showStockColumn = false,
+  onSelectStock,
+}: {
+  weights: VoiceWeight[];
+  showStockColumn?: boolean;
+  onSelectStock?: (weight: VoiceWeight) => void;
+}) {
+  const [weightSort, setWeightSort] = useState<TableSort>({ key: 'weight', dir: 'desc' });
+  const [weightFilters, setWeightFilters] = useState<Record<string, string>>({});
+  const displayWeights = useMemo(() => filterAndSortWeights(weights, weightFilters, weightSort), [weights, weightFilters, weightSort]);
+  const toggleSort = (key: string) => setWeightSort((prev) => nextTableSort(prev, key));
+  const updateFilter = (key: string, value: string) => setWeightFilters((prev) => ({ ...prev, [key]: value }));
+  const emptyColSpan = showStockColumn ? 5 : 4;
+
   return (
-    <div className="overflow-hidden rounded-3xl border border-stone-200">
-      <table className="w-full text-sm">
-        <thead className="bg-stone-100 text-left text-xs uppercase tracking-wide text-slate-500">
-          <tr><th className="px-4 py-3">研究员</th><th className="px-4 py-3 text-right">总PnL</th><th className="px-4 py-3 text-right">新鲜度</th><th className="px-4 py-3 text-right">话语权</th></tr>
+    <div className="max-h-[420px] overflow-auto rounded-3xl border border-stone-200">
+      <table className={`${showStockColumn ? 'min-w-[760px]' : 'min-w-[620px]'} w-full text-sm`}>
+        <thead className="sticky top-0 z-10 bg-stone-100 text-left text-xs uppercase tracking-wide text-slate-500 shadow-[0_1px_0_0_#e7e5e4]">
+          <tr>
+            {showStockColumn && <TradeTh label="股票" sortKey="symbol" filterKey="stock" tradeSort={weightSort} toggleSort={toggleSort} filters={weightFilters} updateFilter={updateFilter} />}
+            <TradeTh label="研究员" sortKey="researcherName" filterKey="researcherName" tradeSort={weightSort} toggleSort={toggleSort} filters={weightFilters} updateFilter={updateFilter} />
+            <TradeTh label="PNL(HKD)" sortKey="totalPnlHKD" tradeSort={weightSort} toggleSort={toggleSort} filters={weightFilters} updateFilter={updateFilter} align="right" />
+            <TradeTh label="新鲜度" sortKey="freshnessDecay" tradeSort={weightSort} toggleSort={toggleSort} filters={weightFilters} updateFilter={updateFilter} align="right" />
+            <TradeTh label="话语权" sortKey="weight" tradeSort={weightSort} toggleSort={toggleSort} filters={weightFilters} updateFilter={updateFilter} align="right" />
+          </tr>
         </thead>
         <tbody className="divide-y divide-stone-100 bg-white">
-          {weights.length === 0 ? <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-500">选择一只已有观点的股票查看话语权。</td></tr> : weights.map((weight) => (
-            <tr key={`${weight.researcherName}-${weight.symbol}`}>
+          {displayWeights.length === 0 ? <tr><td colSpan={emptyColSpan} className="px-4 py-8 text-center text-slate-500">{weights.length === 0 ? '暂无话语权记录。' : '没有匹配的话语权记录。'}</td></tr> : displayWeights.map((weight) => (
+            <tr key={`${weight.researcherName}-${weight.symbol}-${weight.market}`}>
+              {showStockColumn && (
+                <td className="px-4 py-3">
+                  <button
+                    type="button"
+                    className="font-black text-teal-700 underline decoration-teal-200 underline-offset-4 transition hover:text-teal-900 hover:decoration-teal-500"
+                    onClick={() => onSelectStock?.(weight)}
+                  >
+                    {weight.symbol}
+                  </button>
+                  <div className="max-w-[180px] truncate text-xs text-slate-500">{weight.stockName || weight.market}</div>
+                </td>
+              )}
               <td className="px-4 py-3 font-bold">{weight.researcherName}</td>
-              <td className={`px-4 py-3 text-right font-bold ${weight.totalPnlHKD >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatHKD(weight.totalPnlHKD)}</td>
+              <td className={`whitespace-nowrap px-4 py-3 text-right font-mono font-bold ${weight.totalPnlHKD >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatNumber(weight.totalPnlHKD, 2)}</td>
               <td className="px-4 py-3 text-right">{formatPercent(weight.freshnessDecay)}<div className="text-xs text-slate-400">{weight.daysSinceLastConfidence}日</div></td>
               <td className="px-4 py-3 text-right text-lg font-black">{formatPercent(weight.weight)}</td>
             </tr>
@@ -1594,6 +1875,13 @@ function VersionHistoryModal(props: {
 }) {
   const { groupKey, views, runDate, close, setSelectedSymbol, editView, reaffirmView, toggleViewStatus, deleteView } = props;
   const group = groupViewsByResearcherStock(views, runDate).find((item) => item.groupKey === groupKey);
+  const [historySort, setHistorySort] = useState<TableSort>({ key: 'versionNo', dir: 'desc' });
+  const [historyFilters, setHistoryFilters] = useState<Record<string, string>>({});
+  const displayVersions = useMemo(() => (
+    group ? filterAndSortViewVersions(group.versions, historyFilters, historySort, runDate) : []
+  ), [group, historyFilters, historySort, runDate]);
+  const toggleSort = (key: string) => setHistorySort((prev) => nextTableSort(prev, key));
+  const updateFilter = (key: string, value: string) => setHistoryFilters((prev) => ({ ...prev, [key]: value }));
   if (!group) return null;
 
   return (
@@ -1612,18 +1900,20 @@ function VersionHistoryModal(props: {
             <table className="min-w-[920px] w-full text-sm">
               <thead className="bg-stone-100 text-left text-xs uppercase tracking-wide text-slate-500">
                 <tr>
-                  <th className="px-4 py-3">版本</th>
-                  <th className="px-4 py-3">生效日</th>
-                  <th className="px-4 py-3">信心日</th>
-                  <th className="px-4 py-3">点数</th>
-                  <th className="px-4 py-3 text-right">最小成交股数</th>
-                  <th className="px-4 py-3">状态</th>
-                  <th className="px-4 py-3">备注</th>
+                  <TradeTh label="版本" sortKey="versionNo" tradeSort={historySort} toggleSort={toggleSort} filters={historyFilters} updateFilter={updateFilter} />
+                  <TradeTh label="生效日" sortKey="effectiveDate" tradeSort={historySort} toggleSort={toggleSort} filters={historyFilters} updateFilter={updateFilter} />
+                  <TradeTh label="信心日" sortKey="lastConfidenceAt" tradeSort={historySort} toggleSort={toggleSort} filters={historyFilters} updateFilter={updateFilter} />
+                  <TradeTh label="点数" sortKey="pointCount" tradeSort={historySort} toggleSort={toggleSort} filters={historyFilters} updateFilter={updateFilter} />
+                  <TradeTh label="最小成交股数" sortKey="minTradeShares" tradeSort={historySort} toggleSort={toggleSort} filters={historyFilters} updateFilter={updateFilter} align="right" />
+                  <TradeTh label="状态" sortKey="status" filterKey="status" tradeSort={historySort} toggleSort={toggleSort} filters={historyFilters} updateFilter={updateFilter} />
+                  <TradeTh label="备注" sortKey="note" filterKey="note" tradeSort={historySort} toggleSort={toggleSort} filters={historyFilters} updateFilter={updateFilter} />
                   <th className="px-4 py-3 text-right">操作</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100 bg-white">
-                {group.versions.map((view) => {
+                {displayVersions.length === 0 ? (
+                  <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-500">没有匹配的历史版本。</td></tr>
+                ) : displayVersions.map((view) => {
                   const staleDays = businessDaysBetween(view.lastConfidenceAt || view.updatedAt, runDate);
                   const isCurrent = view.id === group.currentView.id;
                   return (
@@ -1676,16 +1966,17 @@ type ParsedImportRow = {
 function ExcelImportModal(props: {
   close: () => void;
   stockPool: any[];
+  players: ContestPlayer[];
   existingViews: ResearcherView[];
   runDate: string;
   ensureAuth: () => Promise<void>;
   onImported: (views: ResearcherView[]) => void;
 }) {
-  const { close, stockPool, existingViews, runDate, ensureAuth, onImported } = props;
+  const { close, stockPool, players, existingViews, runDate, ensureAuth, onImported } = props;
   const [pasteText, setPasteText] = useState('');
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
-  const parsedRows = useMemo(() => parseExcelImportRows(pasteText, stockPool, existingViews, runDate), [pasteText, stockPool, existingViews, runDate]);
+  const parsedRows = useMemo(() => parseExcelImportRows(pasteText, stockPool, existingViews, runDate, players), [pasteText, stockPool, existingViews, runDate, players]);
   const errorCount = parsedRows.reduce((sum, row) => sum + row.errors.length, 0);
   const validRows = parsedRows.filter((row) => row.errors.length === 0);
 
@@ -1995,12 +2286,19 @@ function AccountPositionModal(props: {
   close: () => void;
 }) {
   const { researcherName, positions, account, config, close } = props;
-  const accountPositions = positions
+  const baseAccountPositions = positions
     .filter((position) => position.researcherName === researcherName && (position.shares > 1e-9 || Math.abs(position.totalPnlHKD) > 0.01))
     .sort((a, b) => b.marketValueHKD - a.marketValueHKD);
-  const grossMarketValue = accountPositions.reduce((sum, item) => sum + item.marketValueHKD, 0);
-  const realizedPnl = accountPositions.reduce((sum, item) => sum + item.realizedPnlHKD, 0);
-  const unrealizedPnl = accountPositions.reduce((sum, item) => sum + item.unrealizedPnlHKD, 0);
+  const [positionSort, setPositionSort] = useState<TableSort>({ key: 'marketValueHKD', dir: 'desc' });
+  const [positionFilters, setPositionFilters] = useState<Record<string, string>>({});
+  const accountPositions = useMemo(() => (
+    filterAndSortAccountPositions(baseAccountPositions, positionFilters, positionSort)
+  ), [baseAccountPositions, positionFilters, positionSort]);
+  const toggleSort = (key: string) => setPositionSort((prev) => nextTableSort(prev, key));
+  const updateFilter = (key: string, value: string) => setPositionFilters((prev) => ({ ...prev, [key]: value }));
+  const grossMarketValue = baseAccountPositions.reduce((sum, item) => sum + item.marketValueHKD, 0);
+  const realizedPnl = baseAccountPositions.reduce((sum, item) => sum + item.realizedPnlHKD, 0);
+  const unrealizedPnl = baseAccountPositions.reduce((sum, item) => sum + item.unrealizedPnlHKD, 0);
   const totalPnl = realizedPnl + unrealizedPnl;
 
   return (
@@ -2026,20 +2324,20 @@ function AccountPositionModal(props: {
             <table className="min-w-[980px] w-full text-sm">
               <thead className="bg-stone-100 text-left text-xs uppercase tracking-wide text-slate-500">
                 <tr>
-                  <th className="px-4 py-3">股票</th>
-                  <th className="px-4 py-3">市场</th>
-                  <th className="px-4 py-3 text-right">持仓股数</th>
-                  <th className="px-4 py-3 text-right">平均成本HKD/股</th>
-                  <th className="px-4 py-3 text-right">当前价格</th>
-                  <th className="px-4 py-3 text-right">持仓市值</th>
-                  <th className="px-4 py-3 text-right">已实现盈亏</th>
-                  <th className="px-4 py-3 text-right">未实现盈亏</th>
-                  <th className="px-4 py-3 text-right">总盈亏</th>
+                  <TradeTh label="股票" sortKey="symbol" filterKey="stock" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} />
+                  <TradeTh label="市场" sortKey="market" filterKey="market" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} />
+                  <TradeTh label="持仓股数" sortKey="shares" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
+                  <TradeTh label="平均成本HKD/股" sortKey="averageCostHKD" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
+                  <TradeTh label="当前价格" sortKey="lastClose" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
+                  <TradeTh label="持仓市值" sortKey="marketValueHKD" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
+                  <TradeTh label="已实现盈亏" sortKey="realizedPnlHKD" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
+                  <TradeTh label="未实现盈亏" sortKey="unrealizedPnlHKD" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
+                  <TradeTh label="总盈亏" sortKey="totalPnlHKD" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100 bg-white">
                 {accountPositions.length === 0 ? (
-                  <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-500">该账户暂无持仓。</td></tr>
+                  <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-500">{baseAccountPositions.length === 0 ? '该账户暂无持仓。' : '没有匹配的持仓。'}</td></tr>
                 ) : accountPositions.map((position) => (
                   <tr key={`${position.researcherName}-${position.symbol}-${position.market}`}>
                     <td className="px-4 py-3"><div className="font-bold">{position.stockName}</div><div className="text-xs text-slate-400">{position.symbol}</div></td>
@@ -2279,7 +2577,7 @@ function fallbackFx(currency: PriceCurrency) {
   return 1;
 }
 
-function parseExcelImportRows(text: string, stockPool: any[], existingViews: ResearcherView[], runDate: string): ParsedImportRow[] {
+function parseExcelImportRows(text: string, stockPool: any[], existingViews: ResearcherView[], runDate: string, players: ContestPlayer[]): ParsedImportRow[] {
   const versionCounter = new Map<string, number>();
   existingViews.forEach((view) => {
     const key = `${view.researcherName.trim()}__${symbolKey(view.symbol, view.market)}`;
@@ -2293,7 +2591,9 @@ function parseExcelImportRows(text: string, stockPool: any[], existingViews: Res
     .map(({ line, rowNo }) => {
       const cells = line.split('\t');
       const [researcherRaw = '', symbolRaw = '', effectiveDateRaw = '', pointText = '', valueText = '', ...tailCells] = cells;
-      const researcherName = researcherRaw.trim();
+      const rawResearcherName = researcherRaw.trim();
+      const player = findContestPlayer(players, rawResearcherName);
+      const researcherName = player?.name || rawResearcherName;
       const symbol = symbolRaw.trim().toUpperCase();
       const effectiveDate = normalizeImportDate(effectiveDateRaw.trim()) || runDate;
       const maybeMinTradeShares = tailCells[0]?.trim() ?? '';
@@ -2306,6 +2606,7 @@ function parseExcelImportRows(text: string, stockPool: any[], existingViews: Res
 
       if (cells.length < 5) errors.push('列数不足');
       if (!researcherName) errors.push('研究员为空');
+      if (researcherName && (!player || player.status !== 'active')) errors.push('研究员不是已启用的参赛选手');
       if (!symbol) errors.push('股票代码为空');
       if (!effectiveDateRaw.trim()) warnings.push('未填生效日，使用当前模拟日');
       if (!isValidDate(effectiveDate)) errors.push('生效日无效');
@@ -2442,6 +2743,160 @@ function groupViewsByResearcherStock(views: ResearcherView[], runDate: string) {
   }).sort((a, b) => `${a.currentView.symbol}-${a.currentView.researcherName}`.localeCompare(`${b.currentView.symbol}-${b.currentView.researcherName}`));
 }
 
+function nextTableSort(prev: TableSort, key: string): TableSort {
+  if (prev.key === key) {
+    if (prev.dir === 'asc') return { key, dir: 'desc' };
+    if (prev.dir === 'desc') return { key: '', dir: null };
+  }
+  return { key, dir: 'asc' };
+}
+
+function filterAndSortViewGroups(
+  groups: ReturnType<typeof groupViewsByResearcherStock>,
+  filters: Record<string, string>,
+  sort: TableSort,
+  runDate: string,
+) {
+  let result = [...groups];
+  Object.entries(filters).forEach(([key, value]) => {
+    const needle = value.trim().toLowerCase();
+    if (!needle) return;
+    result = result.filter((group) => String(getViewGroupField(group, key, runDate, true)).toLowerCase().includes(needle));
+  });
+
+  return sortTableRows(result, sort, (group, key) => getViewGroupField(group, key, runDate));
+}
+
+function getViewGroupField(
+  group: ReturnType<typeof groupViewsByResearcherStock>[number],
+  key: string,
+  runDate: string,
+  forSearch = false,
+): string | number {
+  const view = group.currentView;
+  const staleDays = businessDaysBetween(view.lastConfidenceAt || view.updatedAt, runDate);
+  if (key === 'researcherName') return view.researcherName || '';
+  if (key === 'stock') return `${view.symbol} ${view.stockName} ${view.market}`;
+  if (key === 'symbol') return `${view.symbol} ${view.stockName}`;
+  if (key === 'versionNo') return forSearch ? `v${view.versionNo || 1} ${view.versionNo || 1} ${group.versions.length}个版本` : (view.versionNo || 1);
+  if (key === 'effectiveDate') return view.effectiveDate || '';
+  if (key === 'researchNoteID') return view.researchNoteID || '';
+  if (key === 'lastConfidenceAt') return forSearch ? `${view.lastConfidenceAt || ''} ${staleDays}工作日 ${staleDays}` : (view.lastConfidenceAt || '');
+  if (key === 'status') return view.status === 'active' ? '有效 active' : '暂停 paused';
+  return '';
+}
+
+function filterAndSortViewVersions(
+  versions: ResearcherView[],
+  filters: Record<string, string>,
+  sort: TableSort,
+  runDate: string,
+) {
+  let result = [...versions];
+  Object.entries(filters).forEach(([key, value]) => {
+    const needle = value.trim().toLowerCase();
+    if (!needle) return;
+    result = result.filter((view) => String(getViewVersionField(view, key, runDate, true)).toLowerCase().includes(needle));
+  });
+
+  return sortTableRows(result, sort, (view, key) => getViewVersionField(view, key, runDate));
+}
+
+function getViewVersionField(view: ResearcherView, key: string, runDate: string, forSearch = false): string | number {
+  const staleDays = businessDaysBetween(view.lastConfidenceAt || view.updatedAt, runDate);
+  if (key === 'versionNo') return forSearch ? `v${view.versionNo || 1} ${view.versionNo || 1}` : (view.versionNo || 1);
+  if (key === 'effectiveDate') return view.effectiveDate || '';
+  if (key === 'lastConfidenceAt') return forSearch ? `${view.lastConfidenceAt || ''} ${staleDays}工作日 ${staleDays}` : (view.lastConfidenceAt || '');
+  if (key === 'pointCount') return normalizePoints(view.points).length;
+  if (key === 'minTradeShares') return normalizeMinTradeShares(view.minTradeShares);
+  if (key === 'status') return view.status === 'active' ? '有效 active' : '暂停 paused';
+  if (key === 'note') return view.note || '';
+  return '';
+}
+
+function filterAndSortWeights(weights: VoiceWeight[], filters: Record<string, string>, sort: TableSort) {
+  let result = [...weights];
+  Object.entries(filters).forEach(([key, value]) => {
+    const needle = value.trim().toLowerCase();
+    if (!needle) return;
+    result = result.filter((weight) => String(getWeightField(weight, key, true)).toLowerCase().includes(needle));
+  });
+
+  return sortTableRows(result, sort, getWeightField);
+}
+
+function getWeightField(weight: VoiceWeight, key: string, forSearch = false): string | number {
+  if (key === 'stock') return `${weight.symbol} ${weight.stockName} ${weight.market}`;
+  if (key === 'symbol') return `${weight.symbol} ${weight.stockName}`;
+  if (key === 'researcherName') return weight.researcherName || '';
+  if (key === 'totalPnlHKD') return forSearch ? `${weight.totalPnlHKD} ${formatHKD(weight.totalPnlHKD)}` : weight.totalPnlHKD;
+  if (key === 'freshnessDecay') return forSearch ? `${weight.freshnessDecay} ${formatPercent(weight.freshnessDecay)} ${weight.daysSinceLastConfidence}日` : weight.freshnessDecay;
+  if (key === 'weight') return forSearch ? `${weight.weight} ${formatPercent(weight.weight)}` : weight.weight;
+  return '';
+}
+
+function filterAndSortAccountPositions<T extends {
+  symbol: string;
+  stockName: string;
+  market: string;
+  shares: number;
+  averageCostHKD: number;
+  lastClose: number;
+  marketValueHKD: number;
+  realizedPnlHKD: number;
+  unrealizedPnlHKD: number;
+  totalPnlHKD: number;
+}>(positions: T[], filters: Record<string, string>, sort: TableSort) {
+  let result = [...positions];
+  Object.entries(filters).forEach(([key, value]) => {
+    const needle = value.trim().toLowerCase();
+    if (!needle) return;
+    result = result.filter((position) => String(getAccountPositionField(position, key, true)).toLowerCase().includes(needle));
+  });
+
+  return sortTableRows(result, sort, getAccountPositionField);
+}
+
+function getAccountPositionField<T extends {
+  symbol: string;
+  stockName: string;
+  market: string;
+  shares: number;
+  averageCostHKD: number;
+  lastClose: number;
+  marketValueHKD: number;
+  realizedPnlHKD: number;
+  unrealizedPnlHKD: number;
+  totalPnlHKD: number;
+}>(position: T, key: string, forSearch = false): string | number {
+  if (key === 'stock') return `${position.symbol} ${position.stockName}`;
+  if (key === 'symbol') return `${position.symbol} ${position.stockName}`;
+  if (key === 'market') return position.market || '';
+  const numericValue = (position as any)[key];
+  if (typeof numericValue === 'number') {
+    return forSearch ? `${numericValue} ${formatNumber(numericValue, 4)} ${key.includes('HKD') ? formatHKD(numericValue) : ''}` : numericValue;
+  }
+  return '';
+}
+
+function sortTableRows<T>(rows: T[], sort: TableSort, getField: (row: T, key: string) => string | number) {
+  const result = [...rows];
+  if (!sort.dir || !sort.key) return result;
+  const dir = sort.dir;
+  result.sort((a, b) => compareTableValues(getField(a, sort.key), getField(b, sort.key), dir));
+  return result;
+}
+
+function compareTableValues(aValue: string | number, bValue: string | number, dir: 'asc' | 'desc') {
+  let result = 0;
+  if (typeof aValue === 'number' && typeof bValue === 'number') {
+    result = aValue - bValue;
+  } else {
+    result = String(aValue || '').localeCompare(String(bValue || ''), undefined, { numeric: true, sensitivity: 'base' });
+  }
+  return dir === 'asc' ? result : -result;
+}
+
 function filterAndSortTrades(
   trades: SimulationTradeLedger[],
   filters: Record<string, string>,
@@ -2454,20 +2909,7 @@ function filterAndSortTrades(
     result = result.filter((trade) => String(getTradeField(trade, key)).toLowerCase().includes(needle));
   });
 
-  if (sort.dir && sort.key) {
-    result.sort((a, b) => {
-      const aValue = getTradeField(a, sort.key);
-      const bValue = getTradeField(b, sort.key);
-      if (typeof aValue === 'number' && typeof bValue === 'number') {
-        return sort.dir === 'asc' ? aValue - bValue : bValue - aValue;
-      }
-      return sort.dir === 'asc'
-        ? String(aValue).localeCompare(String(bValue))
-        : String(bValue).localeCompare(String(aValue));
-    });
-  }
-
-  return result;
+  return sortTableRows(result, sort, getTradeField);
 }
 
 function getTradeField(trade: SimulationTradeLedger, key: string): string | number {
@@ -2571,6 +3013,55 @@ function normalizeLoadedView(view: ResearcherView): ResearcherView {
     hasResearchNote: !!view.hasResearchNote || !!view.researchNoteID,
     researchNoteID: view.researchNoteID || '',
   };
+}
+
+function normalizePlayerName(value: string) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeContestPlayer(player: Partial<ContestPlayer>): ContestPlayer {
+  const now = new Date().toISOString();
+  return {
+    name: String(player.name || '').trim(),
+    password: String(player.password || '999999').trim() || '999999',
+    status: player.status === 'paused' ? 'paused' : 'active',
+    createdAt: player.createdAt || now,
+    updatedAt: player.updatedAt || now,
+  };
+}
+
+function normalizeConfig(raw: any): PchipContestConfig {
+  const merged = { ...DEFAULT_CONFIG, ...(raw || {}) } as PchipContestConfig;
+  const seen = new Set<string>();
+  const players = (Array.isArray(merged.players) ? merged.players : [])
+    .map((player) => normalizeContestPlayer(player))
+    .filter((player) => {
+      const key = normalizePlayerName(player.name);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+  return {
+    ...merged,
+    maxCapitalHKD: Number(merged.maxCapitalHKD) || DEFAULT_CONFIG.maxCapitalHKD,
+    tradingCostRate: Number(merged.tradingCostRate) || 0,
+    feeMode: merged.feeMode === 'realistic' ? 'realistic' : 'custom',
+    customFixedFeeHKD: Math.max(0, Number(merged.customFixedFeeHKD ?? DEFAULT_CONFIG.customFixedFeeHKD ?? 0) || 0),
+    customFeeRate: Math.max(0, Number(merged.customFeeRate ?? merged.tradingCostRate ?? DEFAULT_CONFIG.customFeeRate ?? 0) || 0),
+    includeStampDuty: merged.includeStampDuty !== false,
+    minTradeValueHKD: Number(merged.minTradeValueHKD) || 0,
+    weightPnlToleranceRatio: Number(merged.weightPnlToleranceRatio) || 0,
+    reaffirmCycleDays: Number(merged.reaffirmCycleDays) || DEFAULT_CONFIG.reaffirmCycleDays,
+    halfLifeTradingDays: Number(merged.halfLifeTradingDays) || DEFAULT_CONFIG.halfLifeTradingDays,
+    targetCurrency: 'HKD',
+    players,
+  };
+}
+
+function findContestPlayer(players: ContestPlayer[], researcherName: string) {
+  const target = normalizePlayerName(researcherName);
+  return players.find((player) => normalizePlayerName(player.name) === target);
 }
 
 function todayInput() {

@@ -1,14 +1,27 @@
 export type PriceCurrency = 'HKD' | 'USD' | 'CNY' | 'JPY';
 
+export type ContestPlayer = {
+  name: string;
+  password: string;
+  status: 'active' | 'paused';
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type PchipContestConfig = {
   startDate: string;
   maxCapitalHKD: number;
   tradingCostRate: number;
+  feeMode?: 'realistic' | 'custom';
+  customFixedFeeHKD?: number;
+  customFeeRate?: number;
+  includeStampDuty?: boolean;
   minTradeValueHKD: number;
   weightPnlToleranceRatio: number;
   reaffirmCycleDays: number;
   halfLifeTradingDays: number;
   targetCurrency: 'HKD';
+  players?: ContestPlayer[];
 };
 
 export type PriceTargetPoint = {
@@ -496,7 +509,17 @@ export function generateDailyTrades(params: {
       const tradeShares = skipByMinTrade ? 0 : roundedTradeShares;
       const tradeValueHKD = tradeShares * quote.close * quote.fxToHKD;
       const side = tradeShares > EPSILON ? 'BUY' : tradeShares < -EPSILON ? 'SELL' : 'NONE';
-      const tradingCostHKD = side === 'NONE' ? 0 : Math.abs(tradeValueHKD) * params.config.tradingCostRate;
+      const tradingCostHKD = side === 'NONE' ? 0 : calculateTradingFeeHKD({
+        config: params.config,
+        side,
+        market: view.market,
+        priceCurrency: quote.priceCurrency,
+        tradeShares,
+        tradePrice: quote.close,
+        tradeValueHKD,
+        fxToHKD: quote.fxToHKD,
+      });
+      const effectiveCostRate = Math.abs(tradeValueHKD) > EPSILON ? tradingCostHKD / Math.abs(tradeValueHKD) : 0;
 
       trades.push({
         runId: params.runId,
@@ -530,7 +553,7 @@ export function generateDailyTrades(params: {
           : side === 'SELL'
             ? -(Math.abs(tradeValueHKD) - tradingCostHKD)
             : 0,
-        tradingCostRate: params.config.tradingCostRate,
+        tradingCostRate: effectiveCostRate,
         tradingCostHKD,
         fee: tradingCostHKD,
         side,
@@ -544,6 +567,58 @@ export function generateDailyTrades(params: {
     });
   });
   return trades;
+}
+
+function calculateTradingFeeHKD(params: {
+  config: PchipContestConfig;
+  side: 'BUY' | 'SELL' | 'NONE';
+  market: string;
+  priceCurrency: PriceCurrency;
+  tradeShares: number;
+  tradePrice: number;
+  tradeValueHKD: number;
+  fxToHKD: number;
+}): number {
+  const grossValueHKD = Math.abs(params.tradeValueHKD);
+  if (params.side === 'NONE' || grossValueHKD <= EPSILON) return 0;
+  if ((params.config.feeMode || 'custom') === 'custom') {
+    const fixed = Math.max(0, Number(params.config.customFixedFeeHKD ?? 0));
+    const rate = Math.max(0, Number(params.config.customFeeRate ?? params.config.tradingCostRate ?? 0));
+    return fixed + grossValueHKD * rate;
+  }
+
+  const market = String(params.market || params.priceCurrency || '').toUpperCase();
+  const currency = String(params.priceCurrency || market || '').toUpperCase();
+  const localValue = grossValueHKD / Math.max(params.fxToHKD, EPSILON);
+  const shares = Math.abs(params.tradeShares);
+
+  if (market === 'USD' || currency === 'USD') {
+    const commissionUsd = Math.max(shares * 0.005, 1);
+    const cappedUsd = Math.min(commissionUsd, localValue * 0.01);
+    const sellRegFeeUsd = params.side === 'SELL' ? Math.max(localValue * 0.0000278, 0) + Math.max(shares * 0.000166, 0.01) : 0;
+    return (cappedUsd + sellRegFeeUsd) * params.fxToHKD;
+  }
+
+  if (market === 'JPY' || currency === 'JPY') {
+    const commissionJpy = Math.max(localValue * 0.0008, 80);
+    const platformJpy = 180;
+    return (commissionJpy + platformJpy) * params.fxToHKD;
+  }
+
+  if (market === 'CNY' || currency === 'CNY') {
+    const commissionCny = Math.max(localValue * 0.0003, 5);
+    const handlingCny = localValue * 0.0000487;
+    const transferCny = localValue * 0.00002;
+    const stampCny = params.config.includeStampDuty && params.side === 'SELL' ? localValue * 0.0005 : 0;
+    return (commissionCny + handlingCny + transferCny + stampCny) * params.fxToHKD;
+  }
+
+  const commissionHkd = Math.max(localValue * 0.0003, 3);
+  const platformHkd = 15;
+  const tradingSystemHkd = 0.5;
+  const settlementHkd = Math.min(Math.max(localValue * 0.00002, 2), 100);
+  const stampHkd = params.config.includeStampDuty ? localValue * 0.001 : 0;
+  return (commissionHkd + platformHkd + tradingSystemHkd + settlementHkd + stampHkd) * params.fxToHKD;
 }
 
 function getTradeAmountHKD(trade: SimulationTradeLedger): number {
