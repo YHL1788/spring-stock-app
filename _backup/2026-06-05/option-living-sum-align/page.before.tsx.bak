@@ -1378,7 +1378,7 @@ export default function OptionHoldingPage() {
                         {finalLiving.length > 0 && (
                             <tfoot className="bg-gray-100 border-t-2 border-gray-300 shadow-inner sticky bottom-0 z-20 [&>tr>td]:bg-gray-100">
                                 <tr>
-                                    <td colSpan={7} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
+                                    <td colSpan={6} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
                                     <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{fmtMoney(livingSumsHKD.notional)}</td>
                                     <td colSpan={2}></td>
                                     <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(livingSumsHKD.realizedPremium, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(livingSumsHKD.realizedPremium)}</td>
