@@ -17,7 +17,6 @@ import {
 } from 'lucide-react';
 import {
   CartesianGrid,
-  ComposedChart,
   Legend,
   Line,
   LineChart,
@@ -146,17 +145,6 @@ type RunReport = {
   generatedTradeCount: number;
 };
 
-type PlayerNavPoint = {
-  date: string;
-  researcherName: string;
-  cashHKD: number;
-  marketValueHKD: number;
-  equityHKD: number;
-  pnlHKD: number;
-  nav: number;
-  dailyReturn: number;
-};
-
 type SipResearchNote = {
   noteID: string;
   target: string;
@@ -182,17 +170,11 @@ export default function PchipContestPage() {
   const [selectedSymbol, setSelectedSymbol] = useState('');
   const [symbolSearch, setSymbolSearch] = useState('');
   const [showSymbolDropdown, setShowSymbolDropdown] = useState(false);
-  const [hiddenCurveKeys, setHiddenCurveKeys] = useState<Set<string>>(() => new Set());
   const [historyGroupKey, setHistoryGroupKey] = useState('');
   const [showImportModal, setShowImportModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [runReport, setRunReport] = useState<RunReport | null>(null);
   const [showRunReportModal, setShowRunReportModal] = useState(false);
-  const [navSeries, setNavSeries] = useState<PlayerNavPoint[]>([]);
-  const [navLoading, setNavLoading] = useState(false);
-  const [navGeneratedAt, setNavGeneratedAt] = useState('');
-  const [navError, setNavError] = useState('');
-  const [riskFreeRate, setRiskFreeRate] = useState(0);
   const [configUnlocked, setConfigUnlocked] = useState(false);
   const [runUnlocked, setRunUnlocked] = useState(false);
   const [newPlayerName, setNewPlayerName] = useState('');
@@ -207,7 +189,6 @@ export default function PchipContestPage() {
   const [running, setRunning] = useState(false);
   const [bulkRunning, setBulkRunning] = useState(false);
   const [refreshingSelectedQuote, setRefreshingSelectedQuote] = useState(false);
-  const [refreshingAccountQuotes, setRefreshingAccountQuotes] = useState(false);
   const [comparingRealExposure, setComparingRealExposure] = useState(false);
   const [realExposureComparison, setRealExposureComparison] = useState<RealExposureComparison | null>(null);
   const [bulkProgress, setBulkProgress] = useState('');
@@ -244,21 +225,6 @@ export default function PchipContestPage() {
   const selectedWeights = useMemo(() => voiceWeights.filter((weight) => symbolKey(weight.symbol, weight.market) === selectedSymbol), [voiceWeights, selectedSymbol]);
   const visibleVoiceWeights = selectedSymbol ? selectedWeights : voiceWeights;
   const chartData = useMemo(() => buildCurveChartData(selectedViews, selectedWeights, selectedQuote), [selectedViews, selectedWeights, selectedQuote]);
-  const curveLegendItems = useMemo(() => [
-    { key: '合成曲线', label: '合成曲线', color: '#111827' },
-    ...selectedViews.map((view, index) => ({
-      key: view.researcherName,
-      label: view.researcherName,
-      color: LINE_COLORS[index % LINE_COLORS.length],
-    })),
-  ], [selectedViews]);
-  const viewPointPriceMap = useMemo(() => {
-    const map = new Map<string, Set<string>>();
-    selectedViews.forEach((view) => {
-      map.set(view.researcherName, new Set(normalizePoints(view.points).map((point) => pointKey(point.price))));
-    });
-    return map;
-  }, [selectedViews]);
   const displayTrades = useMemo(() => filterAndSortTrades(trades, tradeFilters, tradeSort), [trades, tradeFilters, tradeSort]);
   const reminders = useMemo(() => activeViews.map((view) => {
     const staleDays = businessDaysBetween(view.lastConfidenceAt || view.effectiveDate || view.updatedAt, todayInput());
@@ -276,16 +242,6 @@ export default function PchipContestPage() {
     return selectedMasterTarget / (selectedQuote.close * selectedQuote.fxToHKD);
   }, [selectedMasterTarget, selectedQuote]);
   const activeRealExposureComparison = realExposureComparison?.key === selectedSymbol ? realExposureComparison : null;
-
-  function toggleCurveVisibility(key: string) {
-    setHiddenCurveKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
-
   const lastRunDate = useMemo(() => runs.map((run) => run.runDate).filter(Boolean).sort().at(-1) || '--', [runs]);
   const contestBusinessDays = useMemo(() => businessDaysBetween(config.startDate, todayInput()) + 1, [config.startDate]);
   const filteredSymbols = useMemo(() => {
@@ -365,27 +321,6 @@ export default function PchipContestPage() {
       setError(err?.message || '刷新股价失败');
     } finally {
       setRefreshingSelectedQuote(false);
-    }
-  }
-
-  async function refreshAccountQuotes() {
-    if (trades.length === 0) {
-      setError('暂无交易流水，无法刷新账户持仓股票现价。');
-      return;
-    }
-    setRefreshingAccountQuotes(true);
-    setError('');
-    setMessage('');
-    try {
-      const sourceViews = buildViewsFromTradesForHistory(trades);
-      const nextQuotes = await refreshQuotes(sourceViews);
-      const count = Object.keys(nextQuotes).length;
-      if (count === 0) throw new Error('未能刷新任何持仓股票现价。');
-      setMessage(`已刷新 ${count} 只账户相关股票现价。`);
-    } catch (err: any) {
-      setError(err?.message || '刷新账户股票现价失败');
-    } finally {
-      setRefreshingAccountQuotes(false);
     }
   }
 
@@ -510,16 +445,6 @@ export default function PchipContestPage() {
   function unlockRunPanel() {
     if (!confirmAdminAction('展开管理员运行')) return;
     setRunUnlocked(true);
-  }
-
-  function openImportWithAdmin() {
-    if (!confirmAdminAction('Excel导入研究员观点')) return;
-    setShowImportModal(true);
-  }
-
-  function openExportWithAdmin() {
-    if (!confirmAdminAction('一键导出研究员观点')) return;
-    setShowExportModal(true);
   }
 
   function addContestPlayer() {
@@ -923,37 +848,6 @@ export default function PchipContestPage() {
     }
   }
 
-  async function generateNavCurve() {
-    if (trades.length === 0) {
-      setNavError('暂无交易流水，无法生成净值曲线。');
-      return;
-    }
-    setNavLoading(true);
-    setNavError('');
-    try {
-      const firstTradeDate = trades.map((trade) => trade.date).filter(Boolean).sort()[0];
-      const startDate = config.startDate || firstTradeDate || todayInput();
-      const endDate = todayInput();
-      const symbolViews = buildViewsFromTradesForHistory(trades);
-      if (symbolViews.length === 0) throw new Error('交易流水中没有可用于拉取历史行情的股票。');
-      const historyMap = await fetchHistoricalQuoteMap(symbolViews, startDate, endDate);
-      const series = buildPlayerNavSeries({
-        dates: getBusinessDates(startDate, endDate),
-        trades,
-        maxCapitalHKD: config.maxCapitalHKD,
-        historyMap,
-        players: config.players || [],
-      });
-      setNavSeries(series);
-      setNavGeneratedAt(new Date().toISOString());
-      setMessage(`净值曲线已生成：${series.length} 个账户-日期点。`);
-    } catch (err: any) {
-      setNavError(err?.message || '生成净值曲线失败');
-    } finally {
-      setNavLoading(false);
-    }
-  }
-
   async function persistBulkRunsAndTrades(runsToPersist: SimulationRunRecord[], tradesToPersist: SimulationTradeLedger[]) {
     const finalRuns = runsToPersist;
     const finalTrades: SimulationTradeLedger[] = [];
@@ -1232,7 +1126,7 @@ export default function PchipContestPage() {
             <div className="h-[360px]">
               {chartData.length === 0 ? <EmptyHint text="录入观点并获取行情后，这里会展示研究员曲线和合成曲线。" /> : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={chartData} margin={{ top: 12, right: 24, left: 0, bottom: 8 }}>
+                  <LineChart data={chartData} margin={{ top: 12, right: 24, left: 0, bottom: 8 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e7e5e4" />
                     <XAxis
                       dataKey="price"
@@ -1254,70 +1148,39 @@ export default function PchipContestPage() {
                       label={{ value: '目标市值 (HKD)', angle: -90, position: 'insideLeft', fill: '#57534e', fontSize: 12 }}
                     />
                     <Tooltip
-                      formatter={(value: any, name: any) => [`Y ${formatHKD(Number(value))}`, String(name)]}
-                      labelFormatter={(label) => `X 股价 ${formatFullPrice(Number(label), selectedQuote?.priceCurrency)}`}
+                      formatter={(value: any, name: any) => [formatHKD(Number(value)), String(name)]}
+                      labelFormatter={(label) => `股价 ${formatFullPrice(Number(label), selectedQuote?.priceCurrency)}`}
                       contentStyle={{ borderRadius: 16, borderColor: '#e7e5e4', boxShadow: '0 12px 28px rgba(15,23,42,.12)' }}
                     />
-                    <Legend
-                      verticalAlign="bottom"
-                      content={() => (
-                        <CurveLegend
-                          items={curveLegendItems}
-                          hiddenKeys={hiddenCurveKeys}
-                          onToggle={toggleCurveVisibility}
-                        />
-                      )}
-                    />
+                    <Legend />
                     {selectedQuote && <ReferenceLine x={selectedQuote.close} stroke="#0f172a" strokeDasharray="4 4" label="当前价" />}
-                    <Line type="monotone" dataKey="合成曲线" stroke="#111827" strokeWidth={4} dot={false} hide={hiddenCurveKeys.has('合成曲线')} />
+                    <Line type="monotone" dataKey="合成曲线" stroke="#111827" strokeWidth={4} dot={false} />
                     {selectedViews.map((view, index) => (
-                      <Line
-                        key={view.id}
-                        type="monotone"
-                        dataKey={view.researcherName}
-                        stroke={LINE_COLORS[index % LINE_COLORS.length]}
-                        strokeWidth={2}
-                        dot={(props: any) => {
-                          if (!viewPointPriceMap.get(view.researcherName)?.has(pointKey(Number(props?.payload?.price)))) return <g />;
-                          return (
-                            <circle
-                              cx={props.cx}
-                              cy={props.cy}
-                              r={4.5}
-                              fill="#fff"
-                              stroke={LINE_COLORS[index % LINE_COLORS.length]}
-                              strokeWidth={2.4}
-                            />
-                          );
-                        }}
-                        activeDot={{ r: 6, strokeWidth: 2.5 }}
-                        opacity={0.82}
-                        hide={hiddenCurveKeys.has(view.researcherName)}
-                      />
+                      <Line key={view.id} type="monotone" dataKey={view.researcherName} stroke={LINE_COLORS[index % LINE_COLORS.length]} strokeWidth={2} dot={false} opacity={0.82} />
                     ))}
-                  </ComposedChart>
+                  </LineChart>
                 </ResponsiveContainer>
               )}
             </div>
           </Panel>
         </section>
 
-        <section>
-          <Panel title="参赛者账户表现" icon={<Shield className="h-5 w-5" />}>
-            <ParticipantPerformance
-              accounts={accounts}
-              maxCapitalHKD={config.maxCapitalHKD}
-              navSeries={navSeries}
-              navLoading={navLoading}
-              navGeneratedAt={navGeneratedAt}
-              navError={navError}
-              riskFreeRate={riskFreeRate}
-              setRiskFreeRate={setRiskFreeRate}
-              refreshingQuotes={refreshingAccountQuotes}
-              refreshQuotes={refreshAccountQuotes}
-              generateNavCurve={generateNavCurve}
-              openAccount={setSelectedAccount}
-            />
+        <section className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+          <Panel title="账户概览" icon={<Activity className="h-5 w-5" />}>
+            <AccountOverview accounts={accounts} maxCapitalHKD={config.maxCapitalHKD} openAccount={setSelectedAccount} />
+          </Panel>
+
+          <Panel title="研究员账户排名" icon={<Shield className="h-5 w-5" />}>
+            <div className="grid gap-3">
+              {accounts.length === 0 ? <EmptyHint text="暂无账户流水。先录入观点并运行一次模拟。" /> : accounts.slice(0, 5).map((account, index) => (
+                <div key={account.researcherName} className="rounded-3xl border border-stone-200 bg-gradient-to-br from-white to-stone-50 p-4">
+                  <div className="flex items-center justify-between text-xs text-slate-500"><span>#{index + 1}</span><span>{account.stockCount} 股票</span></div>
+                  <div className="mt-2 text-lg font-black">{account.researcherName}</div>
+                  <div className={`mt-2 text-xl font-black ${account.totalPnlHKD >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatHKD(account.totalPnlHKD)}</div>
+                  <div className="mt-2 text-xs text-slate-500">市值 {formatHKD(account.grossMarketValueHKD)}</div>
+                </div>
+              ))}
+            </div>
           </Panel>
         </section>
 
@@ -1349,8 +1212,8 @@ export default function PchipContestPage() {
               openResearchNote={openResearchNote}
               researchNoteLoading={researchNoteLoading}
               researchNoteError={researchNoteError}
-              openImport={openImportWithAdmin}
-              openExport={openExportWithAdmin}
+              openImport={() => setShowImportModal(true)}
+              openExport={() => setShowExportModal(true)}
             />
           </Panel>
         </section>
@@ -2229,6 +2092,7 @@ function ExcelImportModal(props: {
                     <th className="px-4 py-3">股票</th>
                     <th className="px-4 py-3">名称/币种</th>
                     <th className="px-4 py-3">生效日</th>
+                    <th className="px-4 py-3">版本</th>
                     <th className="px-4 py-3">点数</th>
                     <th className="px-4 py-3 text-right">最小成交股数</th>
                     <th className="px-4 py-3">备注</th>
@@ -2245,6 +2109,7 @@ function ExcelImportModal(props: {
                       <td className="px-4 py-3 font-mono">{row.symbol || '--'}</td>
                       <td className="px-4 py-3"><div className="font-bold">{row.stockName || '--'}</div><div className="text-xs text-slate-400">{row.priceCurrency}</div></td>
                       <td className="px-4 py-3">{row.effectiveDate || '--'}</td>
+                      <td className="px-4 py-3">v{row.versionNo || '--'}</td>
                       <td className="px-4 py-3">{row.points.length}</td>
                       <td className="px-4 py-3 text-right font-mono">{formatNumber(row.minTradeShares, 0)}</td>
                       <td className="max-w-[220px] truncate px-4 py-3 text-slate-500">{row.note || '--'}</td>
@@ -2396,181 +2261,44 @@ function ReportMini({ label, value, tone = 'normal' }: { label: string; value: s
   return <div className={`rounded-2xl p-3 ${tone === 'warn' ? 'bg-amber-50 text-amber-800' : 'bg-white/75 text-teal-900'}`}><div className="text-xs opacity-75">{label}</div><div className="mt-1 font-black">{value}</div></div>;
 }
 
-function ParticipantPerformance({ accounts, maxCapitalHKD, navSeries, navLoading, navGeneratedAt, navError, riskFreeRate, setRiskFreeRate, refreshingQuotes, refreshQuotes, generateNavCurve, openAccount }: {
+function AccountOverview({ accounts, maxCapitalHKD, openAccount }: {
   accounts: ReturnType<typeof buildAccountSnapshots>;
   maxCapitalHKD: number;
-  navSeries: PlayerNavPoint[];
-  navLoading: boolean;
-  navGeneratedAt: string;
-  navError: string;
-  riskFreeRate: number;
-  setRiskFreeRate: (value: number) => void;
-  refreshingQuotes: boolean;
-  refreshQuotes: () => void;
-  generateNavCurve: () => void;
   openAccount: (researcherName: string) => void;
 }) {
-  const [hiddenNavKeys, setHiddenNavKeys] = useState<Set<string>>(() => new Set());
-  const sortedAccounts = useMemo(() => [...accounts].sort((a, b) => b.totalPnlHKD - a.totalPnlHKD), [accounts]);
-  const navChartData = useMemo(() => buildNavChartData(navSeries), [navSeries]);
-  const navNames = useMemo(() => Array.from(new Set(navSeries.map((point) => point.researcherName))), [navSeries]);
-  const navLegendItems = useMemo(() => navNames.map((name, index) => ({
-    key: name,
-    label: name,
-    color: LINE_COLORS[index % LINE_COLORS.length],
-  })), [navNames]);
-  const playerPerformance = useMemo(() => calculatePlayerPerformance(navSeries, riskFreeRate), [navSeries, riskFreeRate]);
-
-  function toggleNavVisibility(key: string) {
-    setHiddenNavKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
-
-  if (accounts.length === 0) return <EmptyHint text="运行模拟后展示参赛者账户表现与净值曲线。" />;
+  if (accounts.length === 0) return <EmptyHint text="运行模拟后展示研究员账户市值、现金与盈亏。" />;
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[0.92fr_1.08fr]">
-      <div className="space-y-3">
-        {sortedAccounts.map((account, index) => {
-          const returnRate = maxCapitalHKD > 0 ? account.totalPnlHKD / maxCapitalHKD : 0;
-          return (
-            <button
-              key={account.researcherName}
-              className="w-full rounded-3xl border border-stone-200 bg-gradient-to-br from-white to-stone-50 p-4 text-left transition hover:-translate-y-0.5 hover:border-teal-300 hover:shadow-md"
-              onClick={() => openAccount(account.researcherName)}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-xs font-black text-slate-400">#{index + 1}</div>
-                  <div className="mt-1 text-lg font-black text-slate-900">{account.researcherName}</div>
-                  <div className="mt-1 text-xs text-slate-500">{account.stockCount} 只持仓/有盈亏股票</div>
-                </div>
-                <div className="text-right">
-                  <div className={`text-xs font-black ${returnRate >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>收益率 {formatPercent(returnRate)}</div>
-                  <div className={`mt-1 text-xl font-black ${account.totalPnlHKD >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                    {formatHKD(account.totalPnlHKD)}
-                  </div>
+    <div className="space-y-3">
+      {accounts.map((account) => {
+        const returnRate = maxCapitalHKD > 0 ? account.totalPnlHKD / maxCapitalHKD : 0;
+        return (
+          <button
+            key={account.researcherName}
+            className="w-full rounded-3xl border border-stone-200 bg-gradient-to-br from-white to-stone-50 p-4 text-left transition hover:-translate-y-0.5 hover:border-teal-300 hover:shadow-md"
+            onClick={() => openAccount(account.researcherName)}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-lg font-black text-slate-900">{account.researcherName}</div>
+                <div className="mt-1 text-xs text-slate-500">{account.stockCount} 只持仓/有盈亏股票</div>
+              </div>
+              <div className="text-right">
+                <div className={`text-xs font-black ${returnRate >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>收益率 {formatPercent(returnRate)}</div>
+                <div className={`mt-1 text-xl font-black ${account.totalPnlHKD >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  {formatHKD(account.totalPnlHKD)}
                 </div>
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 xl:grid-cols-2">
-                <AccountMetric label="持仓市值" value={formatHKD(account.grossMarketValueHKD)} />
-                <AccountMetric label="现金余额" value={formatHKD(account.cashHKD)} tone={account.cashHKD >= 0 ? 'normal' : 'danger'} />
-                <AccountMetric label="已实现盈亏" value={formatHKD(account.realizedPnlHKD)} tone={account.realizedPnlHKD >= 0 ? 'good' : 'danger'} />
-                <AccountMetric label="未实现盈亏" value={formatHKD(account.unrealizedPnlHKD)} tone={account.unrealizedPnlHKD >= 0 ? 'good' : 'danger'} />
-              </div>
-            </button>
-          );
-        })}
-      </div>
-      <div className="rounded-[1.75rem] border border-stone-200 bg-stone-50/70 p-4">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-black text-slate-900">净值曲线</div>
-            <div className="mt-1 text-xs text-slate-500">
-              {navGeneratedAt ? `生成时间：${new Date(navGeneratedAt).toLocaleString('zh-CN', { hour12: false })}` : '按历史收盘价逐日重估账户权益。'}
             </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-2 rounded-full border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-slate-600">
-              无风险利率
-              <input
-                className="w-16 bg-transparent text-right font-mono outline-none"
-                type="number"
-                step="0.1"
-                value={riskFreeRate * 100}
-                onChange={(event) => setRiskFreeRate((Number(event.target.value) || 0) / 100)}
-              />
-              %
-            </label>
-            <button className="btn-secondary" onClick={refreshQuotes} disabled={refreshingQuotes}>
-              <RefreshCw className={`h-4 w-4 ${refreshingQuotes ? 'animate-spin' : ''}`} />
-              {refreshingQuotes ? '刷新中...' : '刷新股票现价'}
-            </button>
-            <button className="btn-secondary" onClick={generateNavCurve} disabled={navLoading}>
-              <RefreshCw className={`h-4 w-4 ${navLoading ? 'animate-spin' : ''}`} />
-              {navLoading ? '生成中...' : '生成净值曲线'}
-            </button>
-          </div>
-        </div>
-        {navError && <div className="mb-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-bold text-rose-700">{navError}</div>}
-        <div className="h-[360px] rounded-3xl bg-white p-3">
-          {navChartData.length === 0 ? (
-            <EmptyHint text="点击“生成净值曲线”后，这里会展示所有参赛者的净值走势。" />
-          ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={navChartData} margin={{ top: 12, right: 24, left: 0, bottom: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e7e5e4" />
-                <XAxis dataKey="date" stroke="#78716c" tick={{ fontSize: 12, fill: '#57534e' }} minTickGap={24} />
-                <YAxis
-                  domain={[(dataMin: number) => Math.max(0, dataMin * 0.995), (dataMax: number) => Math.max(1.02, dataMax * 1.005)]}
-                  tickFormatter={(value) => formatNumber(Number(value), 3)}
-                  stroke="#78716c"
-                  tick={{ fontSize: 12, fill: '#57534e' }}
-                  width={58}
-                />
-                <Tooltip
-                  formatter={(value: any, name: any) => [`Y ${formatNumber(Number(value), 4)}`, String(name)]}
-                  labelFormatter={(label) => `X 日期 ${label}`}
-                  contentStyle={{ borderRadius: 16, borderColor: '#e7e5e4', boxShadow: '0 12px 28px rgba(15,23,42,.12)' }}
-                />
-                <Legend
-                  verticalAlign="bottom"
-                  content={() => (
-                    <CurveLegend
-                      items={navLegendItems}
-                      hiddenKeys={hiddenNavKeys}
-                      onToggle={toggleNavVisibility}
-                    />
-                  )}
-                />
-                {navNames.map((name, index) => (
-                  <Line
-                    key={name}
-                    type="monotone"
-                    dataKey={name}
-                    stroke={LINE_COLORS[index % LINE_COLORS.length]}
-                    strokeWidth={2.5}
-                    dot={{ r: 2.2, strokeWidth: 1.4, fill: '#fff' }}
-                    activeDot={{ r: 5.5, strokeWidth: 2.4 }}
-                    hide={hiddenNavKeys.has(name)}
-                  />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-        {navSeries.length > 0 && (
-          <div className="mt-3 rounded-3xl border border-stone-200 bg-white p-3">
-            <div className="mb-2 text-xs font-black text-slate-500">基金表现</div>
-            <div className="overflow-auto rounded-2xl border border-stone-200">
-              <table className="min-w-[520px] w-full text-xs">
-                <thead className="bg-stone-100 text-left uppercase tracking-wide text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2">参赛者</th>
-                    <th className="px-3 py-2 text-right">年化收益率</th>
-                    <th className="px-3 py-2 text-right">最大回撤</th>
-                    <th className="px-3 py-2 text-right">夏普比率</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-stone-100 bg-white">
-                  {playerPerformance.map((item) => (
-                    <tr key={item.researcherName}>
-                      <td className="px-3 py-2 font-black text-slate-800">{item.researcherName}</td>
-                      <td className={`px-3 py-2 text-right font-mono font-bold ${item.annualizedReturn >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatPercent(item.annualizedReturn)}</td>
-                      <td className="px-3 py-2 text-right font-mono font-bold text-rose-700">{formatPercent(item.maxDrawdown)}</td>
-                      <td className={`px-3 py-2 text-right font-mono font-bold ${item.sharpeRatio >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatNumber(item.sharpeRatio, 2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+              <AccountMetric label="持仓市值" value={formatHKD(account.grossMarketValueHKD)} />
+              <AccountMetric label="现金余额" value={formatHKD(account.cashHKD)} tone={account.cashHKD >= 0 ? 'normal' : 'danger'} />
+              <AccountMetric label="已实现盈亏" value={formatHKD(account.realizedPnlHKD)} tone={account.realizedPnlHKD >= 0 ? 'good' : 'danger'} />
+              <AccountMetric label="未实现盈亏" value={formatHKD(account.unrealizedPnlHKD)} tone={account.unrealizedPnlHKD >= 0 ? 'good' : 'danger'} />
             </div>
-          </div>
-        )}
-      </div>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -2634,7 +2362,7 @@ function AccountPositionModal(props: {
                   <TradeTh label="股票" sortKey="symbol" filterKey="stock" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} />
                   <TradeTh label="市场" sortKey="market" filterKey="market" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} />
                   <TradeTh label="持仓股数" sortKey="shares" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
-                  <TradeTh label="平均成本/股" sortKey="averageCostHKD" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
+                  <TradeTh label="平均成本HKD/股" sortKey="averageCostHKD" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
                   <TradeTh label="当前价格" sortKey="lastClose" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
                   <TradeTh label="持仓市值" sortKey="marketValueHKD" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
                   <TradeTh label="已实现盈亏" sortKey="realizedPnlHKD" tradeSort={positionSort} toggleSort={toggleSort} filters={positionFilters} updateFilter={updateFilter} align="right" />
@@ -2650,7 +2378,7 @@ function AccountPositionModal(props: {
                     <td className="px-4 py-3"><div className="font-bold">{position.stockName}</div><div className="text-xs text-slate-400">{position.symbol}</div></td>
                     <td className="px-4 py-3">{position.market}</td>
                     <td className="px-4 py-3 text-right font-mono">{formatNumber(position.shares, 4)}</td>
-                    <td className="px-4 py-3 text-right font-mono">{formatNumber(position.fxToHKD > 0 ? position.averageCostHKD / position.fxToHKD : position.averageCostHKD, 4)}</td>
+                    <td className="px-4 py-3 text-right font-mono">{formatNumber(position.averageCostHKD, 4)}</td>
                     <td className="px-4 py-3 text-right font-mono">{formatNumber(position.lastClose, 4)}</td>
                     <td className="px-4 py-3 text-right font-bold">{formatHKD(position.marketValueHKD)}</td>
                     <td className={`px-4 py-3 text-right font-bold ${position.realizedPnlHKD >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatHKD(position.realizedPnlHKD)}</td>
@@ -2694,40 +2422,6 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   return <div className="rounded-2xl bg-white/10 p-3"><div className="text-teal-50/70">{label}</div><div className="mt-1 font-bold">{value}</div></div>;
 }
 
-function CurveLegend({ items, hiddenKeys, onToggle }: {
-  items: { key: string; label: string; color: string }[];
-  hiddenKeys: Set<string>;
-  onToggle: (key: string) => void;
-}) {
-  return (
-    <div className="mt-2 flex flex-wrap justify-center gap-2 px-2 text-xs">
-      {items.map((item) => {
-        const hidden = hiddenKeys.has(item.key);
-        return (
-          <button
-            key={item.key}
-            type="button"
-            onClick={() => onToggle(item.key)}
-            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 font-bold transition ${
-              hidden
-                ? 'border-stone-200 bg-stone-100 text-slate-400 line-through'
-                : 'border-stone-200 bg-white text-slate-700 hover:border-teal-300 hover:text-teal-700'
-            }`}
-            title={hidden ? '点击显示曲线' : '点击隐藏曲线'}
-          >
-            <span className="h-2.5 w-5 rounded-full" style={{ background: hidden ? '#cbd5e1' : item.color }} />
-            {item.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function pointKey(value: number) {
-  return Number.isFinite(value) ? value.toFixed(8) : 'nan';
-}
-
 function buildCurveChartData(views: ResearcherView[], weights: VoiceWeight[], quote?: MarketQuote) {
   if (!quote || views.length === 0) return [];
   const allPrices = views.flatMap((view) => normalizePoints(view.points).map((point) => point.price));
@@ -2737,11 +2431,7 @@ function buildCurveChartData(views: ResearcherView[], weights: VoiceWeight[], qu
   const padding = Math.max((max - min) * 0.12, Math.max(quote.close, 1) * 0.06);
   const from = Math.max(0.01, min - padding);
   const to = max + padding;
-  const priceMap = new Map<string, number>();
-  Array.from({ length: 110 }, (_, index) => from + ((to - from) * index) / 109)
-    .concat(allPrices)
-    .forEach((price) => priceMap.set(pointKey(price), price));
-  const prices = Array.from(priceMap.values()).sort((a, b) => a - b);
+  const prices = Array.from({ length: 110 }, (_, index) => from + ((to - from) * index) / 109);
   return prices.map((price, index) => {
     const row: Record<string, number> = { price };
     let master = 0;
@@ -2753,181 +2443,6 @@ function buildCurveChartData(views: ResearcherView[], weights: VoiceWeight[], qu
     row['合成曲线'] = master;
     return row;
   });
-}
-
-function buildViewsFromTradesForHistory(trades: SimulationTradeLedger[]): ResearcherView[] {
-  const map = new Map<string, ResearcherView>();
-  trades.forEach((trade) => {
-    const key = symbolKey(trade.symbol || trade.code, trade.market);
-    if (map.has(key)) return;
-    const currency = normalizeCurrency(trade.priceCurrency || trade.market);
-    map.set(key, {
-      id: `nav_${key}`,
-      researcherName: 'NAV',
-      symbol: trade.symbol || trade.code,
-      market: trade.market || currency,
-      stockName: trade.stockName || trade.name || trade.symbol || trade.code,
-      priceCurrency: currency,
-      effectiveDate: trade.date || todayInput(),
-      versionNo: 1,
-      minTradeShares: 1,
-      allowNonMonotonic: false,
-      status: 'active',
-      note: '',
-      hasResearchNote: false,
-      researchNoteID: '',
-      points: [],
-      createdAt: trade.createdAt || '',
-      updatedAt: trade.createdAt || '',
-      lastConfidenceAt: trade.date || todayInput(),
-    });
-  });
-  return Array.from(map.values());
-}
-
-function buildPlayerNavSeries(params: {
-  dates: string[];
-  trades: SimulationTradeLedger[];
-  maxCapitalHKD: number;
-  historyMap: HistoricalQuoteMap;
-  players: ContestPlayer[];
-}): PlayerNavPoint[] {
-  const names = new Set<string>();
-  params.players.filter((player) => player.status === 'active').forEach((player) => names.add(player.name));
-  params.trades.forEach((trade) => names.add(trade.researcherName || trade.account));
-  const playerNames = Array.from(names).filter(Boolean).sort();
-  const cash = new Map(playerNames.map((name) => [name, params.maxCapitalHKD]));
-  const holdings = new Map<string, Map<string, { symbol: string; market: string; stockName: string; shares: number; lastClose: number; fxToHKD: number }>>();
-  const previousEquity = new Map<string, number>();
-  const lastQuotes = new Map<string, MarketQuote>();
-  const tradesByDate = new Map<string, SimulationTradeLedger[]>();
-  [...params.trades]
-    .sort((a, b) => `${a.date}-${a.createdAt}`.localeCompare(`${b.date}-${b.createdAt}`))
-    .forEach((trade) => tradesByDate.set(trade.date, [...(tradesByDate.get(trade.date) || []), trade]));
-
-  const points: PlayerNavPoint[] = [];
-  params.dates.forEach((date) => {
-    Object.entries(params.historyMap).forEach(([key, quotesByDate]) => {
-      if (quotesByDate[date]) lastQuotes.set(key, quotesByDate[date]);
-    });
-
-    (tradesByDate.get(date) || []).forEach((trade) => {
-      const researcherName = trade.researcherName || trade.account;
-      if (!researcherName) return;
-      if (!cash.has(researcherName)) cash.set(researcherName, params.maxCapitalHKD);
-      if (!holdings.has(researcherName)) holdings.set(researcherName, new Map());
-      const key = symbolKey(trade.symbol || trade.code, trade.market);
-      const quote = params.historyMap[key]?.[date] || {
-        symbol: trade.symbol || trade.code,
-        close: Number(trade.close || trade.tradePrice || trade.price || 0),
-        priceCurrency: normalizeCurrency(trade.priceCurrency || trade.market),
-        fxToHKD: Number(trade.fxToHKD || 1),
-        name: trade.stockName || trade.name,
-      };
-      if (quote.close > 0) lastQuotes.set(key, quote);
-      cash.set(researcherName, (cash.get(researcherName) ?? params.maxCapitalHKD) - getLedgerAmountHKD(trade));
-      const accountHoldings = holdings.get(researcherName)!;
-      const existing = accountHoldings.get(key) || {
-        symbol: trade.symbol || trade.code,
-        market: trade.market,
-        stockName: trade.stockName || trade.name || trade.symbol || trade.code,
-        shares: 0,
-        lastClose: quote.close,
-        fxToHKD: quote.fxToHKD,
-      };
-      existing.shares += Number(trade.quantity || trade.tradeShares || 0);
-      existing.lastClose = quote.close || existing.lastClose;
-      existing.fxToHKD = quote.fxToHKD || existing.fxToHKD || 1;
-      if (Math.abs(existing.shares) <= 1e-9) accountHoldings.delete(key);
-      else accountHoldings.set(key, existing);
-    });
-
-    playerNames.forEach((researcherName) => {
-      const accountHoldings = holdings.get(researcherName) || new Map();
-      let marketValueHKD = 0;
-      accountHoldings.forEach((position, key) => {
-        const quote = params.historyMap[key]?.[date] || lastQuotes.get(key);
-        const close = quote?.close || position.lastClose || 0;
-        const fxToHKD = quote?.fxToHKD || position.fxToHKD || 1;
-        if (close > 0 && fxToHKD > 0) {
-          position.lastClose = close;
-          position.fxToHKD = fxToHKD;
-          marketValueHKD += position.shares * close * fxToHKD;
-        }
-      });
-      const cashHKD = cash.get(researcherName) ?? params.maxCapitalHKD;
-      const equityHKD = cashHKD + marketValueHKD;
-      const previous = previousEquity.get(researcherName);
-      const dailyReturn = previous && previous > 0 ? equityHKD / previous - 1 : 0;
-      previousEquity.set(researcherName, equityHKD);
-      points.push({
-        date,
-        researcherName,
-        cashHKD,
-        marketValueHKD,
-        equityHKD,
-        pnlHKD: equityHKD - params.maxCapitalHKD,
-        nav: params.maxCapitalHKD > 0 ? equityHKD / params.maxCapitalHKD : 1,
-        dailyReturn,
-      });
-    });
-  });
-
-  return points;
-}
-
-function getLedgerAmountHKD(trade: SimulationTradeLedger) {
-  const amount = Number(trade.amount);
-  if (Number.isFinite(amount) && Math.abs(amount) > 1e-9) return amount;
-  const value = Math.abs(Number(trade.tradeValueHKD || 0));
-  const fee = Number(trade.tradingCostHKD || trade.fee || 0);
-  if ((trade.side || trade.direction) === 'BUY') return value + fee;
-  if ((trade.side || trade.direction) === 'SELL') return -(value - fee);
-  return 0;
-}
-
-function buildNavChartData(series: PlayerNavPoint[]) {
-  const map = new Map<string, Record<string, string | number>>();
-  series.forEach((point) => {
-    const row = map.get(point.date) || { date: point.date };
-    row[point.researcherName] = point.nav;
-    map.set(point.date, row);
-  });
-  return Array.from(map.values()).sort((a, b) => String(a.date).localeCompare(String(b.date)));
-}
-
-function calculatePlayerPerformance(series: PlayerNavPoint[], annualRiskFreeRate: number) {
-  const byPlayer = new Map<string, PlayerNavPoint[]>();
-  series.forEach((point) => byPlayer.set(point.researcherName, [...(byPlayer.get(point.researcherName) || []), point]));
-  const dailyRiskFreeRate = annualRiskFreeRate / 252;
-
-  return Array.from(byPlayer.entries()).map(([researcherName, points]) => {
-    const sorted = [...points].sort((a, b) => a.date.localeCompare(b.date));
-    if (sorted.length < 2) return { researcherName, annualizedReturn: 0, maxDrawdown: 0, sharpeRatio: 0 };
-    const firstNav = sorted[0].nav || 1;
-    const lastNav = sorted[sorted.length - 1].nav || firstNav;
-    const periods = Math.max(sorted.length - 1, 1);
-    const annualizedReturn = firstNav > 0 ? Math.pow(lastNav / firstNav, 252 / periods) - 1 : 0;
-
-    let peak = sorted[0].nav;
-    let maxDrawdown = 0;
-    sorted.forEach((point) => {
-      peak = Math.max(peak, point.nav);
-      if (peak > 0) maxDrawdown = Math.max(maxDrawdown, 1 - point.nav / peak);
-    });
-
-    const dailyReturns = sorted.slice(1).map((point, index) => {
-      const prev = sorted[index].nav;
-      return prev > 0 ? point.nav / prev - 1 : 0;
-    });
-    const excessReturns = dailyReturns.map((value) => value - dailyRiskFreeRate);
-    const avgExcessReturn = excessReturns.reduce((sum, value) => sum + value, 0) / Math.max(excessReturns.length, 1);
-    const variance = excessReturns.reduce((sum, value) => sum + Math.pow(value - avgExcessReturn, 2), 0) / Math.max(excessReturns.length - 1, 1);
-    const dailyVol = Math.sqrt(variance);
-    const sharpeRatio = dailyVol > 0 ? (avgExcessReturn / dailyVol) * Math.sqrt(252) : 0;
-
-    return { researcherName, annualizedReturn, maxDrawdown, sharpeRatio };
-  }).sort((a, b) => b.annualizedReturn - a.annualizedReturn);
 }
 
 type HistoricalQuoteMap = Record<string, Record<string, MarketQuote>>;
@@ -3078,19 +2593,6 @@ function getPendingRunDates(startDate: string, endDate: string, existingRunDates
   return dates;
 }
 
-function getBusinessDates(startDate: string, endDate: string) {
-  const dates: string[] = [];
-  const cursor = new Date(`${startDate}T00:00:00`);
-  const end = new Date(`${endDate}T00:00:00`);
-  while (cursor <= end) {
-    const date = cursor.toISOString().slice(0, 10);
-    const day = cursor.getDay();
-    if (day !== 0 && day !== 6) dates.push(date);
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return dates;
-}
-
 function nextBusinessDate(date: string) {
   const cursor = new Date(`${date}T00:00:00`);
   do {
@@ -3198,7 +2700,7 @@ function parseExcelImportRows(text: string, stockPool: any[], existingViews: Res
 }
 
 function buildViewsExportText(views: ResearcherView[]) {
-  const header = ['研究员', '股票代码', '观点生效日', '价格点', '目标市值点', '最小成交股数', '备注', '币种'].join('\t');
+  const header = ['研究员', '股票代码', '观点生效日', '价格点', '目标市值点', '最小成交股数', '备注', '股票名称', '币种', '版本号', '状态'].join('\t');
   const rows = [...views]
     .sort((a, b) => `${a.researcherName}-${a.symbol}-${a.effectiveDate}`.localeCompare(`${b.researcherName}-${b.symbol}-${b.effectiveDate}`))
     .map((view) => {
@@ -3213,7 +2715,10 @@ function buildViewsExportText(views: ResearcherView[]) {
         valueText,
         normalizeMinTradeShares(view.minTradeShares),
         sanitizeTsvCell(view.note || ''),
+        sanitizeTsvCell(view.stockName || ''),
         view.priceCurrency,
+        `v${view.versionNo || 1}`,
+        view.status,
       ].join('\t');
     });
   return [header, ...rows].join('\n');

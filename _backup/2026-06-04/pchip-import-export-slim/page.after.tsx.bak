@@ -3198,7 +3198,7 @@ function parseExcelImportRows(text: string, stockPool: any[], existingViews: Res
 }
 
 function buildViewsExportText(views: ResearcherView[]) {
-  const header = ['研究员', '股票代码', '观点生效日', '价格点', '目标市值点', '最小成交股数', '备注', '币种'].join('\t');
+  const header = ['研究员', '股票代码', '观点生效日', '价格点', '目标市值点', '最小成交股数', '备注', '股票名称', '币种'].join('\t');
   const rows = [...views]
     .sort((a, b) => `${a.researcherName}-${a.symbol}-${a.effectiveDate}`.localeCompare(`${b.researcherName}-${b.symbol}-${b.effectiveDate}`))
     .map((view) => {
@@ -3213,6 +3213,7 @@ function buildViewsExportText(views: ResearcherView[]) {
         valueText,
         normalizeMinTradeShares(view.minTradeShares),
         sanitizeTsvCell(view.note || ''),
+        sanitizeTsvCell(view.stockName || ''),
         view.priceCurrency,
       ].join('\t');
     });
