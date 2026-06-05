@@ -1,0 +1,420 @@
+'use client';
+
+import React, { useEffect, useMemo, useState } from 'react';
+import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+import { collection, deleteDoc, doc, getDoc, getDocs, setDoc } from 'firebase/firestore';
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import { Database, Loader2, RefreshCw, Save, Trash2, TrendingUp } from 'lucide-react';
+
+import { auth, db, APP_ID } from '@/app/lib/stockService';
+import {
+  START_ASSETS,
+  buildInitialPortfolioState,
+  calculateNavSeries,
+  calculatePerformanceStats,
+  type CapitalFlow,
+  type InitialPortfolioState,
+  type PortfolioSnapshot,
+  type StartAssetId,
+  type StartConfig,
+  type StartRecord,
+} from '@/app/book/SP_wjhh1/lib/portfolioNavEngine';
+
+const NAV_CONFIG_COLLECTION = 'sip_holding_summary_nav_config';
+const SNAPSHOT_COLLECTION = 'sip_holding_summary_snapshots';
+const CASH_TRADE_COLLECTION = 'sip_trade_cash';
+
+type CashTradeRecord = {
+  id?: string;
+  date?: string;
+  account?: string;
+  currency?: string;
+  amount?: number;
+  type?: string;
+  remark?: string;
+  createdAt?: any;
+};
+
+export default function HoldingsPerformancePage() {
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshingInitial, setRefreshingInitial] = useState(false);
+  const [savingInitial, setSavingInitial] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  const [initialState, setInitialState] = useState<InitialPortfolioState | null>(null);
+  const [snapshots, setSnapshots] = useState<PortfolioSnapshot[]>([]);
+  const [flows, setFlows] = useState<CapitalFlow[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    async function init() {
+      try {
+        if (!auth.currentUser) {
+          // @ts-ignore
+          if (typeof window !== 'undefined' && window.__initial_auth_token) await signInWithCustomToken(auth, window.__initial_auth_token);
+          else await signInAnonymously(auth);
+        }
+        onAuthStateChanged(auth, async (currentUser) => {
+          if (!mounted) return;
+          setUser(currentUser);
+          if (currentUser) await loadAll();
+        });
+      } catch (err: any) {
+        setError(err?.message || '初始化失败');
+        setLoading(false);
+      }
+    }
+    void init();
+    return () => { mounted = false; };
+  }, []);
+
+  async function loadAll() {
+    setLoading(true);
+    setError('');
+    try {
+      const [configSnap, snapshotSnap, cashTradeSnap] = await Promise.all([
+        getDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', NAV_CONFIG_COLLECTION, 'global')),
+        getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', SNAPSHOT_COLLECTION)),
+        getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', CASH_TRADE_COLLECTION)),
+      ]);
+      const savedInitialState = configSnap.exists() ? configSnap.data() as InitialPortfolioState : null;
+      setInitialState(savedInitialState);
+      setSnapshots(snapshotSnap.docs.map((item) => ({ id: item.id, ...item.data() } as PortfolioSnapshot)).sort((a, b) => a.snapshotAt.localeCompare(b.snapshotAt)));
+      setFlows(buildCapitalFlowsFromCashTrades(
+        cashTradeSnap.docs.map((item) => ({ id: item.id, ...item.data() } as CashTradeRecord)),
+        savedInitialState?.fxRates || { HKD: 1 },
+      ));
+    } catch (err: any) {
+      setError(err?.message || '读取净值数据失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function rebuildInitialStateFromStarts() {
+    setRefreshingInitial(true);
+    setError('');
+    setMessage('');
+    try {
+      const configs = {} as Record<StartAssetId, StartConfig>;
+      const records = {} as Record<StartAssetId, StartRecord[]>;
+      await Promise.all(START_ASSETS.map(async (asset) => {
+        const [configSnap, recordsSnap] = await Promise.all([
+          getDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', asset.collection, '_global_config')),
+          getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', asset.collection)),
+        ]);
+        configs[asset.id] = configSnap.exists() ? configSnap.data() as StartConfig : {};
+        records[asset.id] = recordsSnap.docs
+          .filter((item) => item.id !== '_global_config' && item.id !== 'latest_summary')
+          .map((item) => ({ id: item.id, ...item.data() } as StartRecord));
+      }));
+      const nextInitialState = buildInitialPortfolioState({ configs, records });
+      setInitialState(nextInitialState);
+      setMessage('已读取四个期初库并生成候选净值起点。');
+    } catch (err: any) {
+      setError(err?.message || '读取期初数据失败');
+    } finally {
+      setRefreshingInitial(false);
+    }
+  }
+
+  async function saveInitialState() {
+    if (!initialState) return;
+    setSavingInitial(true);
+    setError('');
+    try {
+      await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', NAV_CONFIG_COLLECTION, 'global'), {
+        ...initialState,
+        updatedAt: new Date().toISOString(),
+      });
+      setMessage('已保存为净值曲线起点。');
+    } catch (err: any) {
+      setError(err?.message || '保存净值起点失败');
+    } finally {
+      setSavingInitial(false);
+    }
+  }
+
+  async function deleteSnapshot(snapshot: PortfolioSnapshot) {
+    if (!snapshot.id) return;
+    if (!window.confirm(`确认删除 ${snapshot.snapshotAt} 的快照吗？`)) return;
+    await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', SNAPSHOT_COLLECTION, snapshot.id));
+    setSnapshots((prev) => prev.filter((item) => item.id !== snapshot.id));
+  }
+
+  const navSeries = useMemo(() => calculateNavSeries(initialState, snapshots, flows), [initialState, snapshots, flows]);
+  const performanceStats = useMemo(() => calculatePerformanceStats(navSeries), [navSeries]);
+  const chartData = useMemo(() => navSeries.map((point) => ({
+    date: point.date,
+    unitNav: point.unitNav,
+    totalMarketValueHKD: point.totalMarketValueHKD,
+    cumulativeReturn: point.cumulativeReturn,
+    cumulativeProfitHKD: point.cumulativeProfitHKD,
+  })), [navSeries]);
+
+  if (loading) {
+    return <div className="flex min-h-[420px] items-center justify-center"><Loader2 className="animate-spin text-indigo-600" size={36} /></div>;
+  }
+
+  return (
+    <div className="mx-auto max-w-[1500px] space-y-6 pb-10">
+      <header className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-black uppercase tracking-wide text-indigo-500">
+              <TrendingUp size={18} /> Portfolio Performance
+            </div>
+            <h1 className="mt-2 text-2xl font-black text-slate-900">净值表现与收益曲线</h1>
+            <p className="mt-1 text-sm text-slate-500">用期初资产底稿、Summary 快照和出入金记录，构造剥离外部资金扰动后的单位净值曲线。</p>
+          </div>
+          <button onClick={loadAll} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-50">
+            <RefreshCw className="mr-2 inline h-4 w-4" /> 刷新数据
+          </button>
+        </div>
+        {error && <div className="mt-4 whitespace-pre-line rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">{error}</div>}
+        {message && <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700">{message}</div>}
+      </header>
+
+      <section className="grid gap-4 md:grid-cols-4">
+        <MetricCard label="期初净资产 HKD" value={formatHKD(initialState?.initialCapitalHKD || 0)} />
+        <MetricCard label="最新单位净值" value={formatNumber(performanceStats.latestNav, 4)} />
+        <MetricCard label="累计收益率" value={formatPercent(performanceStats.cumulativeReturn)} tone={performanceStats.cumulativeReturn >= 0 ? 'good' : 'bad'} />
+        <MetricCard label="最大回撤" value={formatPercent(performanceStats.maxDrawdown)} tone="bad" />
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="font-black text-slate-900">期初状态</h2>
+              <p className="mt-1 text-xs text-slate-500">四个 start 库的 baseDate 必须完全一致，否则拒绝生成净值起点。</p>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={rebuildInitialStateFromStarts} disabled={refreshingInitial} className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                {refreshingInitial ? <Loader2 className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
+                读取期初底稿
+              </button>
+              <button onClick={saveInitialState} disabled={!initialState || savingInitial} className="inline-flex items-center gap-2 rounded-full bg-indigo-600 px-4 py-2 text-xs font-black text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
+                {savingInitial ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                设为净值起点
+              </button>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <SmallInfo label="期初日期" value={initialState?.inceptionDate || '--'} />
+            <SmallInfo label="明细条数" value={`${initialState?.details.length || 0} 条`} />
+          </div>
+          <div className="mt-4 max-h-[280px] overflow-auto rounded-2xl border border-slate-200">
+            <table className="w-full min-w-[760px] text-xs">
+              <thead className="sticky top-0 bg-slate-50 text-left text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">资产</th>
+                  <th className="px-3 py-2">账户</th>
+                  <th className="px-3 py-2">标的</th>
+                  <th className="px-3 py-2 text-right">原币金额</th>
+                  <th className="px-3 py-2 text-right">汇率</th>
+                  <th className="px-3 py-2 text-right">HKD</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {(initialState?.details || []).map((detail) => (
+                  <tr key={`${detail.assetId}_${detail.id}`}>
+                    <td className="px-3 py-2 font-bold uppercase text-slate-700">{detail.assetId}</td>
+                    <td className="px-3 py-2">{detail.account}</td>
+                    <td className="px-3 py-2">{detail.label}</td>
+                    <td className="px-3 py-2 text-right font-mono">{formatNumber(detail.amountLocal, 2)} {detail.currency}</td>
+                    <td className="px-3 py-2 text-right font-mono">{formatNumber(detail.fxRate, 4)}</td>
+                    <td className="px-3 py-2 text-right font-mono font-bold">{formatHKD(detail.amountHKD)}</td>
+                  </tr>
+                ))}
+                {!initialState && <tr><td colSpan={6} className="px-3 py-8 text-center text-slate-400">尚未读取或保存期初状态。</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="font-black text-slate-900">净值曲线</h2>
+          <p className="mt-1 text-xs text-slate-500">单位净值扣除了区间出入金影响；总资产曲线保留真实资产规模。</p>
+          <div className="mt-4 h-[360px] rounded-2xl bg-slate-50 p-3">
+            {chartData.length <= 1 ? (
+              <div className="flex h-full items-center justify-center text-sm text-slate-400">保存至少一条 Summary 快照后展示净值曲线。</div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 12, right: 24, left: 0, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                  <YAxis yAxisId="nav" tickFormatter={(value) => Number(value).toFixed(3)} width={54} />
+                  <YAxis yAxisId="hkd" orientation="right" tickFormatter={(value) => `${(Number(value) / 10000).toFixed(0)}w`} width={64} />
+                  <Tooltip formatter={(value: any, name: any) => [name === 'totalMarketValueHKD' ? formatHKD(Number(value)) : formatNumber(Number(value), 4), chartLabel(String(name))]} />
+                  <Line yAxisId="nav" type="monotone" dataKey="unitNav" stroke="#4f46e5" strokeWidth={3} dot={{ r: 3 }} />
+                  <Line yAxisId="hkd" type="monotone" dataKey="totalMarketValueHKD" stroke="#0f766e" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="font-black text-slate-900">中央资金出入金</h2>
+          <p className="mt-1 text-xs leading-5 text-slate-500">
+            自动读取 <span className="font-mono font-bold">sip_trade_cash</span> 中 <span className="font-mono font-bold">DEPOSIT_WITHDRAW</span> 类型流水。FX、分红、费用和利息不视为外部出入金。
+          </p>
+          <div className="mt-4 max-h-[260px] overflow-auto rounded-2xl border border-slate-200">
+            <table className="w-full min-w-[760px] text-xs">
+              <thead className="sticky top-0 bg-slate-50 text-left text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">日期</th>
+                  <th className="px-3 py-2">方向</th>
+                  <th className="px-3 py-2">账户</th>
+                  <th className="px-3 py-2 text-right">原币金额</th>
+                  <th className="px-3 py-2 text-right">折算汇率</th>
+                  <th className="px-3 py-2 text-right">金额HKD</th>
+                  <th className="px-3 py-2">备注</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {flows.map((flow) => (
+                  <tr key={flow.id || `${flow.flowDate}_${flow.amountHKD}`}>
+                    <td className="px-3 py-2">{flow.flowDate}</td>
+                    <td className={`px-3 py-2 font-bold ${flow.direction === 'IN' ? 'text-emerald-700' : 'text-rose-700'}`}>{flow.direction}</td>
+                    <td className="px-3 py-2">{flow.account || '--'}</td>
+                    <td className={`px-3 py-2 text-right font-mono ${flow.direction === 'IN' ? 'text-emerald-700' : 'text-rose-700'}`}>
+                      {formatSignedNumber(flow.originalAmount || 0, 2)} {flow.currency || 'HKD'}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono">{formatNumber(flow.fxRate || 1, 4)}</td>
+                    <td className="px-3 py-2 text-right font-mono">{formatHKD(flow.amountHKD)}</td>
+                    <td className="px-3 py-2">{flow.note || '--'}</td>
+                  </tr>
+                ))}
+                {flows.length === 0 && <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-400">暂无中央资金出入金记录。</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="font-black text-slate-900">历史快照</h2>
+          <div className="mt-4 max-h-[420px] overflow-auto rounded-2xl border border-slate-200">
+            <table className="w-full min-w-[760px] text-xs">
+              <thead className="sticky top-0 bg-slate-50 text-left text-slate-500">
+                <tr><th className="px-3 py-2">时间</th><th className="px-3 py-2 text-right">总持仓市值HKD</th><th className="px-3 py-2 text-right">总盈亏HKD</th><th className="px-3 py-2 text-right">区间出入金</th><th className="px-3 py-2 text-right">单位净值</th><th className="px-3 py-2"></th></tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {snapshots.map((snapshot) => {
+                  const navPoint = navSeries.find((point) => point.snapshotAt === snapshot.snapshotAt);
+                  return (
+                    <tr key={snapshot.id || snapshot.snapshotAt}>
+                      <td className="px-3 py-2 font-mono">{snapshot.snapshotAt.replace('T', ' ').slice(0, 19)}</td>
+                      <td className="px-3 py-2 text-right font-mono">{formatHKD(snapshot.totalMarketValueHKD)}</td>
+                      <td className={`px-3 py-2 text-right font-mono font-bold ${snapshot.totalPnlHKD >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatHKD(snapshot.totalPnlHKD)}</td>
+                      <td className="px-3 py-2 text-right font-mono">{navPoint ? formatHKD(navPoint.periodNetFlowHKD) : '--'}</td>
+                      <td className="px-3 py-2 text-right font-mono font-bold">{navPoint ? formatNumber(navPoint.unitNav, 4) : '--'}</td>
+                      <td className="px-3 py-2 text-right"><button onClick={() => deleteSnapshot(snapshot)} className="text-rose-600 hover:text-rose-800"><Trash2 size={14} /></button></td>
+                    </tr>
+                  );
+                })}
+                {snapshots.length === 0 && <tr><td colSpan={6} className="px-3 py-8 text-center text-slate-400">尚未保存 Summary 快照。</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="font-black text-slate-900">累计收益</h2>
+        <div className="mt-4 h-[260px] rounded-2xl bg-slate-50 p-3">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={chartData} margin={{ top: 12, right: 24, left: 0, bottom: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+              <YAxis tickFormatter={(value) => `${(Number(value) * 100).toFixed(1)}%`} width={60} />
+              <Tooltip formatter={(value: any) => [formatPercent(Number(value)), '累计收益率']} />
+              <Area type="monotone" dataKey="cumulativeReturn" stroke="#f97316" fill="#fed7aa" strokeWidth={2.5} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, tone = 'normal' }: { label: string; value: string; tone?: 'normal' | 'good' | 'bad' }) {
+  const toneClass = tone === 'good' ? 'text-emerald-700' : tone === 'bad' ? 'text-rose-700' : 'text-slate-900';
+  return <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><div className="text-xs font-bold text-slate-400">{label}</div><div className={`mt-2 text-2xl font-black ${toneClass}`}>{value}</div></div>;
+}
+
+function SmallInfo({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-2xl bg-slate-50 p-3"><div className="text-xs text-slate-400">{label}</div><div className="mt-1 font-black text-slate-800">{value}</div></div>;
+}
+
+function chartLabel(key: string) {
+  if (key === 'unitNav') return '单位净值';
+  if (key === 'totalMarketValueHKD') return '总资产HKD';
+  return key;
+}
+
+function buildCapitalFlowsFromCashTrades(records: CashTradeRecord[], fxRates: Record<string, number>): CapitalFlow[] {
+  return records
+    .filter((record) => record.type === 'DEPOSIT_WITHDRAW')
+    .map((record) => {
+      const originalAmount = Number(record.amount || 0);
+      const currency = String(record.currency || 'HKD').toUpperCase();
+      const fxRate = Number(fxRates[currency] || 1);
+      return {
+        id: record.id,
+        flowDate: record.date || '',
+        amountHKD: Math.abs(originalAmount * fxRate),
+        direction: originalAmount >= 0 ? 'IN' : 'OUT',
+        account: record.account || '',
+        note: record.remark || '',
+        sourceType: record.type,
+        sourceCollection: CASH_TRADE_COLLECTION,
+        currency,
+        originalAmount,
+        fxRate,
+        createdAt: normalizeTime(record.createdAt),
+      } as CapitalFlow;
+    })
+    .filter((flow) => flow.flowDate && flow.amountHKD > 0)
+    .sort((a, b) => a.flowDate.localeCompare(b.flowDate));
+}
+
+function normalizeTime(value: any) {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (value?.seconds) return new Date(value.seconds * 1000).toISOString();
+  if (value?.toDate) return value.toDate().toISOString();
+  return '';
+}
+
+function formatHKD(value: number) {
+  return `HK$${Number(value || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+}
+
+function formatNumber(value: number, digits = 2) {
+  return Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+function formatSignedNumber(value: number, digits = 2) {
+  const num = Number(value || 0);
+  return `${num > 0 ? '+' : ''}${formatNumber(num, digits)}`;
+}
+
+function formatPercent(value: number) {
+  return `${(Number(value || 0) * 100).toFixed(2)}%`;
+}

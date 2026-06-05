@@ -16,16 +16,6 @@ import {
 import { collection, doc, getDocs, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { auth, db, APP_ID } from '@/app/lib/stockService';
-import {
-  buildCapitalFlowsFromCashTrades,
-  signedCapitalFlowHKD,
-  type CapitalFlow,
-  type CashTradeRecord,
-  type InitialPortfolioState,
-} from '@/app/book/SP_wjhh1/lib/portfolioNavEngine';
-
-const NAV_CONFIG_COLLECTION = 'sip_holding_summary_nav_config';
-const CASH_TRADE_COLLECTION = 'sip_trade_cash';
 
 const ASSET_TYPES = [
   { id: 'cash', label: '现金' },
@@ -158,9 +148,6 @@ export default function SPWjhh1Dashboard() {
   const [fxRates, setFxRates] = useState<Record<string, number>>({ HKD: 1 });
   const [quotes, setQuotes] = useState<Record<string, number>>({});
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
-  const [initialState, setInitialState] = useState<InitialPortfolioState | null>(null);
-  const [cashTradeRecords, setCashTradeRecords] = useState<CashTradeRecord[]>([]);
-  const [capitalFlows, setCapitalFlows] = useState<CapitalFlow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -213,14 +200,6 @@ export default function SPWjhh1Dashboard() {
               });
             }));
           });
-
-          unsubs.push(onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', NAV_CONFIG_COLLECTION, 'global'), (snap) => {
-            setInitialState(snap.exists() ? snap.data() as InitialPortfolioState : null);
-          }));
-
-          unsubs.push(onSnapshot(collection(db, 'artifacts', APP_ID, 'public', 'data', CASH_TRADE_COLLECTION), (snap) => {
-            setCashTradeRecords(snap.docs.map((item) => ({ id: item.id, ...item.data() } as CashTradeRecord)));
-          }));
 
           setLoading(false);
         });
@@ -300,23 +279,6 @@ export default function SPWjhh1Dashboard() {
   }, [exposureRows.map(row => row.symbol).join('|')]);
 
   useEffect(() => {
-    let cancelled = false;
-    const rebuildCapitalFlows = async () => {
-      try {
-        const fallbackFxRates = initialState?.fxRates || { HKD: 1, ...fxRates };
-        const nextFlows = await buildCapitalFlowsFromCashTrades(cashTradeRecords, fallbackFxRates, CASH_TRADE_COLLECTION);
-        if (!cancelled) setCapitalFlows(nextFlows);
-      } catch (error) {
-        console.error('Capital flow rebuild failed:', error);
-        if (!cancelled) setCapitalFlows([]);
-      }
-    };
-
-    rebuildCapitalFlows();
-    return () => { cancelled = true; };
-  }, [cashTradeRecords, initialState, fxRates]);
-
-  useEffect(() => {
     const fetchActivities = async () => {
       try {
         const results = await Promise.all(ACTIVITY_SOURCES.map(async (source) => {
@@ -352,13 +314,7 @@ export default function SPWjhh1Dashboard() {
 
   const dashboard = useMemo(() => {
     const totalAum = ASSET_TYPES.reduce((sum, asset) => sum + sumMatrixByFx(mktSummaries[asset.id], fxRates), 0);
-    const attributionPnl = ASSET_TYPES.reduce((sum, asset) => sum + sumMatrixByFx(plSummaries[asset.id], fxRates, 'total'), 0);
-    const netCapitalFlowHKD = initialState
-      ? capitalFlows
-        .filter((flow) => flow.flowDate > initialState.inceptionDate && flow.flowDate <= new Date().toISOString().slice(0, 10))
-        .reduce((sum, flow) => sum + signedCapitalFlowHKD(flow), 0)
-      : 0;
-    const navPnl = initialState ? totalAum - initialState.initialCapitalHKD - netCapitalFlowHKD : attributionPnl;
+    const totalPnl = ASSET_TYPES.reduce((sum, asset) => sum + sumMatrixByFx(plSummaries[asset.id], fxRates, 'total'), 0);
 
     const enrichedExposure = exposureRows.map((row) => {
       const fxRate = fxRates[row.market] || 1;
@@ -386,15 +342,13 @@ export default function SPWjhh1Dashboard() {
 
     return {
       totalAum,
-      navPnl,
-      attributionPnl,
-      pnlDifference: navPnl - attributionPnl,
+      totalPnl,
       exposureCount: exposureRows.length,
       warningCount: exposureAlert + lossAlert,
       maxExposure,
       maxLoss,
     };
-  }, [mktSummaries, plSummaries, fxRates, exposureRows, quotes, initialState, capitalFlows]);
+  }, [mktSummaries, plSummaries, fxRates, exposureRows, quotes]);
 
   const defaultLogs: ActivityLog[] = [
     { action: '暂无新交易录入', detail: '等待 Firebase 交易流水', time: '--', timestamp: 0, type: 'trade' },
@@ -426,14 +380,12 @@ export default function SPWjhh1Dashboard() {
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col">
           <div className="text-sm text-gray-500 font-medium mb-2 flex items-center gap-2">
             <Activity size={16} className="text-purple-500" />
-            净值盈亏
+            总盈亏 (PnL)
           </div>
-          <div className={`text-2xl font-bold ${dashboard.navPnl >= 0 ? 'text-red-600' : 'text-green-600'}`}>
-            {loading ? <Loader2 size={22} className="animate-spin text-gray-400" /> : `${formatSignedMoney(dashboard.navPnl)} HKD`}
+          <div className={`text-2xl font-bold ${dashboard.totalPnl >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+            {loading ? <Loader2 size={22} className="animate-spin text-gray-400" /> : `${formatSignedMoney(dashboard.totalPnl)} HKD`}
           </div>
-          <div className="text-xs text-gray-400 mt-2">
-            归因盈亏 {formatSignedMoney(dashboard.attributionPnl)} / 差异 {formatSignedMoney(dashboard.pnlDifference)}
-          </div>
+          <div className="text-xs text-gray-400 mt-2">已实现与未实现合计</div>
         </div>
 
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col">

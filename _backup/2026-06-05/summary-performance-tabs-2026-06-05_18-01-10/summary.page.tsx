@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
+import Link from 'next/link';
 import { 
   LineChart, 
   Loader2, 
@@ -22,15 +23,7 @@ import {
 } from 'recharts';
 
 import { auth, db, APP_ID } from '@/app/lib/stockService';
-import {
-  buildCapitalFlowsFromCashTrades,
-  buildPortfolioSnapshot,
-  signedCapitalFlowHKD,
-  type CapitalFlow,
-  type CashTradeRecord,
-  type InitialPortfolioState,
-} from '@/app/book/SP_wjhh1/lib/portfolioNavEngine';
-import PerformanceHistoryTab from './PerformanceHistoryTab';
+import { buildPortfolioSnapshot, type CapitalFlow, type InitialPortfolioState } from '@/app/book/SP_wjhh1/lib/portfolioNavEngine';
 
 const NAV_CONFIG_COLLECTION = 'sip_holding_summary_nav_config';
 const CASH_TRADE_COLLECTION = 'sip_trade_cash';
@@ -56,11 +49,21 @@ interface MatrixData {
   updatedAt?: string;
 }
 
+type CashTradeRecord = {
+  id?: string;
+  date?: string;
+  account?: string;
+  currency?: string;
+  amount?: number;
+  type?: string;
+  remark?: string;
+  createdAt?: any;
+};
+
 export default function SummaryHoldingsPage() {
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'snapshot' | 'performance'>('snapshot');
 
   // --- 数据源 State ---
   const [mktDataMap, setMktDataMap] = useState<Record<string, MatrixData>>({});
@@ -77,21 +80,6 @@ export default function SummaryHoldingsPage() {
   const [showFxModal, setShowFxModal] = useState(false);
   const [isSavingSnapshot, setIsSavingSnapshot] = useState(false);
   const [snapshotMessage, setSnapshotMessage] = useState('');
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const tab = new URLSearchParams(window.location.search).get('tab');
-    if (tab === 'performance') setActiveTab('performance');
-  }, []);
-
-  const switchTab = (tab: 'snapshot' | 'performance') => {
-    setActiveTab(tab);
-    if (typeof window === 'undefined') return;
-    const nextUrl = tab === 'performance'
-      ? '/book/SP_wjhh1/holdings/summary?tab=performance'
-      : '/book/SP_wjhh1/holdings/summary';
-    window.history.replaceState(null, '', nextUrl);
-  };
   
   // 模块1 State
   const [mktPctView, setMktPctView] = useState(false);
@@ -434,13 +422,13 @@ export default function SummaryHoldingsPage() {
           </p>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
-            <button
-                onClick={() => switchTab('performance')}
+            <Link
+                href="/book/SP_wjhh1/holdings/performance"
                 className="px-3 py-2 text-sm rounded border bg-white hover:bg-gray-50 text-gray-600 transition-colors shadow-sm flex items-center gap-1"
             >
                 <TrendingUp size={16} className="text-emerald-500" />
                 查看净值表现
-            </button>
+            </Link>
             <button 
                 onClick={handleSaveSnapshot}
                 disabled={isSavingSnapshot}
@@ -471,24 +459,6 @@ export default function SummaryHoldingsPage() {
           <AlertCircle size={20} /> {error}
         </div>
       )}
-
-      <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
-        <button
-          onClick={() => switchTab('snapshot')}
-          className={`rounded-xl px-4 py-2 text-sm font-black transition-colors ${activeTab === 'snapshot' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}
-        >
-          当前快照
-        </button>
-        <button
-          onClick={() => switchTab('performance')}
-          className={`rounded-xl px-4 py-2 text-sm font-black transition-colors ${activeTab === 'performance' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}
-        >
-          净值历史表现
-        </button>
-      </div>
-
-      {activeTab === 'snapshot' ? (
-      <>
 
       <div className="grid gap-3 md:grid-cols-5">
         <div className="rounded-2xl border border-indigo-100 bg-indigo-50 px-4 py-3">
@@ -791,11 +761,6 @@ export default function SummaryHoldingsPage() {
           </div>
       )}
 
-      </>
-      ) : (
-        <PerformanceHistoryTab />
-      )}
-
     </div>
   );
 }
@@ -804,4 +769,110 @@ function pnlToneClass(value: number) {
   if (value > 0) return 'text-red-700';
   if (value < 0) return 'text-green-700';
   return 'text-slate-700';
+}
+
+function signedCapitalFlowHKD(flow: CapitalFlow) {
+  const amount = Math.abs(Number(flow.amountHKD || 0));
+  return flow.direction === 'OUT' ? -amount : amount;
+}
+
+async function buildCapitalFlowsFromCashTrades(records: CashTradeRecord[], savedFxRates: Record<string, number>): Promise<CapitalFlow[]> {
+  const depositWithdrawRecords = records
+    .filter((record) => record.type === 'DEPOSIT_WITHDRAW')
+    .filter((record) => record.date && Number(record.amount || 0) !== 0);
+  const fxRateMap = await fetchHistoricalFxRates(depositWithdrawRecords, savedFxRates);
+
+  return depositWithdrawRecords
+    .map((record) => {
+      const originalAmount = Number(record.amount || 0);
+      const currency = String(record.currency || 'HKD').toUpperCase();
+      const fxInfo = fxRateMap.get(flowFxKey(currency, record.date || '')) || {
+        rate: Number(savedFxRates[currency] || 1),
+        source: 'saved' as const,
+      };
+      return {
+        id: record.id,
+        flowDate: record.date || '',
+        amountHKD: Math.abs(originalAmount * fxInfo.rate),
+        direction: originalAmount >= 0 ? 'IN' : 'OUT',
+        account: record.account || '',
+        note: record.remark || '',
+        sourceType: record.type,
+        sourceCollection: CASH_TRADE_COLLECTION,
+        currency,
+        originalAmount,
+        fxRate: fxInfo.rate,
+        fxRateSource: fxInfo.source,
+        createdAt: normalizeTime(record.createdAt),
+      } as CapitalFlow;
+    })
+    .filter((flow) => flow.flowDate && flow.amountHKD > 0)
+    .sort((a, b) => a.flowDate.localeCompare(b.flowDate));
+}
+
+type FxRateInfo = {
+  rate: number;
+  source: 'history' | 'saved' | 'fallback' | 'hkd';
+};
+
+async function fetchHistoricalFxRates(records: CashTradeRecord[], savedFxRates: Record<string, number>) {
+  const uniqueKeys = Array.from(new Set(records.map((record) => flowFxKey(record.currency || 'HKD', record.date || ''))));
+  const result = new Map<string, FxRateInfo>();
+
+  await Promise.all(uniqueKeys.map(async (key) => {
+    const [currency, date] = key.split('|');
+    if (!date) return;
+    if (currency === 'HKD') {
+      result.set(key, { rate: 1, source: 'hkd' });
+      return;
+    }
+
+    const savedRate = Number(savedFxRates[currency] || 0);
+    try {
+      const history = await fetchFxHistory(currency, date);
+      const latest = history
+        .filter((item) => item.date <= date && Number.isFinite(item.close) && item.close > 0)
+        .sort((a, b) => b.date.localeCompare(a.date))[0];
+      if (latest) {
+        result.set(key, { rate: latest.close, source: 'history' });
+        return;
+      }
+      result.set(key, { rate: savedRate > 0 ? savedRate : 1, source: savedRate > 0 ? 'saved' : 'fallback' });
+    } catch (err) {
+      result.set(key, { rate: savedRate > 0 ? savedRate : 1, source: savedRate > 0 ? 'saved' : 'fallback' });
+    }
+  }));
+
+  return result;
+}
+
+async function fetchFxHistory(currency: string, date: string): Promise<{ date: string; close: number }[]> {
+  const symbol = `${currency}HKD=X`;
+  const from = addDays(date, -10);
+  const to = addDays(date, 1);
+  const response = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&from=${from}&to=${to}`);
+  if (!response.ok) throw new Error(`FX history failed: ${symbol}`);
+  const payload = await response.json();
+  return (payload?.data || []).map((item: any) => ({
+    date: String(item.date || ''),
+    close: Number(item.adjClose ?? item.close),
+  }));
+}
+
+function flowFxKey(currency: string, date: string) {
+  return `${String(currency || 'HKD').trim().toUpperCase()}|${date || ''}`;
+}
+
+function addDays(date: string, days: number) {
+  const value = new Date(`${date}T00:00:00`);
+  value.setDate(value.getDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function normalizeTime(value: any) {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (value?.seconds) return new Date(value.seconds * 1000).toISOString();
+  if (value?.toDate) return value.toDate().toISOString();
+  return '';
 }

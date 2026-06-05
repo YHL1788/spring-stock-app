@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
+import Link from 'next/link';
 import { 
   LineChart, 
   Loader2, 
@@ -22,18 +23,7 @@ import {
 } from 'recharts';
 
 import { auth, db, APP_ID } from '@/app/lib/stockService';
-import {
-  buildCapitalFlowsFromCashTrades,
-  buildPortfolioSnapshot,
-  signedCapitalFlowHKD,
-  type CapitalFlow,
-  type CashTradeRecord,
-  type InitialPortfolioState,
-} from '@/app/book/SP_wjhh1/lib/portfolioNavEngine';
-import PerformanceHistoryTab from './PerformanceHistoryTab';
-
-const NAV_CONFIG_COLLECTION = 'sip_holding_summary_nav_config';
-const CASH_TRADE_COLLECTION = 'sip_trade_cash';
+import { buildPortfolioSnapshot } from '@/app/book/SP_wjhh1/lib/portfolioNavEngine';
 
 // --- 常量与映射字典 ---
 const ASSET_TYPES = [
@@ -60,15 +50,10 @@ export default function SummaryHoldingsPage() {
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'snapshot' | 'performance'>('snapshot');
 
   // --- 数据源 State ---
   const [mktDataMap, setMktDataMap] = useState<Record<string, MatrixData>>({});
   const [plDataMap, setPlDataMap] = useState<Record<string, MatrixData>>({});
-  const [initialState, setInitialState] = useState<InitialPortfolioState | null>(null);
-  const [cashTradeRecords, setCashTradeRecords] = useState<CashTradeRecord[]>([]);
-  const [capitalFlows, setCapitalFlows] = useState<CapitalFlow[]>([]);
-  const [isLoadingFlowFx, setIsLoadingFlowFx] = useState(false);
   
   // --- 控制面板 State ---
   const [isHKDView, setIsHKDView] = useState(false);
@@ -77,21 +62,6 @@ export default function SummaryHoldingsPage() {
   const [showFxModal, setShowFxModal] = useState(false);
   const [isSavingSnapshot, setIsSavingSnapshot] = useState(false);
   const [snapshotMessage, setSnapshotMessage] = useState('');
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const tab = new URLSearchParams(window.location.search).get('tab');
-    if (tab === 'performance') setActiveTab('performance');
-  }, []);
-
-  const switchTab = (tab: 'snapshot' | 'performance') => {
-    setActiveTab(tab);
-    if (typeof window === 'undefined') return;
-    const nextUrl = tab === 'performance'
-      ? '/book/SP_wjhh1/holdings/summary?tab=performance'
-      : '/book/SP_wjhh1/holdings/summary';
-    window.history.replaceState(null, '', nextUrl);
-  };
   
   // 模块1 State
   const [mktPctView, setMktPctView] = useState(false);
@@ -161,12 +131,6 @@ export default function SummaryHoldingsPage() {
                    }
                }));
             });
-            unsubs.push(onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', NAV_CONFIG_COLLECTION, 'global'), (docSnap) => {
-                setInitialState(docSnap.exists() ? docSnap.data() as InitialPortfolioState : null);
-            }));
-            unsubs.push(onSnapshot(collection(db, 'artifacts', APP_ID, 'public', 'data', CASH_TRADE_COLLECTION), (snap) => {
-                setCashTradeRecords(snap.docs.map((item) => ({ id: item.id, ...item.data() } as CashTradeRecord)));
-            }));
             setLoading(false);
           }
         });
@@ -222,24 +186,6 @@ export default function SummaryHoldingsPage() {
   useEffect(() => {
       if (allCurrencies.length > 0) fetchFxRates();
   }, [allCurrencies.join(',')]);
-
-  useEffect(() => {
-      let cancelled = false;
-      async function rebuildCapitalFlows() {
-          setIsLoadingFlowFx(true);
-          try {
-              const fallbackFxRates = initialState?.fxRates || { HKD: 1, ...globalFxRates };
-              const nextFlows = await buildCapitalFlowsFromCashTrades(cashTradeRecords, fallbackFxRates);
-              if (!cancelled) setCapitalFlows(nextFlows);
-          } catch (err) {
-              if (!cancelled) setCapitalFlows([]);
-          } finally {
-              if (!cancelled) setIsLoadingFlowFx(false);
-          }
-      }
-      void rebuildCapitalFlows();
-      return () => { cancelled = true; };
-  }, [cashTradeRecords, initialState, globalFxRates]);
 
   // =========================================================
   // 模块 1：市值矩阵聚合计算
@@ -367,24 +313,6 @@ export default function SummaryHoldingsPage() {
       });
   }, [mktDataMap, plDataMap, globalFxRates]);
 
-  const pnlBridge = useMemo(() => {
-      if (!initialState) return null;
-      const snapshotDate = currentSnapshotPreview.snapshotDate;
-      const netCapitalFlowHKD = capitalFlows
-          .filter((flow) => flow.flowDate > initialState.inceptionDate && flow.flowDate <= snapshotDate)
-          .reduce((sum, flow) => sum + signedCapitalFlowHKD(flow), 0);
-      const navPnlHKD = currentSnapshotPreview.totalMarketValueHKD - initialState.initialCapitalHKD - netCapitalFlowHKD;
-      const attributionPnlHKD = currentSnapshotPreview.totalPnlHKD;
-      return {
-          snapshotDate,
-          initialCapitalHKD: initialState.initialCapitalHKD,
-          netCapitalFlowHKD,
-          navPnlHKD,
-          attributionPnlHKD,
-          pnlDifferenceHKD: navPnlHKD - attributionPnlHKD,
-      };
-  }, [initialState, currentSnapshotPreview, capitalFlows]);
-
   const handleSaveSnapshot = async () => {
       if (!user) return;
       setIsSavingSnapshot(true);
@@ -434,18 +362,18 @@ export default function SummaryHoldingsPage() {
           </p>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
-            <button
-                onClick={() => switchTab('performance')}
+            <Link
+                href="/book/SP_wjhh1/holdings/performance"
                 className="px-3 py-2 text-sm rounded border bg-white hover:bg-gray-50 text-gray-600 transition-colors shadow-sm flex items-center gap-1"
             >
                 <TrendingUp size={16} className="text-emerald-500" />
                 查看净值表现
-            </button>
+            </Link>
             <button 
                 onClick={handleSaveSnapshot}
                 disabled={isSavingSnapshot}
                 className="px-4 py-2 bg-indigo-600 border border-indigo-600 rounded shadow-sm text-sm font-bold text-white hover:bg-indigo-700 flex items-center gap-2 disabled:opacity-50"
-                title="保存当前总持仓市值HKD和归因盈亏HKD为时间序列快照"
+                title="保存当前总持仓市值HKD和总盈亏HKD为时间序列快照"
             >
                 {isSavingSnapshot ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 保存当前快照
             </button>
@@ -472,68 +400,20 @@ export default function SummaryHoldingsPage() {
         </div>
       )}
 
-      <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
-        <button
-          onClick={() => switchTab('snapshot')}
-          className={`rounded-xl px-4 py-2 text-sm font-black transition-colors ${activeTab === 'snapshot' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}
-        >
-          当前快照
-        </button>
-        <button
-          onClick={() => switchTab('performance')}
-          className={`rounded-xl px-4 py-2 text-sm font-black transition-colors ${activeTab === 'performance' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}
-        >
-          净值历史表现
-        </button>
-      </div>
-
-      {activeTab === 'snapshot' ? (
-      <>
-
-      <div className="grid gap-3 md:grid-cols-5">
+      <div className="grid gap-3 md:grid-cols-3">
         <div className="rounded-2xl border border-indigo-100 bg-indigo-50 px-4 py-3">
           <div className="text-xs font-bold text-indigo-500">当前快照总持仓市值 HKD</div>
           <div className="mt-1 text-xl font-black text-indigo-950">{fmtValue(currentSnapshotPreview.totalMarketValueHKD, false, 0)}</div>
         </div>
-        <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3">
-          <div className="text-xs font-bold text-emerald-600">净值盈亏 HKD</div>
-          <div className={`mt-1 text-xl font-black ${pnlBridge ? pnlToneClass(pnlBridge.navPnlHKD) : 'text-slate-400'}`}>
-            {pnlBridge ? `${fmtSign(pnlBridge.navPnlHKD)}${fmtValue(pnlBridge.navPnlHKD, false, 0)}` : '--'}
-          </div>
-          <div className="mt-1 text-[11px] font-medium text-emerald-700/70">最准确口径：总资产 - 期初 - 净出入金</div>
-        </div>
         <div className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3">
-          <div className="text-xs font-bold text-rose-500">归因盈亏 HKD</div>
+          <div className="text-xs font-bold text-rose-500">当前快照总盈亏 HKD</div>
           <div className={`mt-1 text-xl font-black ${currentSnapshotPreview.totalPnlHKD >= 0 ? 'text-red-700' : 'text-green-700'}`}>{fmtSign(currentSnapshotPreview.totalPnlHKD)}{fmtValue(currentSnapshotPreview.totalPnlHKD, false, 0)}</div>
-          <div className="mt-1 text-[11px] font-medium text-rose-700/70">来自各模块已实现/未实现 P&L</div>
-        </div>
-        <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3">
-          <div className="text-xs font-bold text-amber-600">收益口径差异 HKD</div>
-          <div className={`mt-1 text-xl font-black ${pnlBridge ? pnlToneClass(pnlBridge.pnlDifferenceHKD) : 'text-slate-400'}`}>
-            {pnlBridge ? `${fmtSign(pnlBridge.pnlDifferenceHKD)}${fmtValue(pnlBridge.pnlDifferenceHKD, false, 0)}` : '--'}
-          </div>
-          <div className="mt-1 text-[11px] font-medium text-amber-700/80">净值盈亏 - 归因盈亏</div>
         </div>
         <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
           <div className="text-xs font-bold text-slate-400">快照状态</div>
           <div className="mt-1 text-sm font-bold text-slate-700">{snapshotMessage || `数据源 ${Object.keys(currentSnapshotPreview.sourceUpdatedAt).length} 项`}</div>
-          <div className="mt-1 text-[11px] font-medium text-slate-400">
-            {initialState ? `期初 ${initialState.inceptionDate} / 出入金 ${capitalFlows.length} 条${isLoadingFlowFx ? ' / 汇率刷新中' : ''}` : '尚未设置净值起点'}
-          </div>
         </div>
       </div>
-
-      {pnlBridge && (
-        <div className="rounded-2xl border border-amber-100 bg-gradient-to-r from-amber-50 to-white px-4 py-3 text-xs text-slate-600">
-          <span className="font-black text-amber-800">收益口径桥：</span>
-          净值盈亏HKD = 当前总持仓市值 {fmtValue(currentSnapshotPreview.totalMarketValueHKD, false, 0)}
-          {' - '}期初净资产 {fmtValue(pnlBridge.initialCapitalHKD, false, 0)}
-          {' - '}净出入金 {fmtSign(pnlBridge.netCapitalFlowHKD)}{fmtValue(pnlBridge.netCapitalFlowHKD, false, 0)}
-          {' = '}<span className={`font-black ${pnlToneClass(pnlBridge.navPnlHKD)}`}>{fmtSign(pnlBridge.navPnlHKD)}{fmtValue(pnlBridge.navPnlHKD, false, 0)}</span>
-          <span className="mx-2 text-slate-300">|</span>
-          收益口径差异 = 净值盈亏 - 归因盈亏 = <span className={`font-black ${pnlToneClass(pnlBridge.pnlDifferenceHKD)}`}>{fmtSign(pnlBridge.pnlDifferenceHKD)}{fmtValue(pnlBridge.pnlDifferenceHKD, false, 0)}</span>
-        </div>
-      )}
 
       {/* === 模块 1：当前持仓市值统计表 === */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -678,7 +558,7 @@ export default function SummaryHoldingsPage() {
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
                 <div className="flex items-center gap-4">
                     <h3 className="font-bold text-rose-900 flex items-center gap-2 text-lg">
-                        <BarChartIcon size={20} /> 当前交易归因盈亏矩阵 (Attribution P&L)
+                        <BarChartIcon size={20} /> 当前业绩归因矩阵 (P&L)
                     </h3>
                     {/* 盈亏视角切换 */}
                     <div className="flex bg-white rounded border border-rose-200 p-0.5 shadow-sm">
@@ -791,17 +671,6 @@ export default function SummaryHoldingsPage() {
           </div>
       )}
 
-      </>
-      ) : (
-        <PerformanceHistoryTab />
-      )}
-
     </div>
   );
-}
-
-function pnlToneClass(value: number) {
-  if (value > 0) return 'text-red-700';
-  if (value < 0) return 'text-green-700';
-  return 'text-slate-700';
 }

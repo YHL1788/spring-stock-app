@@ -76,17 +76,6 @@ export type CapitalFlow = {
   createdAt?: string;
 };
 
-export type CashTradeRecord = {
-  id?: string;
-  date?: string;
-  account?: string;
-  currency?: string;
-  amount?: number;
-  type?: string;
-  remark?: string;
-  createdAt?: any;
-};
-
 export type NavPoint = {
   date: string;
   snapshotAt: string;
@@ -321,49 +310,6 @@ export function calculatePerformanceStats(points: NavPoint[]): PerformanceStats 
   };
 }
 
-export function signedCapitalFlowHKD(flow: CapitalFlow) {
-  const amount = Math.abs(toNumber(flow.amountHKD, 0));
-  return flow.direction === 'OUT' ? -amount : amount;
-}
-
-export async function buildCapitalFlowsFromCashTrades(
-  records: CashTradeRecord[],
-  savedFxRates: Record<string, number>,
-  sourceCollection = 'sip_trade_cash',
-): Promise<CapitalFlow[]> {
-  const depositWithdrawRecords = records
-    .filter((record) => record.type === 'DEPOSIT_WITHDRAW')
-    .filter((record) => record.date && Number(record.amount || 0) !== 0);
-  const fxRateMap = await fetchHistoricalFxRates(depositWithdrawRecords, savedFxRates);
-
-  return depositWithdrawRecords
-    .map((record) => {
-      const originalAmount = Number(record.amount || 0);
-      const currency = normalizeCurrency(record.currency || 'HKD');
-      const fxInfo = fxRateMap.get(flowFxKey(currency, record.date || '')) || {
-        rate: Number(savedFxRates[currency] || 1),
-        source: 'saved' as const,
-      };
-      return {
-        id: record.id,
-        flowDate: record.date || '',
-        amountHKD: Math.abs(originalAmount * fxInfo.rate),
-        direction: originalAmount >= 0 ? 'IN' : 'OUT',
-        account: record.account || '',
-        note: record.remark || '',
-        sourceType: record.type,
-        sourceCollection,
-        currency,
-        originalAmount,
-        fxRate: fxInfo.rate,
-        fxRateSource: fxInfo.source,
-        createdAt: normalizeTime(record.createdAt),
-      } as CapitalFlow;
-    })
-    .filter((flow) => flow.flowDate && flow.amountHKD > 0)
-    .sort((a, b) => a.flowDate.localeCompare(b.flowDate));
-}
-
 function sumMarketMatrixHKD(data: SummaryMatrixData | undefined, fxRates: Record<string, number>, byCurrency: Record<string, number>) {
   if (!data?.rawMatrix) return 0;
   let total = 0;
@@ -395,73 +341,6 @@ function flowsBetween(flows: CapitalFlow[], fromDateExclusive: string, toDateInc
 function signedFlowHKD(flow: CapitalFlow) {
   const amount = Math.abs(toNumber(flow.amountHKD, 0));
   return flow.direction === 'OUT' ? -amount : amount;
-}
-
-type FxRateInfo = {
-  rate: number;
-  source: 'history' | 'saved' | 'fallback' | 'hkd';
-};
-
-async function fetchHistoricalFxRates(records: CashTradeRecord[], savedFxRates: Record<string, number>) {
-  const uniqueKeys = Array.from(new Set(records.map((record) => flowFxKey(record.currency || 'HKD', record.date || ''))));
-  const result = new Map<string, FxRateInfo>();
-
-  await Promise.all(uniqueKeys.map(async (key) => {
-    const [currency, date] = key.split('|');
-    if (!date) return;
-    if (currency === 'HKD') {
-      result.set(key, { rate: 1, source: 'hkd' });
-      return;
-    }
-
-    const savedRate = Number(savedFxRates[currency] || 0);
-    try {
-      const history = await fetchFxHistory(currency, date);
-      const latest = history
-        .filter((item) => item.date <= date && Number.isFinite(item.close) && item.close > 0)
-        .sort((a, b) => b.date.localeCompare(a.date))[0];
-      if (latest) {
-        result.set(key, { rate: latest.close, source: 'history' });
-        return;
-      }
-      result.set(key, { rate: savedRate > 0 ? savedRate : 1, source: savedRate > 0 ? 'saved' : 'fallback' });
-    } catch (err) {
-      result.set(key, { rate: savedRate > 0 ? savedRate : 1, source: savedRate > 0 ? 'saved' : 'fallback' });
-    }
-  }));
-
-  return result;
-}
-
-async function fetchFxHistory(currency: string, date: string): Promise<{ date: string; close: number }[]> {
-  const symbol = `${currency}HKD=X`;
-  const from = addDays(date, -10);
-  const to = addDays(date, 1);
-  const response = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&from=${from}&to=${to}`);
-  if (!response.ok) throw new Error(`FX history failed: ${symbol}`);
-  const payload = await response.json();
-  return (payload?.data || []).map((item: any) => ({
-    date: String(item.date || ''),
-    close: Number(item.adjClose ?? item.close),
-  }));
-}
-
-function flowFxKey(currency: string, date: string) {
-  return `${normalizeCurrency(currency)}|${date || ''}`;
-}
-
-function addDays(date: string, days: number) {
-  const value = new Date(`${date}T00:00:00`);
-  value.setDate(value.getDate() + days);
-  return value.toISOString().slice(0, 10);
-}
-
-function normalizeTime(value: any) {
-  if (!value) return '';
-  if (typeof value === 'string') return value;
-  if (value?.seconds) return new Date(value.seconds * 1000).toISOString();
-  if (value?.toDate) return value.toDate().toISOString();
-  return '';
 }
 
 function normalizeCurrency(value: any) {

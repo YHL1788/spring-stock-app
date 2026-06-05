@@ -7,6 +7,7 @@ import { PieChart, DollarSign, Layers } from 'lucide-react';
 // 定义持仓孙页面列表
 const holdingsItems = [
   { path: 'summary', label: '汇总', icon: PieChart },
+  { path: 'performance', label: '净值表现', icon: PieChart },
   { path: 'cash', label: '资金', icon: DollarSign },
   { path: 'fcn', label: 'FCN', icon: Layers },
   { path: 'stocks', label: '股票', icon: Layers },
