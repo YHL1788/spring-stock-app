@@ -598,18 +598,15 @@ export default function OptionHoldingPage() {
         };
     };
 
-    const handleRefreshLiving = async (onlyTradeIds?: string[]) => {
+    const handleRefreshLiving = async () => {
         setLoadingLiving(true);
         let expiredCount = 0;
         const allNewDeliveries: any[] = []; 
 
         try {
-            const selectedIds = Array.from(new Set(onlyTradeIds || [])).filter(Boolean);
-            const allLiving = await fetchMergedRecords('living');
-            const currentLiving = selectedIds.length > 0 ? allLiving.filter(record => selectedIds.includes(record.tradeId)) : allLiving;
+            const currentLiving = await fetchMergedRecords('living');
             if (currentLiving.length === 0) {
-                if (selectedIds.length === 0) setLivingRecords([]);
-                setLoadingLiving(false); return;
+                setLivingRecords([]); setLoadingLiving(false); return;
             }
 
             for (const mergedRecord of currentLiving) {
@@ -643,7 +640,7 @@ export default function OptionHoldingPage() {
                 setShowDeliveryModal(true);
             } else {
                 if (expiredCount > 0) alert(`刷新完毕！有 ${expiredCount} 笔期权已到期并移至历史库。本次未触发实盘交收。`);
-                else alert(selectedIds.length > 0 ? `已刷新选中的 ${currentLiving.length} 笔当前持仓。` : '刷新完毕，已更新最新持仓与现价值。');
+                else alert('刷新完毕，已更新最新持仓与现价值。');
             }
         } catch(e: any) { alert("刷新当前持仓失败: " + e.message); } 
         finally { setLoadingLiving(false); }
@@ -711,17 +708,14 @@ export default function OptionHoldingPage() {
         return !snap.empty;
     };
 
-    const handleRefreshDied = async (onlyTradeIds?: string[]) => {
+    const handleRefreshDied = async () => {
         setLoadingDied(true);
         let errorHealedCount = 0;
         const missingDeliveryCandidates: any[] = [];
         try {
-            const selectedIds = Array.from(new Set(onlyTradeIds || [])).filter(Boolean);
-            const allDied = await fetchMergedRecords('died');
-            const currentDied = selectedIds.length > 0 ? allDied.filter(record => selectedIds.includes(record.tradeId)) : allDied;
+            const currentDied = await fetchMergedRecords('died');
             if (currentDied.length === 0) {
-                if (selectedIds.length === 0) setDiedRecords([]);
-                setLoadingDied(false); return;
+                setDiedRecords([]); setLoadingDied(false); return;
             }
 
             for (const mergedRecord of currentDied) {
@@ -756,7 +750,7 @@ export default function OptionHoldingPage() {
                 setPendingDeliveries(missingDeliveryCandidates);
                 setShowDeliveryModal(true);
             } else if (errorHealedCount > 0) alert(`纠正 ${errorHealedCount} 笔数据，已移回存续库！`);
-            else alert(selectedIds.length > 0 ? `已刷新选中的 ${currentDied.length} 笔历史持仓。` : '历史持仓刷新完毕！');
+            else alert('历史持仓刷新完毕！');
         } catch(e: any) { alert("刷新历史持仓失败: " + e.message); } 
         finally { setLoadingDied(false); }
     };
@@ -1356,16 +1350,6 @@ export default function OptionHoldingPage() {
                         <span className="text-sm text-gray-500">Living 库总计: {livingRecords.length} 笔</span>
                         {isEditModeLiving && (
                             <button
-                                onClick={() => handleRefreshLiving(selectedLivingTradeIds)}
-                                disabled={loadingLiving || selectedLivingTradeIds.length === 0}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-blue-600 text-white border-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
-                            >
-                                {loadingLiving ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                                刷新选中 ({selectedLivingTradeIds.length})
-                            </button>
-                        )}
-                        {isEditModeLiving && (
-                            <button
                                 onClick={() => handleBatchCascadeDelete('living')}
                                 disabled={isDeleting || selectedLivingTradeIds.length === 0}
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-red-600 text-white border-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
@@ -1497,7 +1481,7 @@ export default function OptionHoldingPage() {
                     </table>
                 </div>
 
-                <button onClick={() => handleRefreshLiving()} disabled={loadingLiving} className={`w-full py-3 px-4 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingLiving ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                <button onClick={handleRefreshLiving} disabled={loadingLiving} className={`w-full py-3 px-4 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingLiving ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}>
                     {loadingLiving ? <Loader2 className="animate-spin" size={18} /> : <RefreshCw size={18} />}
                     {loadingLiving ? '重新计算并流转数据...' : '刷新当前持仓 (重新定价与生命周期流转)'}
                 </button>
@@ -1590,16 +1574,6 @@ export default function OptionHoldingPage() {
                     </h2>
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">Died 库总计: {diedRecords.length} 笔</span>
-                        {isEditModeDied && (
-                            <button
-                                onClick={() => handleRefreshDied(selectedDiedTradeIds)}
-                                disabled={loadingDied || selectedDiedTradeIds.length === 0}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-orange-600 text-white border-orange-600 hover:bg-orange-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
-                            >
-                                {loadingDied ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                                刷新选中 ({selectedDiedTradeIds.length})
-                            </button>
-                        )}
                         {isEditModeDied && (
                             <button
                                 onClick={() => handleBatchCascadeDelete('died')}
@@ -1716,7 +1690,7 @@ export default function OptionHoldingPage() {
                     </table>
                 </div>
 
-                <button onClick={() => handleRefreshDied()} disabled={loadingDied} className={`w-full py-3 px-4 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingDied ? 'bg-orange-400 cursor-not-allowed' : 'bg-orange-600 hover:bg-orange-700'}`}>
+                <button onClick={handleRefreshDied} disabled={loadingDied} className={`w-full py-3 px-4 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingDied ? 'bg-orange-400 cursor-not-allowed' : 'bg-orange-600 hover:bg-orange-700'}`}>
                     {loadingDied ? <Loader2 className="animate-spin" size={18} /> : <RefreshCw size={18} />}
                     {loadingDied ? '重新获取历史价格并校验中...' : '刷新历史持仓 (基于到期日历史价格精准校验)'}
                 </button>
