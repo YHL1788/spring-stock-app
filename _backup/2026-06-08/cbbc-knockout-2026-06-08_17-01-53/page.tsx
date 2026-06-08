@@ -67,8 +67,6 @@ interface InitialCBBCHolding {
 interface CBBCPriceRecord {
   price: number;
   updatedAt: string;
-  knockedOut?: boolean;
-  knockedOutAt?: string;
 }
 
 // --- 聚合后的持仓数据类型 ---
@@ -316,12 +314,7 @@ export default function CBBCHoldingsPage() {
                 const priceMap: Record<string, CBBCPriceRecord> = {};
                 snapshot.forEach(docSnap => {
                     const data = docSnap.data();
-                    priceMap[docSnap.id] = {
-                        price: Number(data.price),
-                        updatedAt: data.updatedAt,
-                        knockedOut: Boolean(data.knockedOut),
-                        knockedOutAt: data.knockedOutAt,
-                    };
+                    priceMap[docSnap.id] = { price: Number(data.price), updatedAt: data.updatedAt };
                 });
                 setCbbcPrices(priceMap);
                 setLoadingInitial(false);
@@ -862,70 +855,12 @@ export default function CBBCHoldingsPage() {
               futuresName,
               market,
               price: priceVal,
-              knockedOut: false,
-              knockedOutAt: null,
               updatedAt: new Date().toISOString()
           });
           // 成功后清空草稿
           setDraftPrices(prev => { const next = {...prev}; delete next[futuresCode]; return next; });
       } catch (e) {
           alert("保存价格失败");
-      }
-  };
-
-  const handleKnockOut = async (futuresCode: string, market: string, futuresName: string) => {
-      const holding = calculatedHoldings.find(h => h.futuresCode === futuresCode && h.quantity > 0);
-      if (!holding) {
-          alert('当前没有可打靶平仓的剩余持仓。');
-          return;
-      }
-
-      const accountRows = Object.entries(holding.accounts)
-          .map(([account, quantity]) => ({ account, quantity: Number(quantity) }))
-          .filter(row => row.quantity > 0);
-
-      if (accountRows.length === 0) {
-          alert('当前没有可打靶平仓的账户持仓。');
-          return;
-      }
-
-      const today = new Date().toISOString().slice(0, 10);
-      if (!confirm(`确认将 [${futuresCode}] 标记为“被打靶”吗？\n\n系统将按 0 元为 ${accountRows.length} 个账户生成 SELL 流水，剩余持仓会被强制清零。此操作会影响已实现盈亏。`)) return;
-
-      try {
-          await Promise.all(accountRows.map(row => addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_cbbc'), {
-              date: today,
-              account: row.account,
-              market,
-              futuresCode,
-              futuresName,
-              direction: 'SELL',
-              quantity: Math.abs(row.quantity),
-              price_excl_fee: 0,
-              avg_price_incl_fee: 0,
-              amount_excl_fee: 0,
-              amount_incl_fee: 0,
-              fee: 0,
-              executor: 'SYSTEM_KNOCK_OUT',
-              remark: '被打靶强制归零',
-              createdAt: new Date(),
-              updatedAt: new Date(),
-          })));
-
-          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_lastprice', futuresCode), {
-              futuresCode,
-              futuresName,
-              market,
-              price: 0,
-              knockedOut: true,
-              knockedOutAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-          }, { merge: true });
-
-          setDraftPrices(prev => ({ ...prev, [futuresCode]: '0' }));
-          alert(`已将 [${futuresCode}] 按 0 元强制平仓，并标记为被打靶。`);
-      } catch (e: any) {
-          alert(`被打靶处理失败: ${e?.message || e}`);
       }
   };
 
@@ -1611,22 +1546,20 @@ export default function CBBCHoldingsPage() {
                             <th className="px-4 py-3 whitespace-nowrap">【标的名称/简码】</th>
                             <th className="px-4 py-3 text-center whitespace-nowrap">【市场】</th>
                             <th className="px-4 py-3 text-right whitespace-nowrap">【当前价格】</th>
-                            <th className="px-4 py-3 text-center whitespace-nowrap">【状态】</th>
                             <th className="px-4 py-3 text-center whitespace-nowrap">【最后校准时间】</th>
                             <th className="px-4 py-3 text-center whitespace-nowrap">【操作】</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                         {uniqueFutures.length === 0 ? (
-                            <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">系统未检测到任何标的持仓记录</td></tr>
+                            <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">系统未检测到任何标的持仓记录</td></tr>
                         ) : uniqueFutures.map(f => {
                             const lastRec = cbbcPrices[f.futuresCode];
                             const draftPrice = draftPrices[f.futuresCode] ?? (lastRec?.price?.toString() || '');
                             const isChanged = draftPrice !== (lastRec?.price?.toString() || '');
-                            const knockedOut = Boolean(lastRec?.knockedOut);
 
                             return (
-                                <tr key={f.futuresCode} className={`hover:bg-emerald-50/20 transition-colors ${knockedOut ? 'bg-red-50/40' : ''}`}>
+                                <tr key={f.futuresCode} className="hover:bg-emerald-50/20 transition-colors">
                                     <td className="px-4 py-3">
                                         <div className="font-bold text-gray-800">{f.futuresName}</div>
                                         <div className="text-[10px] text-gray-500 font-mono">{f.futuresCode}</div>
@@ -1639,19 +1572,9 @@ export default function CBBCHoldingsPage() {
                                             step="0.0001"
                                             value={draftPrice}
                                             onChange={e => setDraftPrices({...draftPrices, [f.futuresCode]: e.target.value})}
-                                            disabled={knockedOut}
                                             className={`w-28 p-1.5 border rounded text-right outline-none text-xs font-mono focus:ring-1 focus:ring-emerald-400 ${isChanged ? 'bg-yellow-50 border-yellow-300 text-yellow-800' : 'bg-white border-gray-200'}`}
                                             placeholder="如: 1.0500"
                                         />
-                                    </td>
-                                    <td className="px-4 py-3 text-center">
-                                        {knockedOut ? (
-                                            <span className="inline-flex items-center rounded-full border border-red-200 bg-red-100 px-2 py-0.5 text-[10px] font-black text-red-700">
-                                                被打靶
-                                            </span>
-                                        ) : (
-                                            <span className="text-[10px] text-gray-400">正常</span>
-                                        )}
                                     </td>
                                     <td className="px-4 py-3 text-center text-gray-500 font-mono">
                                         {lastRec ? formatTime(lastRec.updatedAt) : <span className="text-gray-300">尚未录入</span>}
@@ -1660,20 +1583,11 @@ export default function CBBCHoldingsPage() {
                                         <div className="flex items-center justify-center gap-2">
                                             <button 
                                                 onClick={() => handleSavePrice(f.futuresCode, f.market, f.futuresName)}
-                                                disabled={!isChanged || knockedOut}
+                                                disabled={!isChanged}
                                                 className={`px-3 py-1.5 rounded font-bold text-xs shadow-sm flex items-center justify-center gap-1 transition-colors ${isChanged ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
                                             >
                                                 <Save size={14} /> 保存净值
                                             </button>
-                                            {!knockedOut && (
-                                                <button
-                                                    onClick={() => handleKnockOut(f.futuresCode, f.market, f.futuresName)}
-                                                    className="px-3 py-1.5 rounded font-bold text-xs shadow-sm flex items-center justify-center gap-1 text-white bg-red-600 hover:bg-red-700 transition-colors"
-                                                    title="被打靶：按 0 元强制卖出当前剩余持仓"
-                                                >
-                                                    被打靶
-                                                </button>
-                                            )}
                                             {lastRec && (
                                                 <button 
                                                     onClick={() => handleDeletePrice(f.futuresCode)}
