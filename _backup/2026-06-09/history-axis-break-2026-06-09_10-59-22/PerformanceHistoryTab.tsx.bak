@@ -570,226 +570,39 @@ function HistoryLineChart({
   height?: number;
 }) {
   const chartHeight = height || (compact ? 230 : 300);
-  const compressedAxis = buildCompressedTimeAxis(data, lines.map((line) => line.key));
   return (
     <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-black text-slate-700">{title}</h3>
-        {compressedAxis.hasBreak && (
-          <div className="text-[10px] font-bold text-slate-400">虚线为期初至首个快照；波浪处压缩时间跨度</div>
-        )}
-      </div>
+      <h3 className="mb-3 text-sm font-black text-slate-700">{title}</h3>
       <div style={{ height: chartHeight }}>
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={compressedAxis.data} margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-            <XAxis
-              type="number"
-              dataKey="xPosition"
-              domain={[0, 100]}
-              ticks={compressedAxis.ticks}
-              tick={
-                <CompressedAxisTick
-                  breakPosition={compressedAxis.breakPosition}
-                  dateByPosition={compressedAxis.dateByPosition}
-                />
-              }
-              tickLine={false}
-              axisLine={{ stroke: '#cbd5e1' }}
-              height={34}
-            />
+          <LineChart data={data} margin={{ top: 8, right: 24, left: 8, bottom: 6 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+            <XAxis dataKey="date" tick={{ fontSize: 11 }} />
             <YAxis tickFormatter={(value) => formatAxisValue(Number(value), valueType)} width={76} />
-            <Tooltip content={<HistoryTooltip lines={lines} valueType={valueType} />} />
+            <Tooltip
+              formatter={(value: any, name: any) => [
+                formatChartValue(Number(value), valueType),
+                lines.find((line) => line.key === String(name))?.label || String(name),
+              ]}
+            />
             {lines.map((line) => (
-              <React.Fragment key={line.key}>
-                <Line
-                  type="linear"
-                  dataKey={`${line.key}__initial`}
-                  name={line.key}
-                  stroke={line.color}
-                  strokeWidth={2.2}
-                  strokeDasharray="7 6"
-                  dot={{ r: 3 }}
-                  activeDot={false}
-                  connectNulls={false}
-                />
-                <Line
-                  type="monotone"
-                  dataKey={`${line.key}__history`}
-                  name={line.key}
-                  stroke={line.color}
-                  strokeWidth={2.6}
-                  dot={{ r: 3 }}
-                  activeDot={{ r: 5 }}
-                  connectNulls={false}
-                />
-              </React.Fragment>
+              <Line
+                key={line.key}
+                type="monotone"
+                dataKey={line.key}
+                name={line.key}
+                stroke={line.color}
+                strokeWidth={2.6}
+                dot={{ r: 3 }}
+                activeDot={{ r: 5 }}
+                connectNulls={false}
+              />
             ))}
           </LineChart>
         </ResponsiveContainer>
       </div>
     </div>
   );
-}
-
-function HistoryTooltip({
-  active,
-  payload,
-  lines,
-  valueType,
-}: {
-  active?: boolean;
-  payload?: readonly any[];
-  lines: { key: string; label: string; color: string }[];
-  valueType: 'hkd' | 'nav' | 'percent';
-}) {
-  if (!active || !payload?.length) return null;
-  const point = payload[0]?.payload as Record<string, any> | undefined;
-  if (!point) return null;
-
-  const values = lines.flatMap((line) => {
-    const historyValue = point[`${line.key}__history`];
-    const initialValue = point[`${line.key}__initial`];
-    const value = historyValue ?? initialValue;
-    return value === null || value === undefined ? [] : [{ ...line, value: Number(value) }];
-  });
-  if (values.length === 0) return null;
-
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white/95 px-3 py-2 shadow-lg backdrop-blur">
-      <div className="mb-1.5 text-xs font-black text-slate-700">{point.date || '--'}</div>
-      <div className="space-y-1">
-        {values.map((item) => (
-          <div key={item.key} className="flex items-center justify-between gap-5 text-xs">
-            <span className="inline-flex items-center gap-2 font-bold text-slate-500">
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
-              {item.label}
-            </span>
-            <span className="font-mono font-black text-slate-800">{formatChartValue(item.value, valueType)}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function buildCompressedTimeAxis(data: Record<string, any>[], lineKeys: string[]) {
-  const firstSnapshotPosition = 16;
-  const breakPosition = firstSnapshotPosition / 2;
-  const hasBreak = data.length > 1;
-  const firstSnapshotTime = hasBreak ? chartPointTime(data[1]) : 0;
-  const lastSnapshotTime = hasBreak ? chartPointTime(data[data.length - 1]) : firstSnapshotTime;
-
-  const plottedData = data.map((point, index) => {
-    let xPosition = 0;
-    if (index === 1) {
-      xPosition = firstSnapshotPosition;
-    } else if (index > 1) {
-      const currentTime = chartPointTime(point);
-      if (lastSnapshotTime > firstSnapshotTime) {
-        xPosition = firstSnapshotPosition
-          + ((currentTime - firstSnapshotTime) / (lastSnapshotTime - firstSnapshotTime)) * (100 - firstSnapshotPosition);
-      } else {
-        xPosition = firstSnapshotPosition
-          + ((index - 1) / Math.max(1, data.length - 2)) * (100 - firstSnapshotPosition);
-      }
-    }
-
-    const plottedPoint: Record<string, any> = { ...point, xPosition };
-    lineKeys.forEach((key) => {
-      plottedPoint[`${key}__initial`] = index <= 1 ? point[key] : null;
-      plottedPoint[`${key}__history`] = index >= 1 ? point[key] : null;
-    });
-    return plottedPoint;
-  });
-
-  const dateByPosition = new Map<string, string>();
-  plottedData.forEach((point) => {
-    dateByPosition.set(axisPositionKey(point.xPosition), String(point.date || ''));
-  });
-
-  const datePositions = plottedData.map((point) => Number(point.xPosition));
-  const visibleDatePositions = datePositions.length <= 8
-    ? datePositions
-    : datePositions.filter((_, index) => (
-        index === 0
-        || index === 1
-        || index === datePositions.length - 1
-        || index % Math.ceil(datePositions.length / 6) === 0
-      ));
-  const ticks = Array.from(new Set([
-    ...visibleDatePositions.map((value) => Number(value.toFixed(6))),
-    ...(hasBreak ? [breakPosition] : []),
-  ])).sort((a, b) => a - b);
-
-  return {
-    data: plottedData,
-    ticks,
-    dateByPosition,
-    breakPosition,
-    hasBreak,
-  };
-}
-
-function CompressedAxisTick({
-  x = 0,
-  y = 0,
-  payload,
-  breakPosition,
-  dateByPosition,
-}: {
-  x?: number;
-  y?: number;
-  payload?: { value: number };
-  breakPosition: number;
-  dateByPosition: Map<string, string>;
-}) {
-  const value = Number(payload?.value || 0);
-  if (Math.abs(value - breakPosition) < 0.0001) {
-    return (
-      <g aria-label="压缩时间轴">
-        <path
-          d={`M ${x - 10} ${y + 9} Q ${x - 6} ${y + 3} ${x - 2} ${y + 9} T ${x + 6} ${y + 9} T ${x + 14} ${y + 9}`}
-          fill="none"
-          stroke="#64748b"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-        />
-        <path
-          d={`M ${x - 10} ${y + 14} Q ${x - 6} ${y + 8} ${x - 2} ${y + 14} T ${x + 6} ${y + 14} T ${x + 14} ${y + 14}`}
-          fill="none"
-          stroke="#94a3b8"
-          strokeWidth="1.3"
-          strokeLinecap="round"
-        />
-      </g>
-    );
-  }
-
-  const date = dateByPosition.get(axisPositionKey(value));
-  if (!date) return <g />;
-  return (
-    <g transform={`translate(${x},${y})`}>
-      <text x={0} y={16} textAnchor="middle" fill="#64748b" fontSize={11}>
-        {formatAxisDate(date)}
-      </text>
-    </g>
-  );
-}
-
-function chartPointTime(point: Record<string, any>) {
-  const value = String(point.snapshotAt || `${point.date || ''}T00:00:00Z`);
-  const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) ? timestamp : 0;
-}
-
-function axisPositionKey(value: number) {
-  return Number(value).toFixed(6);
-}
-
-function formatAxisDate(value: string) {
-  const parts = value.split('-');
-  return parts.length === 3 ? `${parts[1]}-${parts[2]}` : value;
 }
 
 function SmallInfo({ label, value }: { label: string; value: string }) {
