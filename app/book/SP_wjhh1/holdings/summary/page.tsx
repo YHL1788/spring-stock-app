@@ -15,7 +15,7 @@ import {
   TrendingUp
 } from 'lucide-react';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
-import { addDoc, collection, doc, onSnapshot } from 'firebase/firestore';
+import { addDoc, collection, doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { 
   PieChart, Pie, Cell, 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend 
@@ -34,6 +34,12 @@ import PerformanceHistoryTab from './PerformanceHistoryTab';
 
 const NAV_CONFIG_COLLECTION = 'sip_holding_summary_nav_config';
 const CASH_TRADE_COLLECTION = 'sip_trade_cash';
+const EXPOSURE_COLLECTIONS = [
+  'sip_exposure_dqaq',
+  'sip_exposure_fcn',
+  'sip_exposure_option',
+  'sip_exposure_spot',
+] as const;
 
 // --- 常量与映射字典 ---
 const ASSET_TYPES = [
@@ -54,6 +60,13 @@ interface MatrixData {
   markets: string[];
   rawMatrix: any; // Record<string, Record<string, number>> or Record<string, {realized, unrealized, total}>
   updatedAt?: string;
+}
+
+interface ExposureSnapshotData {
+  totalMarketValueHKD: number;
+  constituentCount: number;
+  missingQuoteCount: number;
+  calculatedAt: string;
 }
 
 export default function SummaryHoldingsPage() {
@@ -77,6 +90,9 @@ export default function SummaryHoldingsPage() {
   const [showFxModal, setShowFxModal] = useState(false);
   const [isSavingSnapshot, setIsSavingSnapshot] = useState(false);
   const [snapshotMessage, setSnapshotMessage] = useState('');
+  const [totalExposureMarketValueHKD, setTotalExposureMarketValueHKD] = useState<number | null>(null);
+  const [isLoadingExposure, setIsLoadingExposure] = useState(false);
+  const [exposureError, setExposureError] = useState('');
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -223,6 +239,132 @@ export default function SummaryHoldingsPage() {
       if (allCurrencies.length > 0) fetchFxRates();
   }, [allCurrencies.join(',')]);
 
+  const refreshExposureRatio = async (): Promise<ExposureSnapshotData | null> => {
+      if (!user) return null;
+
+      setIsLoadingExposure(true);
+      setExposureError('');
+      try {
+          const exposureRows = (
+              await Promise.all(EXPOSURE_COLLECTIONS.map(async (collectionName) => {
+                  const snapshot = await getDoc(doc(
+                      db,
+                      'artifacts',
+                      APP_ID,
+                      'public',
+                      'data',
+                      collectionName,
+                      'latest_summary',
+                  ));
+                  if (!snapshot.exists()) return [];
+
+                  const rows = Array.isArray(snapshot.data().data) ? snapshot.data().data : [];
+                  return rows.flatMap((item: any) => {
+                      const rawSymbol = item.ticker || item.code || item.symbol;
+                      if (!rawSymbol) return [];
+
+                      const symbol = String(rawSymbol).trim().toUpperCase();
+                      const fallbackMarket = String(item.market || item.currency || '').trim().toUpperCase();
+                      const market = fallbackMarket
+                          || (symbol.endsWith('.HK')
+                              ? 'HKD'
+                              : symbol.endsWith('.T')
+                                  ? 'JPY'
+                                  : symbol.endsWith('.SS') || symbol.endsWith('.SZ')
+                                      ? 'CNY'
+                                      : 'USD');
+
+                      return [{
+                          symbol,
+                          market,
+                          shares: Number(item.shares || 0),
+                      }];
+                  });
+              }))
+          ).flat();
+
+          const groupedShares = new Map<string, { symbol: string; market: string; shares: number }>();
+          exposureRows.forEach((item) => {
+              const key = `${item.symbol}|${item.market}`;
+              const existing = groupedShares.get(key);
+              if (existing) {
+                  existing.shares += item.shares;
+              } else {
+                  groupedShares.set(key, { ...item });
+              }
+          });
+
+          const activeExposures = Array.from(groupedShares.values())
+              .filter((item) => Math.abs(item.shares) > 0.000001);
+          const symbols = Array.from(new Set(activeExposures.map((item) => item.symbol)));
+          const markets = Array.from(new Set(activeExposures.map((item) => item.market)));
+
+          const quotePairs = await Promise.all(symbols.map(async (symbol) => {
+              const candidates = symbol.endsWith('.US')
+                  ? [symbol, symbol.replace(/\.US$/, '')]
+                  : [symbol];
+
+              for (const candidate of candidates) {
+                  try {
+                      const response = await fetch(`/api/quote?symbol=${encodeURIComponent(candidate)}`);
+                      if (!response.ok) continue;
+                      const data = await response.json();
+                      const price = data.regularMarketPrice || data.price || data.close;
+                      if (price) return [symbol, Number(price)] as const;
+                  } catch {
+                      // Continue with the compatible fallback symbol.
+                  }
+              }
+              return [symbol, null] as const;
+          }));
+
+          const fxPairs = await Promise.all(markets.map(async (market) => {
+              if (market === 'HKD') return [market, 1] as const;
+              try {
+                  const response = await fetch(`/api/quote?currency=${encodeURIComponent(market)}`);
+                  if (!response.ok) return [market, 1] as const;
+                  const data = await response.json();
+                  return [market, Number(data.rate || 1)] as const;
+              } catch {
+                  return [market, 1] as const;
+              }
+          }));
+
+          const quotes = new Map(quotePairs);
+          const fxRates = new Map(fxPairs);
+          const missingQuoteCount = activeExposures.filter((item) => {
+              const currentPrice = quotes.get(item.symbol);
+              return currentPrice === null || currentPrice === undefined;
+          }).length;
+          const totalMarketValueHKD = activeExposures.reduce((sum, item) => {
+              const currentPrice = quotes.get(item.symbol);
+              if (currentPrice === null || currentPrice === undefined) return sum;
+              return sum + item.shares * currentPrice * (fxRates.get(item.market) || 1);
+          }, 0);
+
+          setTotalExposureMarketValueHKD(totalMarketValueHKD);
+          const result = {
+              totalMarketValueHKD,
+              constituentCount: activeExposures.length,
+              missingQuoteCount,
+              calculatedAt: new Date().toISOString(),
+          };
+          if (missingQuoteCount > 0) {
+              setExposureError(`有 ${missingQuoteCount} 个标的缺少行情，当前暴露市值未计入这些标的`);
+          }
+          return result;
+      } catch (err: any) {
+          setExposureError(err?.message || '暴露数据读取失败');
+          return null;
+      } finally {
+          setIsLoadingExposure(false);
+      }
+  };
+
+  useEffect(() => {
+      if (user) void refreshExposureRatio();
+  }, [user]);
+
   useEffect(() => {
       let cancelled = false;
       async function rebuildCapitalFlows() {
@@ -367,6 +509,11 @@ export default function SummaryHoldingsPage() {
       });
   }, [mktDataMap, plDataMap, globalFxRates]);
 
+  const exposureRatio = totalExposureMarketValueHKD !== null
+      && currentSnapshotPreview.totalMarketValueHKD !== 0
+      ? totalExposureMarketValueHKD / currentSnapshotPreview.totalMarketValueHKD
+      : null;
+
   const pnlBridge = useMemo(() => {
       if (!initialState) return null;
       const snapshotDate = currentSnapshotPreview.snapshotDate;
@@ -389,13 +536,30 @@ export default function SummaryHoldingsPage() {
       if (!user) return;
       setIsSavingSnapshot(true);
       setSnapshotMessage('');
+      setError(null);
       try {
+          const exposure = await refreshExposureRatio();
+          if (!exposure) throw new Error('无法取得暴露数据，请刷新后重试');
+          if (exposure.missingQuoteCount > 0) {
+              throw new Error(`有 ${exposure.missingQuoteCount} 个暴露标的缺少行情，为避免保存失真的快照，本次已停止保存`);
+          }
           const snapshot = buildPortfolioSnapshot({
               mktDataMap,
               plDataMap,
               fxRates: { HKD: 1, ...globalFxRates },
           });
-          await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_summary_snapshots'), snapshot);
+          const snapshotExposureRatio = snapshot.totalMarketValueHKD !== 0
+              ? exposure.totalMarketValueHKD / snapshot.totalMarketValueHKD
+              : null;
+          await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_summary_snapshots'), {
+              ...snapshot,
+              totalExposureMarketValueHKD: exposure.totalMarketValueHKD,
+              exposureRatio: snapshotExposureRatio,
+              exposureCalculatedAt: exposure.calculatedAt,
+              exposureConstituentCount: exposure.constituentCount,
+              exposureMissingQuoteCount: exposure.missingQuoteCount,
+              snapshotSchemaVersion: 2,
+          });
           setSnapshotMessage(`已保存快照：${new Date(snapshot.snapshotAt).toLocaleString('zh-CN', { hour12: false })}`);
       } catch (err: any) {
           setError(`保存快照失败: ${err?.message || err}`);
@@ -472,6 +636,12 @@ export default function SummaryHoldingsPage() {
         </div>
       )}
 
+      {snapshotMessage && (
+        <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700">
+          {snapshotMessage}
+        </div>
+      )}
+
       <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
         <button
           onClick={() => switchTab('snapshot')}
@@ -514,11 +684,37 @@ export default function SummaryHoldingsPage() {
           </div>
           <div className="mt-1 text-[11px] font-medium text-amber-700/80">净值盈亏 - 归因盈亏</div>
         </div>
-        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-          <div className="text-xs font-bold text-slate-400">快照状态</div>
-          <div className="mt-1 text-sm font-bold text-slate-700">{snapshotMessage || `数据源 ${Object.keys(currentSnapshotPreview.sourceUpdatedAt).length} 项`}</div>
-          <div className="mt-1 text-[11px] font-medium text-slate-400">
-            {initialState ? `期初 ${initialState.inceptionDate} / 出入金 ${capitalFlows.length} 条${isLoadingFlowFx ? ' / 汇率刷新中' : ''}` : '尚未设置净值起点'}
+        <div className="rounded-2xl border border-cyan-100 bg-cyan-50 px-4 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs font-bold text-cyan-700">暴露比例</div>
+            <button
+              type="button"
+              onClick={refreshExposureRatio}
+              disabled={isLoadingExposure}
+              className="rounded-md p-1 text-cyan-600 transition-colors hover:bg-cyan-100 disabled:opacity-50"
+              title="刷新暴露比例"
+            >
+              <RefreshCw size={13} className={isLoadingExposure ? 'animate-spin' : ''} />
+            </button>
+          </div>
+          <div className="mt-1 text-xl font-black text-cyan-950">
+            {exposureRatio === null
+              ? '--'
+              : `${(exposureRatio * 100).toLocaleString('en-US', {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}%`}
+          </div>
+          <div className="mt-1 text-[11px] font-medium text-cyan-800/75">
+            总暴露市值 HKD {totalExposureMarketValueHKD === null
+              ? '--'
+              : totalExposureMarketValueHKD.toLocaleString('en-US', {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}
+          </div>
+          <div className="mt-0.5 text-[10px] font-medium text-cyan-700/60">
+            {exposureError || '按 DQ-AQ / FCN / Option / Spot 多空净额计算'}
           </div>
         </div>
       </div>
