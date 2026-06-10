@@ -780,6 +780,18 @@ export default function FCNHoldingPage() {
             const pnlRatio = notional ? ((mktVal + realized) / notional) - 1 : 0;
             const account = p.account_name || inputData.inputParams?.account_name || 'N/A';
             const expectedPeriods = calcExpectedCouponPeriods(res);
+            const underlyingPriceStates = (p.tickers || []).map((_: string, idx: number) => {
+                const initialPrice = Number(p.initial_spots?.[idx]) || 0;
+                const currentPrice = Number(p.current_spots?.[idx]) || initialPrice;
+                return {
+                    currentPrice,
+                    knockInPrice: initialPrice * Number(p.strike_pct || 0),
+                    knockOutPrice: initialPrice * Number(p.trigger_pct || 0)
+                };
+            });
+            const hasPriceBelowKnockIn = underlyingPriceStates.some(({ currentPrice, knockInPrice }) => currentPrice < knockInPrice);
+            const areAllPricesAboveKnockOut = underlyingPriceStates.length > 0
+                && underlyingPriceStates.every(({ currentPrice, knockOutPrice }) => currentPrice > knockOutPrice);
 
             return {
                 id: mergedRecord.tradeId,
@@ -801,6 +813,7 @@ export default function FCNHoldingPage() {
                 expectedPeriods,
                 mktVal, realized, unrealized, unrealizedCoupon, impliedLoss, totalPnl,
                 fx_rate: p.fx_rate || 1,
+                priceAlert: hasPriceBelowKnockIn ? 'BELOW_KNOCK_IN' : areAllPricesAboveKnockOut ? 'ABOVE_KNOCK_OUT' : 'NORMAL',
                 tooltipAutocall: `预期收息期数: ${expectedPeriods.toFixed(2)}`,
                 tooltipKnockIn: getKnockInTooltip(p, res)
             };
@@ -1318,10 +1331,37 @@ export default function FCNHoldingPage() {
                             {finalLiving.length === 0 ? (
                                 <tr><td colSpan={20} className="px-4 py-8 text-center text-gray-400">暂无存续中的持仓数据 或 暂无匹配条件数据</td></tr>
                             ) : finalLiving.map((item) => (
-                                <tr key={item.id} className="group hover:bg-blue-50/50 transition-colors">
-                                    <td className="sticky left-0 z-10 bg-white group-hover:bg-blue-50 px-3 py-2 text-center whitespace-nowrap font-bold text-gray-700 w-[120px] min-w-[120px] shadow-[1px_0_0_rgba(0,0,0,0.05)]">{item.statusText}</td>
-                                    <td className="sticky left-[120px] z-10 bg-white group-hover:bg-blue-50 px-3 py-2 text-center text-gray-600 whitespace-nowrap w-[100px] min-w-[100px] shadow-[1px_0_0_rgba(0,0,0,0.05)]">{item.tradeDate}</td>
-                                    <td className="sticky left-[220px] z-10 bg-white group-hover:bg-blue-50 px-3 py-2 font-medium text-gray-800 whitespace-nowrap w-[180px] min-w-[180px] shadow-[2px_0_0_rgba(0,0,0,0.05)]">{item.name}</td>
+                                <tr
+                                    key={item.id}
+                                    className={`group transition-colors ${
+                                        item.priceAlert === 'BELOW_KNOCK_IN'
+                                            ? 'bg-red-50 hover:bg-red-100'
+                                            : item.priceAlert === 'ABOVE_KNOCK_OUT'
+                                                ? 'bg-yellow-50 hover:bg-yellow-100'
+                                                : 'hover:bg-blue-50/50'
+                                    }`}
+                                >
+                                    <td className={`sticky left-0 z-10 px-3 py-2 text-center whitespace-nowrap font-bold text-gray-700 w-[120px] min-w-[120px] shadow-[1px_0_0_rgba(0,0,0,0.05)] ${
+                                        item.priceAlert === 'BELOW_KNOCK_IN'
+                                            ? 'bg-red-50 group-hover:bg-red-100'
+                                            : item.priceAlert === 'ABOVE_KNOCK_OUT'
+                                                ? 'bg-yellow-50 group-hover:bg-yellow-100'
+                                                : 'bg-white group-hover:bg-blue-50'
+                                    }`}>{item.statusText}</td>
+                                    <td className={`sticky left-[120px] z-10 px-3 py-2 text-center text-gray-600 whitespace-nowrap w-[100px] min-w-[100px] shadow-[1px_0_0_rgba(0,0,0,0.05)] ${
+                                        item.priceAlert === 'BELOW_KNOCK_IN'
+                                            ? 'bg-red-50 group-hover:bg-red-100'
+                                            : item.priceAlert === 'ABOVE_KNOCK_OUT'
+                                                ? 'bg-yellow-50 group-hover:bg-yellow-100'
+                                                : 'bg-white group-hover:bg-blue-50'
+                                    }`}>{item.tradeDate}</td>
+                                    <td className={`sticky left-[220px] z-10 px-3 py-2 font-medium text-gray-800 whitespace-nowrap w-[180px] min-w-[180px] shadow-[2px_0_0_rgba(0,0,0,0.05)] ${
+                                        item.priceAlert === 'BELOW_KNOCK_IN'
+                                            ? 'bg-red-50 group-hover:bg-red-100'
+                                            : item.priceAlert === 'ABOVE_KNOCK_OUT'
+                                                ? 'bg-yellow-50 group-hover:bg-yellow-100'
+                                                : 'bg-white group-hover:bg-blue-50'
+                                    }`}>{item.name}</td>
                                     <td className="px-3 py-2 text-center text-gray-600 whitespace-nowrap">{item.account}</td>
                                     <td className="px-3 py-2 text-center font-mono text-gray-500">{item.market}</td>
                                     <td className="px-3 py-2 text-right font-mono whitespace-nowrap">{formatNotionalWithUnit(item.notional, item.market, item.fx_rate)}</td>

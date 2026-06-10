@@ -136,11 +136,11 @@ const replaceNullWithUndefined = (obj: any): any => {
 };
 
 // --- 可排序筛选表头组件 ---
-const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onFilter, align='left', className='' }: any) => {
+const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onFilter, align='left' }: any) => {
     const justifyClass = align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start';
     const textClass = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
     return (
-        <th className={`px-3 py-2 whitespace-nowrap align-top group ${textClass} ${className}`}>
+        <th className={`px-3 py-2 whitespace-nowrap align-top group ${textClass}`}>
             <div className={`flex items-center ${justifyClass} gap-1 select-none ${sortKey && onSort ? 'cursor-pointer hover:text-gray-800' : ''}`} onClick={() => sortKey && onSort && onSort(sortKey)}>
                 {label}
                 {sortKey && currentSort?.key === sortKey && <span className="text-blue-500 text-[10px] ml-1">{currentSort.dir === 'asc' ? '▲' : '▼'}</span>}
@@ -728,7 +728,7 @@ export default function DQAQHoldingPage() {
     const processLiving = useMemo(() => livingRecords.map((r: MergedRecord) => {
         const { basic, underlying, periods } = r.inputData;
         const res = r.outputData;
-        const name = `${basic.broker} | ${underlying.stock_name||underlying.ticker}`;
+        const name = `${basic.broker} | ${basic.trade_date} | ${underlying.stock_name||underlying.ticker}`;
         const today = new Date().toISOString().split('T')[0];
         const nextObs = periods.map((p:any)=>p.obs_end).filter((d:string)=>d>=today).sort()[0] || '';
         
@@ -737,7 +737,7 @@ export default function DQAQHoldingPage() {
         return {
             id: r.tradeId, pData: r.outputData,
             account: basic.account,
-            name, tradeDate: basic.trade_date || '', status: res.status_msg, currency: basic.currency,
+            name, status: res.status_msg, currency: basic.currency,
             dir: basic.contract_type, leverage: basic.leverage, daily: basic.daily_shares, max: basic.max_global_shares,
             koInPrice: strikePrice.toFixed(4), koOutPrice: koPrice.toFixed(4),
             koInPct: fmtPct(basic.strike_pct), koOutPct: fmtPct(basic.ko_barrier_pct),
@@ -783,8 +783,8 @@ export default function DQAQHoldingPage() {
         const strikePrice = underlying.spot_price * basic.strike_pct;
         const koPrice = underlying.spot_price * basic.ko_barrier_pct;
         return {
-            id: r.tradeId, name: `${basic.broker} | ${underlying.stock_name||underlying.ticker}`,
-            tradeDate: basic.trade_date || '', status: res.status_msg, currency: basic.currency, dir: basic.contract_type, leverage: basic.leverage,
+            id: r.tradeId, name: `${basic.broker} | ${basic.trade_date} | ${underlying.stock_name||underlying.ticker}`,
+            status: res.status_msg, currency: basic.currency, dir: basic.contract_type, leverage: basic.leverage,
             ticker: underlying.ticker,
             S0: Number(underlying.spot_price) || 0,
             initialPrice: Number(underlying.spot_price) || 0,
@@ -999,10 +999,9 @@ export default function DQAQHoldingPage() {
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200">
                         <thead className="bg-gray-50 text-gray-600 font-medium sticky top-0 z-20 shadow-sm [&>tr>th]:bg-gray-50">
                             <tr>
-                                <Th label="当前状态" sortKey="status" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" className="sticky left-0 top-0 z-40 w-[150px] min-w-[150px] bg-gray-50 shadow-[1px_0_0_rgba(0,0,0,0.08)]" />
-                                <Th label="交易日期" sortKey="tradeDate" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" className="sticky left-[150px] top-0 z-40 w-[105px] min-w-[105px] bg-gray-50 shadow-[1px_0_0_rgba(0,0,0,0.08)]" />
-                                <Th label="名称" sortKey="name" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} className="sticky left-[255px] top-0 z-40 w-[220px] min-w-[220px] bg-gray-50 shadow-[2px_0_0_rgba(0,0,0,0.1)]" />
-                                <Th label="币种" sortKey="currency" align="center" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
+                                <Th label="名称" sortKey="name" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
+                                <Th label="当前状态" sortKey="status" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
+                                <Th label="币种" sortKey="currency" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="方向" sortKey="dir" align="center" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="杠杆" sortKey="leverage" align="right" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="每日股" sortKey="daily" align="right" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
@@ -1028,34 +1027,15 @@ export default function DQAQHoldingPage() {
                                     key={item.id}
                                     className={
                                         item.dir === 'DQ' && item.currentPrice > Number(item.koInPrice)
-                                            ? 'group bg-yellow-50 hover:bg-yellow-100'
+                                            ? 'bg-yellow-50 hover:bg-yellow-100'
                                             : item.dir === 'AQ' && item.currentPrice < Number(item.koInPrice)
-                                                ? 'group bg-red-50 hover:bg-red-100'
-                                                : 'group hover:bg-blue-50/50'
+                                                ? 'bg-red-50 hover:bg-red-100'
+                                                : 'hover:bg-blue-50/50'
                                     }
                                 >
-                                    <td className={`sticky left-0 z-10 w-[150px] min-w-[150px] px-3 py-2 text-center font-bold text-green-700 shadow-[1px_0_0_rgba(0,0,0,0.05)] ${
-                                        item.dir === 'DQ' && item.currentPrice > Number(item.koInPrice)
-                                            ? 'bg-yellow-50 group-hover:bg-yellow-100'
-                                            : item.dir === 'AQ' && item.currentPrice < Number(item.koInPrice)
-                                                ? 'bg-red-50 group-hover:bg-red-100'
-                                                : 'bg-white group-hover:bg-blue-50'
-                                    }`}>{item.status}</td>
-                                    <td className={`sticky left-[150px] z-10 w-[105px] min-w-[105px] px-3 py-2 text-center font-mono shadow-[1px_0_0_rgba(0,0,0,0.05)] ${
-                                        item.dir === 'DQ' && item.currentPrice > Number(item.koInPrice)
-                                            ? 'bg-yellow-50 group-hover:bg-yellow-100'
-                                            : item.dir === 'AQ' && item.currentPrice < Number(item.koInPrice)
-                                                ? 'bg-red-50 group-hover:bg-red-100'
-                                                : 'bg-white group-hover:bg-blue-50'
-                                    }`}>{item.tradeDate}</td>
-                                    <td className={`sticky left-[255px] z-10 w-[220px] min-w-[220px] px-3 py-2 font-medium whitespace-nowrap shadow-[2px_0_0_rgba(0,0,0,0.08)] ${
-                                        item.dir === 'DQ' && item.currentPrice > Number(item.koInPrice)
-                                            ? 'bg-yellow-50 group-hover:bg-yellow-100'
-                                            : item.dir === 'AQ' && item.currentPrice < Number(item.koInPrice)
-                                                ? 'bg-red-50 group-hover:bg-red-100'
-                                                : 'bg-white group-hover:bg-blue-50'
-                                    }`}>{item.name}</td>
-                                    <td className="px-3 py-2 text-center">{item.currency}</td>
+                                    <td className="px-3 py-2 font-medium">{item.name}</td>
+                                    <td className="px-3 py-2 text-green-700 font-bold">{item.status}</td>
+                                    <td className="px-3 py-2">{item.currency}</td>
                                     <td className={`px-3 py-2 text-center font-bold ${item.dir==='DQ'?'text-red-600':'text-green-600'}`}>{item.dir}</td>
                                     <td className="px-3 py-2 text-right">{item.leverage}x</td>
                                     <td className="px-3 py-2 text-right font-mono">{item.daily}</td>
@@ -1166,9 +1146,8 @@ export default function DQAQHoldingPage() {
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200">
                         <thead className="bg-gray-50 text-gray-600 font-medium sticky top-0 z-20 shadow-sm [&>tr>th]:bg-gray-50">
                             <tr>
-                                <Th label="当前状态" sortKey="status" align="center" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} className="sticky left-0 top-0 z-40 w-[150px] min-w-[150px] bg-gray-50 shadow-[1px_0_0_rgba(0,0,0,0.08)]" />
-                                <Th label="交易日期" sortKey="tradeDate" align="center" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} className="sticky left-[150px] top-0 z-40 w-[105px] min-w-[105px] bg-gray-50 shadow-[1px_0_0_rgba(0,0,0,0.08)]" />
-                                <Th label="名称" sortKey="name" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} className="sticky left-[255px] top-0 z-40 w-[220px] min-w-[220px] bg-gray-50 shadow-[2px_0_0_rgba(0,0,0,0.1)]" />
+                                <Th label="名称" sortKey="name" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
+                                <Th label="历史状态" sortKey="status" align="center" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="币种" sortKey="currency" align="center" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="方向" sortKey="dir" align="center" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="杠杆" sortKey="leverage" align="right" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
@@ -1184,10 +1163,9 @@ export default function DQAQHoldingPage() {
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                             {finalDied.map(item => (
-                                <tr key={item.id} className="group hover:bg-orange-50/30">
-                                    <td className="sticky left-0 z-10 w-[150px] min-w-[150px] bg-white group-hover:bg-orange-50 px-3 py-2 text-orange-700 font-bold text-center shadow-[1px_0_0_rgba(0,0,0,0.05)]">{item.status}</td>
-                                    <td className="sticky left-[150px] z-10 w-[105px] min-w-[105px] bg-white group-hover:bg-orange-50 px-3 py-2 text-center font-mono shadow-[1px_0_0_rgba(0,0,0,0.05)]">{item.tradeDate}</td>
-                                    <td className="sticky left-[255px] z-10 w-[220px] min-w-[220px] bg-white group-hover:bg-orange-50 px-3 py-2 font-medium whitespace-nowrap shadow-[2px_0_0_rgba(0,0,0,0.08)]">{item.name}</td>
+                                <tr key={item.id} className="hover:bg-orange-50/30">
+                                    <td className="px-3 py-2 font-medium">{item.name}</td>
+                                    <td className="px-3 py-2 text-orange-700 font-bold text-center">{item.status}</td>
                                     <td className="px-3 py-2 text-center">{item.currency}</td>
                                     <td className={`px-3 py-2 text-center font-bold ${item.dir==='DQ'?'text-red-600':'text-green-600'}`}>{item.dir}</td>
                                     <td className="px-3 py-2 text-right">{item.leverage}x</td>

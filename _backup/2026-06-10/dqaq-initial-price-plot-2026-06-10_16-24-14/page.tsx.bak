@@ -61,23 +61,6 @@ interface MergedRecord {
     updatedAt: any;
 }
 
-interface DQAQTradeFlow {
-    id: string;
-    tradeId?: string;
-    date?: string;
-    account?: string;
-    market?: string;
-    direction?: string;
-    stockCode?: string;
-    stockName?: string;
-    quantity?: number;
-    priceNoFee?: number;
-    fee?: number;
-    amountNoFee?: number;
-    hkdAmount?: number;
-    createdAt?: any;
-}
-
 // --- 精准过期时间推算 (HKT UTC+8) ---
 const getExpirationTimeMs = (expDateStr: string, currency: string): number => {
     if (!expDateStr) return Infinity;
@@ -136,11 +119,11 @@ const replaceNullWithUndefined = (obj: any): any => {
 };
 
 // --- 可排序筛选表头组件 ---
-const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onFilter, align='left', className='' }: any) => {
+const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onFilter, align='left' }: any) => {
     const justifyClass = align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start';
     const textClass = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
     return (
-        <th className={`px-3 py-2 whitespace-nowrap align-top group ${textClass} ${className}`}>
+        <th className={`px-3 py-2 whitespace-nowrap align-top group ${textClass}`}>
             <div className={`flex items-center ${justifyClass} gap-1 select-none ${sortKey && onSort ? 'cursor-pointer hover:text-gray-800' : ''}`} onClick={() => sortKey && onSort && onSort(sortKey)}>
                 {label}
                 {sortKey && currentSort?.key === sortKey && <span className="text-blue-500 text-[10px] ml-1">{currentSort.dir === 'asc' ? '▲' : '▼'}</span>}
@@ -233,11 +216,9 @@ export default function DQAQHoldingPage() {
     const [pendingDeliveries, setPendingDeliveries] = useState<any[]>([]);
     const [syncingDeliveries, setSyncingDeliveries] = useState(false);
     // 点位图 Modal
-    const [chartData, setChartData] = useState<{name: string, ticker: string, currency: string, current: number, strike: number, ko: number, recordId: string} | null>(null);
+    const [chartData, setChartData] = useState<{name: string, ticker: string, current: number, strike: number, ko: number, recordId: string} | null>(null);
     const [plotData, setPlotData] = useState<PlotData | null>(null);
     const [isPlotLoading, setIsPlotLoading] = useState(false);
-    const [plotTradeFlows, setPlotTradeFlows] = useState<DQAQTradeFlow[]>([]);
-    const [isTradeFlowLoading, setIsTradeFlowLoading] = useState(false);
     // 后台库
     const [activeDbTab, setActiveDbTab] = useState('sip_holding_dqaq_output_living');
     const [dbRecords, setDbRecords] = useState<any[]>([]);
@@ -516,43 +497,21 @@ export default function DQAQHoldingPage() {
     // --- 动态生成图表数据 ---
     const handleGeneratePlot = async (tradeId: string) => {
         setPlotData(null);
-        setPlotTradeFlows([]);
         setIsPlotLoading(true);
-        setIsTradeFlowLoading(true);
         try {
             const rec = livingRecords.find(r => r.tradeId === tradeId) || diedRecords.find(r => r.tradeId === tradeId);
             if (!rec) throw new Error("找不到对应的持仓记录");
-
-            const tradeFlowQuery = query(
-                collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_dqaq_output_get-stock'),
-                where('tradeId', '==', tradeId)
-            );
-
-            // 图表路径与该合约产生的接货流水使用同一个 tradeId 并行获取。
-            const [{ res }, tradeFlowSnapshot] = await Promise.all([
-                evaluateDQAQ(rec),
-                getDocs(tradeFlowQuery)
-            ]);
-
+            // 重新运行评估引擎以获取实时的 plot_data 路径
+            const { res } = await evaluateDQAQ(rec);
             if (res.plot_data) {
                 setPlotData(res.plot_data);
             } else {
                 throw new Error("模型计算未返回模拟路径数据");
             }
-
-            const relatedFlows = tradeFlowSnapshot.docs
-                .map(flowDoc => ({ id: flowDoc.id, ...flowDoc.data() } as DQAQTradeFlow))
-                .sort((a, b) => {
-                    const aTime = getTime(a.date) || getTime(a.createdAt);
-                    const bTime = getTime(b.date) || getTime(b.createdAt);
-                    return bTime - aTime;
-                });
-            setPlotTradeFlows(relatedFlows);
         } catch (e: any) {
             alert("生成模拟点位图失败: " + e.message);
         } finally {
             setIsPlotLoading(false);
-            setIsTradeFlowLoading(false);
         }
     };
 
@@ -728,7 +687,7 @@ export default function DQAQHoldingPage() {
     const processLiving = useMemo(() => livingRecords.map((r: MergedRecord) => {
         const { basic, underlying, periods } = r.inputData;
         const res = r.outputData;
-        const name = `${basic.broker} | ${underlying.stock_name||underlying.ticker}`;
+        const name = `${basic.broker} | ${basic.trade_date} | ${underlying.stock_name||underlying.ticker}`;
         const today = new Date().toISOString().split('T')[0];
         const nextObs = periods.map((p:any)=>p.obs_end).filter((d:string)=>d>=today).sort()[0] || '';
         
@@ -737,7 +696,7 @@ export default function DQAQHoldingPage() {
         return {
             id: r.tradeId, pData: r.outputData,
             account: basic.account,
-            name, tradeDate: basic.trade_date || '', status: res.status_msg, currency: basic.currency,
+            name, status: res.status_msg, currency: basic.currency,
             dir: basic.contract_type, leverage: basic.leverage, daily: basic.daily_shares, max: basic.max_global_shares,
             koInPrice: strikePrice.toFixed(4), koOutPrice: koPrice.toFixed(4),
             koInPct: fmtPct(basic.strike_pct), koOutPct: fmtPct(basic.ko_barrier_pct),
@@ -749,7 +708,6 @@ export default function DQAQHoldingPage() {
             settled: res.shares_settled_paid, locked: res.shares_locked_unpaid, future: res.shares_future, expTotal: res.expected_shares,
             ticker: underlying.ticker,
             S0: underlying.spot_price,
-            initialPrice: Number(underlying.spot_price) || 0,
             currentPrice: underlying.current_price || underlying.spot_price, 
             strikeRaw: basic.strike_pct,
             koOutRaw: basic.ko_barrier_pct,
@@ -783,14 +741,8 @@ export default function DQAQHoldingPage() {
         const strikePrice = underlying.spot_price * basic.strike_pct;
         const koPrice = underlying.spot_price * basic.ko_barrier_pct;
         return {
-            id: r.tradeId, name: `${basic.broker} | ${underlying.stock_name||underlying.ticker}`,
-            tradeDate: basic.trade_date || '', status: res.status_msg, currency: basic.currency, dir: basic.contract_type, leverage: basic.leverage,
-            ticker: underlying.ticker,
-            S0: Number(underlying.spot_price) || 0,
-            initialPrice: Number(underlying.spot_price) || 0,
-            currentPrice: Number(underlying.current_price || underlying.spot_price) || 0,
-            strikeRaw: basic.strike_pct,
-            koOutRaw: basic.ko_barrier_pct,
+            id: r.tradeId, name: `${basic.broker} | ${basic.trade_date} | ${underlying.stock_name||underlying.ticker}`,
+            status: res.status_msg, currency: basic.currency, dir: basic.contract_type, leverage: basic.leverage,
             koInPrice: strikePrice.toFixed(4), koOutPrice: koPrice.toFixed(4),
             koInPct: fmtPct(basic.strike_pct), koOutPct: fmtPct(basic.ko_barrier_pct),
             settled: Number(res.expected_shares) || 0, 
@@ -999,16 +951,13 @@ export default function DQAQHoldingPage() {
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200">
                         <thead className="bg-gray-50 text-gray-600 font-medium sticky top-0 z-20 shadow-sm [&>tr>th]:bg-gray-50">
                             <tr>
-                                <Th label="当前状态" sortKey="status" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" className="sticky left-0 top-0 z-40 w-[150px] min-w-[150px] bg-gray-50 shadow-[1px_0_0_rgba(0,0,0,0.08)]" />
-                                <Th label="交易日期" sortKey="tradeDate" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="center" className="sticky left-[150px] top-0 z-40 w-[105px] min-w-[105px] bg-gray-50 shadow-[1px_0_0_rgba(0,0,0,0.08)]" />
-                                <Th label="名称" sortKey="name" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} className="sticky left-[255px] top-0 z-40 w-[220px] min-w-[220px] bg-gray-50 shadow-[2px_0_0_rgba(0,0,0,0.1)]" />
-                                <Th label="币种" sortKey="currency" align="center" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
+                                <Th label="名称" sortKey="name" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
+                                <Th label="当前状态" sortKey="status" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
+                                <Th label="币种" sortKey="currency" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="方向" sortKey="dir" align="center" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="杠杆" sortKey="leverage" align="right" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="每日股" sortKey="daily" align="right" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="最大股" sortKey="max" align="right" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
-                                <Th label="初始价" sortKey="initialPrice" align="right" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
-                                <Th label="现价" sortKey="currentPrice" align="right" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="敲入价" sortKey="koInPrice" align="right" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="敲出价" sortKey="koOutPrice" align="right" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="下一个观察日" sortKey="nextObs" align="center" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
@@ -1024,44 +973,14 @@ export default function DQAQHoldingPage() {
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                             {finalLiving.map(item => (
-                                <tr
-                                    key={item.id}
-                                    className={
-                                        item.dir === 'DQ' && item.currentPrice > Number(item.koInPrice)
-                                            ? 'group bg-yellow-50 hover:bg-yellow-100'
-                                            : item.dir === 'AQ' && item.currentPrice < Number(item.koInPrice)
-                                                ? 'group bg-red-50 hover:bg-red-100'
-                                                : 'group hover:bg-blue-50/50'
-                                    }
-                                >
-                                    <td className={`sticky left-0 z-10 w-[150px] min-w-[150px] px-3 py-2 text-center font-bold text-green-700 shadow-[1px_0_0_rgba(0,0,0,0.05)] ${
-                                        item.dir === 'DQ' && item.currentPrice > Number(item.koInPrice)
-                                            ? 'bg-yellow-50 group-hover:bg-yellow-100'
-                                            : item.dir === 'AQ' && item.currentPrice < Number(item.koInPrice)
-                                                ? 'bg-red-50 group-hover:bg-red-100'
-                                                : 'bg-white group-hover:bg-blue-50'
-                                    }`}>{item.status}</td>
-                                    <td className={`sticky left-[150px] z-10 w-[105px] min-w-[105px] px-3 py-2 text-center font-mono shadow-[1px_0_0_rgba(0,0,0,0.05)] ${
-                                        item.dir === 'DQ' && item.currentPrice > Number(item.koInPrice)
-                                            ? 'bg-yellow-50 group-hover:bg-yellow-100'
-                                            : item.dir === 'AQ' && item.currentPrice < Number(item.koInPrice)
-                                                ? 'bg-red-50 group-hover:bg-red-100'
-                                                : 'bg-white group-hover:bg-blue-50'
-                                    }`}>{item.tradeDate}</td>
-                                    <td className={`sticky left-[255px] z-10 w-[220px] min-w-[220px] px-3 py-2 font-medium whitespace-nowrap shadow-[2px_0_0_rgba(0,0,0,0.08)] ${
-                                        item.dir === 'DQ' && item.currentPrice > Number(item.koInPrice)
-                                            ? 'bg-yellow-50 group-hover:bg-yellow-100'
-                                            : item.dir === 'AQ' && item.currentPrice < Number(item.koInPrice)
-                                                ? 'bg-red-50 group-hover:bg-red-100'
-                                                : 'bg-white group-hover:bg-blue-50'
-                                    }`}>{item.name}</td>
-                                    <td className="px-3 py-2 text-center">{item.currency}</td>
+                                <tr key={item.id} className="hover:bg-blue-50/50">
+                                    <td className="px-3 py-2 font-medium">{item.name}</td>
+                                    <td className="px-3 py-2 text-green-700 font-bold">{item.status}</td>
+                                    <td className="px-3 py-2">{item.currency}</td>
                                     <td className={`px-3 py-2 text-center font-bold ${item.dir==='DQ'?'text-red-600':'text-green-600'}`}>{item.dir}</td>
                                     <td className="px-3 py-2 text-right">{item.leverage}x</td>
                                     <td className="px-3 py-2 text-right font-mono">{item.daily}</td>
                                     <td className="px-3 py-2 text-right font-mono">{item.max}</td>
-                                    <td className="px-3 py-2 text-right font-mono">{item.initialPrice.toFixed(4)}</td>
-                                    <td className="px-3 py-2 text-right font-mono text-blue-700">{item.currentPrice.toFixed(4)}</td>
                                     <td className="px-3 py-2 text-right font-mono underline decoration-dotted cursor-help" title={`敲入比例: ${item.koInPct}`}>{item.koInPrice}</td>
                                     <td className="px-3 py-2 text-right font-mono text-orange-600 underline decoration-dotted cursor-help" title={`敲出比例: ${item.koOutPct}`}>{item.koOutPrice}</td>
                                     <td className="px-3 py-2 text-center font-mono">{item.nextObs}</td>
@@ -1072,7 +991,6 @@ export default function DQAQHoldingPage() {
                                                 setChartData({ 
                                                     name: item.name, 
                                                     ticker: item.ticker,
-                                                    currency: item.currency,
                                                     current: item.currentPrice, 
                                                     strike: item.S0 * item.strikeRaw,
                                                     ko: item.S0 * item.koOutRaw,
@@ -1166,17 +1084,13 @@ export default function DQAQHoldingPage() {
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200">
                         <thead className="bg-gray-50 text-gray-600 font-medium sticky top-0 z-20 shadow-sm [&>tr>th]:bg-gray-50">
                             <tr>
-                                <Th label="当前状态" sortKey="status" align="center" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} className="sticky left-0 top-0 z-40 w-[150px] min-w-[150px] bg-gray-50 shadow-[1px_0_0_rgba(0,0,0,0.08)]" />
-                                <Th label="交易日期" sortKey="tradeDate" align="center" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} className="sticky left-[150px] top-0 z-40 w-[105px] min-w-[105px] bg-gray-50 shadow-[1px_0_0_rgba(0,0,0,0.08)]" />
-                                <Th label="名称" sortKey="name" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} className="sticky left-[255px] top-0 z-40 w-[220px] min-w-[220px] bg-gray-50 shadow-[2px_0_0_rgba(0,0,0,0.1)]" />
+                                <Th label="名称" sortKey="name" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
+                                <Th label="历史状态" sortKey="status" align="center" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="币种" sortKey="currency" align="center" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="方向" sortKey="dir" align="center" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="杠杆" sortKey="leverage" align="right" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
-                                <Th label="初始价" sortKey="initialPrice" align="right" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
-                                <Th label="现价" sortKey="currentPrice" align="right" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="敲入价" sortKey="koInPrice" align="right" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="敲出价" sortKey="koOutPrice" align="right" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
-                                <th className="px-3 py-2 text-center">点位图</th>
                                 <Th label="最终结算股数" sortKey="settled" align="right" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="最终完成率" sortKey="expRate" align="right" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="全价" sortKey="fullPrice" align="right" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
@@ -1184,37 +1098,14 @@ export default function DQAQHoldingPage() {
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                             {finalDied.map(item => (
-                                <tr key={item.id} className="group hover:bg-orange-50/30">
-                                    <td className="sticky left-0 z-10 w-[150px] min-w-[150px] bg-white group-hover:bg-orange-50 px-3 py-2 text-orange-700 font-bold text-center shadow-[1px_0_0_rgba(0,0,0,0.05)]">{item.status}</td>
-                                    <td className="sticky left-[150px] z-10 w-[105px] min-w-[105px] bg-white group-hover:bg-orange-50 px-3 py-2 text-center font-mono shadow-[1px_0_0_rgba(0,0,0,0.05)]">{item.tradeDate}</td>
-                                    <td className="sticky left-[255px] z-10 w-[220px] min-w-[220px] bg-white group-hover:bg-orange-50 px-3 py-2 font-medium whitespace-nowrap shadow-[2px_0_0_rgba(0,0,0,0.08)]">{item.name}</td>
+                                <tr key={item.id} className="hover:bg-orange-50/30">
+                                    <td className="px-3 py-2 font-medium">{item.name}</td>
+                                    <td className="px-3 py-2 text-orange-700 font-bold text-center">{item.status}</td>
                                     <td className="px-3 py-2 text-center">{item.currency}</td>
                                     <td className={`px-3 py-2 text-center font-bold ${item.dir==='DQ'?'text-red-600':'text-green-600'}`}>{item.dir}</td>
                                     <td className="px-3 py-2 text-right">{item.leverage}x</td>
-                                    <td className="px-3 py-2 text-right font-mono">{item.initialPrice.toFixed(4)}</td>
-                                    <td className="px-3 py-2 text-right font-mono text-blue-700">{item.currentPrice.toFixed(4)}</td>
                                     <td className="px-3 py-2 text-right font-mono underline decoration-dotted cursor-help" title={`敲入比例: ${item.koInPct}`}>{item.koInPrice}</td>
                                     <td className="px-3 py-2 text-right font-mono text-orange-600 underline decoration-dotted cursor-help" title={`敲出比例: ${item.koOutPct}`}>{item.koOutPrice}</td>
-                                    <td className="px-3 py-2 text-center">
-                                        <button
-                                            onClick={() => {
-                                                setChartData({
-                                                    name: item.name,
-                                                    ticker: item.ticker,
-                                                    currency: item.currency,
-                                                    current: item.currentPrice,
-                                                    strike: item.S0 * item.strikeRaw,
-                                                    ko: item.S0 * item.koOutRaw,
-                                                    recordId: item.id
-                                                });
-                                                handleGeneratePlot(item.id);
-                                            }}
-                                            className="text-orange-500 hover:bg-orange-100 p-1 rounded transition-colors"
-                                            title="查看点位图及关联交易流水"
-                                        >
-                                            <LineChart size={16}/>
-                                        </button>
-                                    </td>
                                     <td className="px-3 py-2 text-right font-mono font-bold text-gray-800">{(item.settled || 0).toFixed(2)}</td>
                                     <td className="px-3 py-2 text-right font-mono">{fmtPct(item.expRate || 0)}</td>
                                     <td className="px-3 py-2 text-right font-mono font-bold text-blue-800">{fmtMoney(item.fullPrice, item.currency)}</td>
@@ -1662,7 +1553,7 @@ export default function DQAQHoldingPage() {
             {/* 点位图与蒙特卡洛模拟 Modal */}
             {chartData && (
                 <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-                    <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-5xl max-h-[92vh] overflow-y-auto flex flex-col relative animate-in fade-in duration-200">
+                    <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-4xl flex flex-col relative animate-in fade-in duration-200">
                         <div className="flex justify-between items-center mb-4 border-b pb-4">
                             <div>
                                 <h3 className="font-bold text-xl text-gray-900 flex items-center gap-2">
@@ -1676,7 +1567,7 @@ export default function DQAQHoldingPage() {
                                     <span className="flex items-center gap-1">敲出(KO): <strong className="text-green-600 font-mono">{chartData.ko.toFixed(4)}</strong></span>
                                 </div>
                             </div>
-                            <button onClick={() => { setChartData(null); setPlotData(null); setPlotTradeFlows([]); }} className="text-gray-400 hover:text-gray-600 bg-gray-50 hover:bg-gray-100 p-2 rounded-full transition-all self-start">
+                            <button onClick={() => { setChartData(null); setPlotData(null); }} className="text-gray-400 hover:text-gray-600 bg-gray-50 hover:bg-gray-100 p-2 rounded-full transition-all self-start">
                                 <X size={20}/>
                             </button>
                         </div>
@@ -1699,63 +1590,10 @@ export default function DQAQHoldingPage() {
                                 </div>
                             )}
                         </div>
-
-                        {(isTradeFlowLoading || plotTradeFlows.length > 0) && (
-                            <div className="mt-5 rounded-lg border border-orange-200 overflow-hidden">
-                                <div className="px-4 py-3 bg-orange-50 border-b border-orange-200 flex items-center justify-between">
-                                    <h4 className="font-bold text-sm text-orange-900">关联交易流水</h4>
-                                    {!isTradeFlowLoading && (
-                                        <span className="text-xs text-orange-700">共 {plotTradeFlows.length} 笔</span>
-                                    )}
-                                </div>
-                                {isTradeFlowLoading ? (
-                                    <div className="py-8 flex items-center justify-center gap-2 text-sm text-gray-500">
-                                        <Loader2 className="animate-spin text-orange-500" size={18}/>
-                                        正在查询关联流水...
-                                    </div>
-                                ) : (
-                                    <div className="overflow-x-auto max-h-60 overflow-y-auto">
-                                        <table className="min-w-full text-xs whitespace-nowrap">
-                                            <thead className="sticky top-0 bg-gray-50 text-gray-600">
-                                                <tr>
-                                                    <th className="px-3 py-2 text-left">日期</th>
-                                                    <th className="px-3 py-2 text-left">账户</th>
-                                                    <th className="px-3 py-2 text-center">方向</th>
-                                                    <th className="px-3 py-2 text-left">股票代码 / 名称</th>
-                                                    <th className="px-3 py-2 text-right">成交股数</th>
-                                                    <th className="px-3 py-2 text-right">成交价</th>
-                                                    <th className="px-3 py-2 text-right">交易金额</th>
-                                                    <th className="px-3 py-2 text-right">金额 HKD</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-gray-100">
-                                                {plotTradeFlows.map(flow => (
-                                                    <tr key={flow.id} className="hover:bg-orange-50/40">
-                                                        <td className="px-3 py-2 font-mono">{flow.date || formatTime(flow.createdAt) || '--'}</td>
-                                                        <td className="px-3 py-2">{flow.account || '--'}</td>
-                                                        <td className={`px-3 py-2 text-center font-bold ${(flow.direction || '').toUpperCase() === 'SELL' ? 'text-red-600' : 'text-green-600'}`}>
-                                                            {(flow.direction || '--').toUpperCase()}
-                                                        </td>
-                                                        <td className="px-3 py-2">
-                                                            <span className="font-mono font-bold">{flow.stockCode || chartData.ticker}</span>
-                                                            {flow.stockName && <span className="ml-2 text-gray-500">{flow.stockName}</span>}
-                                                        </td>
-                                                        <td className="px-3 py-2 text-right font-mono">{Number(flow.quantity || 0).toLocaleString('en-US', { maximumFractionDigits: 4 })}</td>
-                                                        <td className="px-3 py-2 text-right font-mono">{Number(flow.priceNoFee || 0).toFixed(4)}</td>
-                                                        <td className="px-3 py-2 text-right font-mono">{Number(flow.amountNoFee || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {chartData.currency}</td>
-                                                        <td className="px-3 py-2 text-right font-mono font-bold">{Number(flow.hkdAmount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                )}
-                            </div>
-                        )}
                         
                         <div className="flex justify-between items-center mt-4 pt-4 border-t text-xs text-gray-500">
                             <p className="flex items-center gap-1"><AlertCircle size={14}/> 提示：图表数据为引擎实时动态生成，受蒙特卡洛随机种子及最新市价影响。</p>
-                            <button onClick={() => { setChartData(null); setPlotData(null); setPlotTradeFlows([]); }} className="px-6 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-md transition-colors">
+                            <button onClick={() => setChartData(null)} className="px-6 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-md transition-colors">
                                 关闭图表
                             </button>
                         </div>
