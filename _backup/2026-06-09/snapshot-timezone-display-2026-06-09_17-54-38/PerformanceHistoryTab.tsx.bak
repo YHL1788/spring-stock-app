@@ -181,7 +181,7 @@ export default function PerformanceHistoryTab() {
 
   async function deleteSnapshot(snapshot: SnapshotWithExposure) {
     if (!snapshot.id) return;
-    if (!window.confirm(`确认删除 ${formatSnapshotTime(snapshot.snapshotAt)} 的快照吗？`)) return;
+    if (!window.confirm(`确认删除 ${snapshot.snapshotAt} 的快照吗？`)) return;
     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', SNAPSHOT_COLLECTION, snapshot.id));
     setSnapshots((prev) => prev.filter((item) => item.id !== snapshot.id));
   }
@@ -393,7 +393,7 @@ export default function PerformanceHistoryTab() {
                   const navPoint = navSeries.find((point) => point.snapshotAt === snapshot.snapshotAt);
                   return (
                     <tr key={snapshot.id || snapshot.snapshotAt}>
-                      <td className="px-3 py-2 font-mono">{formatSnapshotTime(snapshot.snapshotAt)}</td>
+                      <td className="px-3 py-2 font-mono">{snapshot.snapshotAt.replace('T', ' ').slice(0, 19)}</td>
                       <td className="px-3 py-2 text-right font-mono">{formatHKD(snapshot.totalMarketValueHKD)}</td>
                       <td className="px-3 py-2 text-right font-mono">{formatOptionalHKD(snapshot.totalExposureMarketValueHKD)}</td>
                       <td className="px-3 py-2 text-right font-mono">{formatOptionalPercent(snapshot.exposureRatio)}</td>
@@ -790,22 +790,6 @@ function axisPositionKey(value: number) {
 function formatAxisDate(value: string) {
   const parts = value.split('-');
   return parts.length === 3 ? `${parts[1]}-${parts[2]}` : value;
-}
-
-function formatSnapshotTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-
-  return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Hong_Kong',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).format(date).replace(/\//g, '-');
 }
 
 function SmallInfo({ label, value }: { label: string; value: string }) {
