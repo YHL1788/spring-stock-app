@@ -59,9 +59,7 @@ const sanitizeFullHtmlDocument = (html: string) => {
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, 'text/html');
 
-  // Full documents run only inside a unique-origin sandboxed iframe. Keep scripts
-  // for interactive research dashboards, but remove nested browsing/plugin content.
-  doc.querySelectorAll('iframe, object, embed').forEach((el) => el.remove());
+  doc.querySelectorAll('script, iframe, object, embed').forEach((el) => el.remove());
   doc.querySelectorAll('*').forEach((el) => {
     Array.from(el.attributes).forEach((attr) => {
       const name = attr.name.toLowerCase();
@@ -467,8 +465,7 @@ export default function SipResearchLibraryPage() {
                 {draftIsFullDocument ? (
                   <iframe
                     title="HTML preview"
-                    sandbox="allow-scripts"
-                    referrerPolicy="no-referrer"
+                    sandbox=""
                     srcDoc={draftIframeDoc}
                     className="h-[620px] w-full rounded-2xl border border-slate-200 bg-white shadow-sm"
                   />
@@ -515,8 +512,7 @@ export default function SipResearchLibraryPage() {
               {viewerIsFullDocument ? (
                 <iframe
                   title={viewerRecord.noteID}
-                  sandbox="allow-scripts"
-                  referrerPolicy="no-referrer"
+                  sandbox=""
                   srcDoc={viewerIframeDoc}
                   className="h-[72vh] w-full rounded-2xl border border-slate-200 bg-white"
                 />
