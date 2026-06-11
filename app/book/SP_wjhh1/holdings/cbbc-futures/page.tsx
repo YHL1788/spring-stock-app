@@ -690,9 +690,9 @@ export default function CBBCHoldingsPage() {
       return total;
   }, [cashStats, globalFxRates]);
 
-  const handleSaveCashStats = async (isAuto = false) => {
+  const handleSaveCashStats = async () => {
       if (!user) return;
-      if (!isAuto) setIsSavingCash(true);
+      setIsSavingCash(true);
       try {
           const payload = {
               accounts: cashStats.accounts,
@@ -701,19 +701,17 @@ export default function CBBCHoldingsPage() {
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_cbbc', payload, refreshGroup: 'holdings-cbbc-futures', sourcePage: '/book/SP_wjhh1/holdings/cbbc-futures' });
-          if (!isAuto) {
-              setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
-          }
+          setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) { 
           console.error("保存资金净买入统计失败:", e); 
       } finally {
-          if (!isAuto) setIsSavingCash(false);
+          setIsSavingCash(false);
       }
   };
 
-  const handleSaveMktValStats = async (isAuto = false) => {
+  const handleSaveMktValStats = async () => {
       if (!user) return;
-      if (!isAuto) setIsSavingMktVal(true);
+      setIsSavingMktVal(true);
       try {
           const payload = {
               accounts: currentMktStats.accounts,
@@ -722,17 +720,17 @@ export default function CBBCHoldingsPage() {
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cbbc_mktvalue', payload, refreshGroup: 'holdings-cbbc-futures', sourcePage: '/book/SP_wjhh1/holdings/cbbc-futures' });
-          if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前市值统计失败:", e);
       } finally {
-          if (!isAuto) setIsSavingMktVal(false);
+          setIsSavingMktVal(false);
       }
   };
 
-  const handleSavePlStats = async (isAuto = false) => {
+  const handleSavePlStats = async () => {
       if (!user) return;
-      if (!isAuto) setIsSavingPl(true);
+      setIsSavingPl(true);
       try {
           const payload = {
               markets: currentPlStats.markets,
@@ -740,11 +738,11 @@ export default function CBBCHoldingsPage() {
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cbbc_pl', payload, refreshGroup: 'holdings-cbbc-futures', sourcePage: '/book/SP_wjhh1/holdings/cbbc-futures' });
-          if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前收益统计失败:", e);
       } finally {
-          if (!isAuto) setIsSavingPl(false);
+          setIsSavingPl(false);
       }
   };
 
@@ -1204,7 +1202,7 @@ export default function CBBCHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
                         <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※页面打开自动刷新，点击按钮才入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1212,7 +1210,7 @@ export default function CBBCHoldingsPage() {
                             <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                         </button>
                         {(!isHKDView && !hasActiveFilters) && (
-                            <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={handleSaveMktValStats} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                             </button>
                         )}
@@ -1395,7 +1393,7 @@ export default function CBBCHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
                         <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※页面打开自动刷新，点击按钮才入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1403,7 +1401,7 @@ export default function CBBCHoldingsPage() {
                             <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                         </button>
                         {(!isHKDView && !hasActiveFilters) && (
-                            <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={handleSavePlStats} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                             </button>
                         )}
@@ -1560,7 +1558,7 @@ export default function CBBCHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
                         <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※页面打开自动刷新，点击按钮才入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1568,7 +1566,7 @@ export default function CBBCHoldingsPage() {
                             <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                         </button>
                         {(!isHKDView && !hasActiveFilters) && (
-                            <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={handleSaveCashStats} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                             </button>
                         )}

@@ -36,13 +36,13 @@ import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 
 // --- 统一的交易数据类型 ---
-interface UnifiedPETrade {
+interface UnifiedCBBCTrade {
   id: string;
   date: string;
   account: string;
   market: string;
-  fundCode: string;
-  fundName: string;
+  futuresCode: string;
+  futuresName: string;
   direction: 'BUY' | 'SELL';
   quantity: number;
   price: number; 
@@ -53,27 +53,29 @@ interface UnifiedPETrade {
 }
 
 // --- 期初持仓（底座）数据类型 ---
-interface InitialPEHolding {
+interface InitialCBBCHolding {
   id: string;
-  fundCode: string;
-  fundName: string;
+  futuresCode: string;
+  futuresName: string;
   market: string;
   account: string;
   quantity: number;
   costPrice: number;
 }
 
-// --- PE的手动价格数据类型 ---
-interface PEPriceRecord {
+// --- CBBC的手动价格数据类型 ---
+interface CBBCPriceRecord {
   price: number;
   updatedAt: string;
+  knockedOut?: boolean;
+  knockedOutAt?: string;
 }
 
 // --- 聚合后的持仓数据类型 ---
-interface PEHolding {
+interface CBBCHolding {
   market: string;
-  fundCode: string;
-  fundName: string;
+  futuresCode: string;
+  futuresName: string;
   quantity: number;
   avgCost: number; 
   totalCostHKD: number; 
@@ -138,19 +140,19 @@ const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onF
     );
 };
 
-export default function PEHoldingsPage() {
+export default function CBBCHoldingsPage() {
   const [user, setUser] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingInitial, setLoadingInitial] = useState(true);
   
   // --- 数据源 ---
-  const [allTrades, setAllTrades] = useState<UnifiedPETrade[]>([]);
-  const [initialHoldings, setInitialHoldings] = useState<InitialPEHolding[]>([]);
+  const [allTrades, setAllTrades] = useState<UnifiedCBBCTrade[]>([]);
+  const [initialHoldings, setInitialHoldings] = useState<InitialCBBCHolding[]>([]);
   const [baseDate, setBaseDate] = useState<string>('');
-  const [pePrices, setPePrices] = useState<Record<string, PEPriceRecord>>({});
+  const [cbbcPrices, setCbbcPrices] = useState<Record<string, CBBCPriceRecord>>({});
   
-  // --- UI State ---
-  const [newInit, setNewInit] = useState({ fundCode: '', fundName: '', market: 'USD', account: '', quantity: 0, costPrice: 0 });
+  // --- 新增期初记录 State ---
+  const [newInit, setNewInit] = useState({ futuresCode: '', futuresName: '', market: 'USD', account: '', quantity: 0, costPrice: 0 });
   const [submittingInit, setSubmittingInit] = useState(false);
   const [draftPrices, setDraftPrices] = useState<Record<string, string>>({}); 
 
@@ -175,7 +177,7 @@ export default function PEHoldingsPage() {
   const [lastPlSavedTime, setLastPlSavedTime] = useState<string>('未获取');
 
   // --- 数据库管理模块状态 ---
-  const [activeDbTab, setActiveDbTab] = useState('sip_trade_pe');
+  const [activeDbTab, setActiveDbTab] = useState('sip_trade_cbbc');
   const [dbRecords, setDbRecords] = useState<any[]>([]);
   const [loadingDb, setLoadingDb] = useState(false);
   const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
@@ -240,9 +242,9 @@ export default function PEHoldingsPage() {
           
           if (currentUser) {
             // 1. 监听期初持仓
-            const qStart = query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_start'));
+            const qStart = query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_start'));
             unsubStart = onSnapshot(qStart, (snapshot) => {
-                const starts: InitialPEHolding[] = [];
+                const starts: InitialCBBCHolding[] = [];
                 let bDate = '';
                 let bFx: Record<string, number> = {};
                 snapshot.forEach(docSnap => {
@@ -250,7 +252,7 @@ export default function PEHoldingsPage() {
                         bDate = docSnap.data().baseDate || '';
                         bFx = docSnap.data().baseFxRates || {};
                     } else {
-                        starts.push({ id: docSnap.id, ...docSnap.data() } as InitialPEHolding);
+                        starts.push({ id: docSnap.id, ...docSnap.data() } as InitialCBBCHolding);
                     }
                 });
                 setBaseDate(bDate);
@@ -259,21 +261,21 @@ export default function PEHoldingsPage() {
             });
 
             // 获取最后保存时间
-            unsubCashTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_pe', 'latest_summary'), (docSnap) => {
+            unsubCashTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cash_cbbc', 'latest_summary'), (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
                     if (data.updatedAt) setLastCashSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
                 }
             });
 
-            unsubMktValTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_mktvalue', 'latest_summary'), (docSnap) => {
+            unsubMktValTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_mktvalue', 'latest_summary'), (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
                     if (data.updatedAt) setLastMktValSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
                 }
             });
 
-            unsubPlTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_pl', 'latest_summary'), (docSnap) => {
+            unsubPlTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_pl', 'latest_summary'), (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
                     if (data.updatedAt) setLastPlSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
@@ -281,9 +283,9 @@ export default function PEHoldingsPage() {
             });
 
             // 2. 监听交易流水
-            const qTrades = query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_pe'));
+            const qTrades = query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_cbbc'));
             unsubTrades = onSnapshot(qTrades, (snapshot) => {
-                const merged: UnifiedPETrade[] = [];
+                const merged: UnifiedCBBCTrade[] = [];
                 snapshot.forEach(docSnap => {
                     const d = docSnap.data();
                     const direction = d.direction?.toUpperCase() || 'BUY';
@@ -293,8 +295,8 @@ export default function PEHoldingsPage() {
                         date: d.date, 
                         account: d.account || '', 
                         market: d.market || 'USD',
-                        fundCode: d.fundCode, 
-                        fundName: d.fundName, 
+                        futuresCode: d.futuresCode, 
+                        futuresName: d.futuresName, 
                         direction,
                         quantity: direction === 'BUY' ? qty : -qty,
                         price: Number(d.avg_price_incl_fee || d.price_excl_fee || 0),
@@ -309,14 +311,19 @@ export default function PEHoldingsPage() {
             });
 
             // 3. 监听手动维护的最新价格
-            const qPrices = query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_lastprice'));
+            const qPrices = query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_lastprice'));
             unsubPrices = onSnapshot(qPrices, (snapshot) => {
-                const priceMap: Record<string, PEPriceRecord> = {};
+                const priceMap: Record<string, CBBCPriceRecord> = {};
                 snapshot.forEach(docSnap => {
                     const data = docSnap.data();
-                    priceMap[docSnap.id] = { price: Number(data.price), updatedAt: data.updatedAt };
+                    priceMap[docSnap.id] = {
+                        price: Number(data.price),
+                        updatedAt: data.updatedAt,
+                        knockedOut: Boolean(data.knockedOut),
+                        knockedOutAt: data.knockedOutAt,
+                    };
                 });
-                setPePrices(priceMap);
+                setCbbcPrices(priceMap);
                 setLoadingInitial(false);
             });
           }
@@ -383,16 +390,16 @@ export default function PEHoldingsPage() {
 
   // --- 核心计算逻辑 (期初底座 + FIFO 增量) ---
   const calculatedHoldings = useMemo(() => {
-      const holdingsMap: Record<string, PEHolding> = {};
+      const holdingsMap: Record<string, CBBCHolding> = {};
 
       // 1. 期初底座铺设
       initialHoldings.forEach(init => {
-          const key = init.fundCode;
+          const key = init.futuresCode;
           if (!holdingsMap[key]) {
               holdingsMap[key] = {
                   market: init.market,
-                  fundCode: key,
-                  fundName: init.fundName || key,
+                  futuresCode: key,
+                  futuresName: init.futuresName || key,
                   quantity: 0,
                   avgCost: 0,
                   totalCostHKD: 0,
@@ -421,12 +428,12 @@ export default function PEHoldingsPage() {
       const chronological = [...activeTrades].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
       chronological.forEach(t => {
-          const key = t.fundCode;
+          const key = t.futuresCode;
           if (!holdingsMap[key]) {
               holdingsMap[key] = {
                   market: t.market,
-                  fundCode: t.fundCode,
-                  fundName: t.fundName || t.fundCode,
+                  futuresCode: t.futuresCode,
+                  futuresName: t.futuresName || t.futuresCode,
                   quantity: 0,
                   avgCost: 0,
                   totalCostHKD: 0,
@@ -470,7 +477,7 @@ export default function PEHoldingsPage() {
       // 3. 市值重估 (如果没有手动输入价格，则默认原价)
       Object.values(holdingsMap).forEach(h => {
           const rate = globalFxRates[h.market] || 1;
-          h.currentPrice = pePrices[h.fundCode]?.price || h.avgCost; 
+          h.currentPrice = cbbcPrices[h.futuresCode]?.price || h.avgCost; 
           
           h.totalCostHKD = (h.quantity * h.avgCost) * rate;
           h.mktValHKD = (h.quantity * h.currentPrice) * rate;
@@ -480,7 +487,7 @@ export default function PEHoldingsPage() {
       });
 
       return Object.values(holdingsMap).filter(h => h.quantity > 0 || Math.abs(h.realizedPnlHKD) > 0.01);
-  }, [activeTrades, initialHoldings, globalFxRates, pePrices]);
+  }, [activeTrades, initialHoldings, globalFxRates, cbbcPrices]);
 
   // --- 模块 1: 当前持仓过滤与排序 ---
   const displayHoldings = useMemo(() => {
@@ -575,8 +582,8 @@ export default function PEHoldingsPage() {
   const pnlData = useMemo(() => {
       return calculatedHoldings.map(h => {
           return {
-              name: h.fundName,
-              code: h.fundCode,
+              name: h.futuresName,
+              code: h.futuresCode,
               unrealized: h.unrealizedPnlHKD,
               realized: h.realizedPnlHKD,
               totalPnl: h.unrealizedPnlHKD + h.realizedPnlHKD
@@ -661,7 +668,7 @@ export default function PEHoldingsPage() {
               rawMatrix[h.market][h.account] += h.quantity * h.costPrice;
           }
       });
-      // 累加流水净申购
+      // 累加流水买卖
       activeTrades.forEach(t => {
           if (t.market && t.account) {
               const signedAmount = t.direction === 'BUY' ? t.amount : -t.amount;
@@ -683,9 +690,9 @@ export default function PEHoldingsPage() {
       return total;
   }, [cashStats, globalFxRates]);
 
-  const handleSaveCashStats = async () => {
+  const handleSaveCashStats = async (isAuto = false) => {
       if (!user) return;
-      setIsSavingCash(true);
+      if (!isAuto) setIsSavingCash(true);
       try {
           const payload = {
               accounts: cashStats.accounts,
@@ -693,18 +700,20 @@ export default function PEHoldingsPage() {
               rawMatrix: cashStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_pe', payload, refreshGroup: 'holdings-pe', sourcePage: '/book/SP_wjhh1/holdings/pe' });
-          setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_cbbc', payload, refreshGroup: 'holdings-cbbc-futures', sourcePage: '/book/SP_wjhh1/holdings/cbbc-futures' });
+          if (!isAuto) {
+              setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          }
       } catch (e) { 
           console.error("保存资金净买入统计失败:", e); 
       } finally {
-          setIsSavingCash(false);
+          if (!isAuto) setIsSavingCash(false);
       }
   };
 
-  const handleSaveMktValStats = async () => {
+  const handleSaveMktValStats = async (isAuto = false) => {
       if (!user) return;
-      setIsSavingMktVal(true);
+      if (!isAuto) setIsSavingMktVal(true);
       try {
           const payload = {
               accounts: currentMktStats.accounts,
@@ -712,30 +721,30 @@ export default function PEHoldingsPage() {
               rawMatrix: currentMktStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_pe_mktvalue', payload, refreshGroup: 'holdings-pe', sourcePage: '/book/SP_wjhh1/holdings/pe' });
-          setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cbbc_mktvalue', payload, refreshGroup: 'holdings-cbbc-futures', sourcePage: '/book/SP_wjhh1/holdings/cbbc-futures' });
+          if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前市值统计失败:", e);
       } finally {
-          setIsSavingMktVal(false);
+          if (!isAuto) setIsSavingMktVal(false);
       }
   };
 
-  const handleSavePlStats = async () => {
+  const handleSavePlStats = async (isAuto = false) => {
       if (!user) return;
-      setIsSavingPl(true);
+      if (!isAuto) setIsSavingPl(true);
       try {
           const payload = {
               markets: currentPlStats.markets,
               rawMatrix: currentPlStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_pe_pl', payload, refreshGroup: 'holdings-pe', sourcePage: '/book/SP_wjhh1/holdings/pe' });
-          setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cbbc_pl', payload, refreshGroup: 'holdings-cbbc-futures', sourcePage: '/book/SP_wjhh1/holdings/cbbc-futures' });
+          if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前收益统计失败:", e);
       } finally {
-          setIsSavingPl(false);
+          if (!isAuto) setIsSavingPl(false);
       }
   };
 
@@ -795,15 +804,15 @@ export default function PEHoldingsPage() {
 
   const getRecordSummary = (r: any, tab: string) => {
       try {
-          if (tab === 'sip_trade_pe') {
-              return `[${r.direction}] ${Math.abs(r.quantity)}份 ${r.fundCode} | ${r.account}`;
+          if (tab === 'sip_trade_cbbc') {
+              return `[${r.direction}] ${Math.abs(r.quantity)}数量 ${r.futuresCode} | ${r.account}`;
           }
-          if (tab === 'sip_holding_pe_start') {
+          if (tab === 'sip_holding_cbbc_start') {
               if (r.id === '_global_config') return `全局基准配置`;
-              return `[期初] ${r.quantity}份 ${r.fundCode} | ${r.account}`;
+              return `[期初] ${r.quantity}数量 ${r.futuresCode} | ${r.account}`;
           }
-          if (tab === 'sip_holding_pe_lastprice') {
-              return `[估值] ${r.fundCode}: ${r.price}`;
+          if (tab === 'sip_holding_cbbc_lastprice') {
+              return `[估值] ${r.futuresCode}: ${r.price}`;
           }
           if (tab.includes('mktvalue') || tab.includes('pl') || tab.includes('cash')) {
               const time = formatTime(r.updatedAt) || formatTime(r.createdAt) || 'N/A';
@@ -816,43 +825,101 @@ export default function PEHoldingsPage() {
   };
 
   // --- 模块 5: 手动价格录入 ---
-  const uniqueFunds = useMemo(() => {
-      const map = new Map<string, { fundCode: string, fundName: string, market: string }>();
+  const uniqueFutures = useMemo(() => {
+      const map = new Map<string, { futuresCode: string, futuresName: string, market: string }>();
       initialHoldings.forEach(h => {
-          if (h.fundCode) map.set(h.fundCode, { fundCode: h.fundCode, fundName: h.fundName, market: h.market });
+          if (h.futuresCode) map.set(h.futuresCode, { futuresCode: h.futuresCode, futuresName: h.futuresName, market: h.market });
       });
       allTrades.forEach(t => {
-          if (t.fundCode) map.set(t.fundCode, { fundCode: t.fundCode, fundName: t.fundName, market: t.market });
+          if (t.futuresCode) map.set(t.futuresCode, { futuresCode: t.futuresCode, futuresName: t.futuresName, market: t.market });
       });
-      return Array.from(map.values()).sort((a, b) => a.fundCode.localeCompare(b.fundCode));
+      return Array.from(map.values()).sort((a, b) => a.futuresCode.localeCompare(b.futuresCode));
   }, [initialHoldings, allTrades]);
 
-  const handleSavePrice = async (fundCode: string, market: string, fundName: string) => {
-      const priceVal = parseFloat(draftPrices[fundCode]);
+  const handleSavePrice = async (futuresCode: string, market: string, futuresName: string) => {
+      const priceVal = parseFloat(draftPrices[futuresCode]);
       if (isNaN(priceVal) || priceVal < 0) {
           alert('请输入有效的价格 (≥0)');
           return;
       }
       try {
-          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_lastprice', fundCode), {
-              fundCode,
-              fundName,
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_lastprice', futuresCode), {
+              futuresCode,
+              futuresName,
               market,
               price: priceVal,
+              knockedOut: false,
+              knockedOutAt: null,
               updatedAt: new Date().toISOString()
           });
           // 成功后清空草稿
-          setDraftPrices(prev => { const next = {...prev}; delete next[fundCode]; return next; });
+          setDraftPrices(prev => { const next = {...prev}; delete next[futuresCode]; return next; });
       } catch (e) {
           alert("保存价格失败");
       }
   };
 
-  const handleDeletePrice = async (fundCode: string) => {
-      if (!confirm(`确定要删除 [${fundCode}] 的手动估值吗？删除后系统将恢复使用历史平均成本价计算市值。`)) return;
+  const handleKnockOut = async (futuresCode: string, market: string, futuresName: string) => {
+      const holding = calculatedHoldings.find(h => h.futuresCode === futuresCode && h.quantity > 0);
+      if (!holding) {
+          alert('当前没有可打靶平仓的剩余持仓。');
+          return;
+      }
+
+      const accountRows = Object.entries(holding.accounts)
+          .map(([account, quantity]) => ({ account, quantity: Number(quantity) }))
+          .filter(row => row.quantity > 0);
+
+      if (accountRows.length === 0) {
+          alert('当前没有可打靶平仓的账户持仓。');
+          return;
+      }
+
+      const today = new Date().toISOString().slice(0, 10);
+      if (!confirm(`确认将 [${futuresCode}] 标记为“被打靶”吗？\n\n系统将按 0 元为 ${accountRows.length} 个账户生成 SELL 流水，剩余持仓会被强制清零。此操作会影响已实现盈亏。`)) return;
+
       try {
-          await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_lastprice', fundCode));
-          setDraftPrices(prev => { const next = {...prev}; delete next[fundCode]; return next; });
+          await Promise.all(accountRows.map(row => addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_cbbc'), {
+              date: today,
+              account: row.account,
+              market,
+              futuresCode,
+              futuresName,
+              direction: 'SELL',
+              quantity: Math.abs(row.quantity),
+              price_excl_fee: 0,
+              avg_price_incl_fee: 0,
+              amount_excl_fee: 0,
+              amount_incl_fee: 0,
+              fee: 0,
+              executor: 'SYSTEM_KNOCK_OUT',
+              remark: '被打靶强制归零',
+              createdAt: new Date(),
+              updatedAt: new Date(),
+          })));
+
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_lastprice', futuresCode), {
+              futuresCode,
+              futuresName,
+              market,
+              price: 0,
+              knockedOut: true,
+              knockedOutAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+          }, { merge: true });
+
+          setDraftPrices(prev => ({ ...prev, [futuresCode]: '0' }));
+          alert(`已将 [${futuresCode}] 按 0 元强制平仓，并标记为被打靶。`);
+      } catch (e: any) {
+          alert(`被打靶处理失败: ${e?.message || e}`);
+      }
+  };
+
+  const handleDeletePrice = async (futuresCode: string) => {
+      if (!confirm(`确定要删除 [${futuresCode}] 的手动估值吗？删除后系统将恢复使用历史平均成本价计算市值。`)) return;
+      try {
+          await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_lastprice', futuresCode));
+          setDraftPrices(prev => { const next = {...prev}; delete next[futuresCode]; return next; });
       } catch (e) {
           alert("删除估值失败");
       }
@@ -885,26 +952,26 @@ export default function PEHoldingsPage() {
   const handleUpdateBaseDate = async (newDate: string) => {
       setBaseDate(newDate);
       try {
-          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_start', '_global_config'), { baseDate: newDate }, { merge: true });
+          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_start', '_global_config'), { baseDate: newDate }, { merge: true });
       } catch (e) { console.error("更新基准日期失败", e); }
   };
 
   const handleAddInitialHolding = async () => {
-      if (!newInit.fundCode || !newInit.market || !newInit.account || newInit.quantity <= 0 || newInit.costPrice < 0) {
+      if (!newInit.futuresCode || !newInit.market || !newInit.account || newInit.quantity <= 0 || newInit.costPrice < 0) {
           alert('请正确填写代码、账户、数量(>0)和成本价(>=0)');
           return;
       }
       setSubmittingInit(true);
       try {
-          await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_start'), newInit);
-          setNewInit({ fundCode: '', fundName: '', market: 'USD', account: '', quantity: 0, costPrice: 0 });
+          await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_start'), newInit);
+          setNewInit({ futuresCode: '', futuresName: '', market: 'USD', account: '', quantity: 0, costPrice: 0 });
       } catch (e) { alert('添加期初持仓失败'); } 
       finally { setSubmittingInit(false); }
   };
 
   const handleDeleteInitialHolding = async (id: string) => {
       if (!confirm('确认删除这条期初持仓吗？这可能会直接改变当前所有持仓市值与成本。')) return;
-      try { await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_start', id)); } 
+      try { await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_start', id)); } 
       catch (e) { console.error("删除失败", e); }
   };
 
@@ -926,10 +993,10 @@ export default function PEHoldingsPage() {
             <div>
                 <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
                     <Building2 className="text-blue-600" />
-                    PE Holdings (私募基金持仓分析)
+                    CBBC Holdings (牛熊证/期货持仓分析)
                 </h1>
                 <p className="mt-1 text-sm text-gray-500">
-                    专属非标资产盯市。采用【期初底座】+【增量申赎】计算 FIFO 成本，并依赖底部【内部价格录入】实现市值重估。
+                    专属衍生品盯市。采用【期初底座】+【增量交易】计算 FIFO 成本，并依赖底部【内部价格录入】实现市值重估。
                 </p>
             </div>
             <div className="flex gap-2">
@@ -964,7 +1031,7 @@ export default function PEHoldingsPage() {
                 <div className="flex items-center gap-4">
                     <h2 className="text-base font-bold text-gray-800 flex items-center gap-2">
                         <PieChart size={18} className="text-indigo-500" />
-                        当前私募基金统计表 ({displayHoldings.length} 只标的)
+                        当前牛熊证/期货统计表 ({displayHoldings.length} 只标的)
                     </h2>
                     {baseDate && (
                         <span className="text-xs font-medium text-red-600 bg-red-50 px-2 py-0.5 rounded border border-red-100">
@@ -979,9 +1046,9 @@ export default function PEHoldingsPage() {
                 <table className="min-w-full text-xs text-left">
                     <thead className="text-gray-500 font-medium bg-gray-50">
                         <tr>
-                            <Th label="基金名称/简码" sortKey="fundCode" filterKey="fundCode" currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} width="160px"/>
+                            <Th label="标的名称/简码" sortKey="futuresCode" filterKey="futuresCode" currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} width="160px"/>
                             <Th label="币种" sortKey="market" filterKey="market" currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="center"/>
-                            <Th label="持有份额" sortKey="quantity" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
+                            <Th label="持有数量" sortKey="quantity" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
                             <Th label="单位平均成本" sortKey="avgCost" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
                             <Th label="最新内部估值" sortKey="currentPrice" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
                             <Th label="总成本 (HKD)" sortKey="totalCostHKD" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
@@ -990,7 +1057,7 @@ export default function PEHoldingsPage() {
                             <Th label="盈亏比" sortKey="pnlRatio" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
                             <Th label="市值占比" sortKey={null} filterKey={null} align="right" />
                             <Th label="盈亏贡献率" sortKey={null} filterKey={null} align="right" />
-                            <Th label="各账户份额分布" sortKey={null} filterKey={null} />
+                            <Th label="各账户数量分布" sortKey={null} filterKey={null} />
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
@@ -1002,17 +1069,17 @@ export default function PEHoldingsPage() {
                             const accountsArr = Object.entries(h.accounts).filter(([_, qty]) => qty > 0).map(([acc, qty]) => `'${acc}': ${qty.toLocaleString()}`);
 
                             return (
-                                <tr key={h.fundCode} className="hover:bg-indigo-50/30 transition-colors">
+                                <tr key={h.futuresCode} className="hover:bg-indigo-50/30 transition-colors">
                                     <td className="px-3 py-2 whitespace-nowrap">
-                                        <div className="font-bold text-gray-900 text-sm">{h.fundName}</div>
-                                        <div className="text-[10px] text-gray-500 font-mono">{h.fundCode}</div>
+                                        <div className="font-bold text-gray-900 text-sm">{h.futuresName}</div>
+                                        <div className="text-[10px] text-gray-500 font-mono">{h.futuresCode}</div>
                                     </td>
                                     <td className="px-3 py-2 text-center font-mono text-gray-500">{h.market}</td>
                                     <td className="px-3 py-2 text-right font-mono font-bold text-gray-800">{h.quantity.toLocaleString(undefined, {maximumFractionDigits:4})}</td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-600">{h.avgCost.toFixed(4)}</td>
                                     <td className="px-3 py-2 text-right font-mono font-medium text-indigo-700 bg-indigo-50/50">
                                         {h.currentPrice.toFixed(4)}
-                                        {(!pePrices[h.fundCode] || h.currentPrice === h.avgCost) && <span className="ml-1 text-[10px] text-gray-400" title="未录入最新净值，使用成本价计算">(未定)</span>}
+                                        {(!cbbcPrices[h.futuresCode] || h.currentPrice === h.avgCost) && <span className="ml-1 text-[10px] text-gray-400" title="未录入最新价格，使用成本价计算">(未定)</span>}
                                     </td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-700">{formatMoneyStr(h.totalCostHKD, true)}</td>
                                     <td className="px-3 py-2 text-right font-mono font-bold text-gray-900">{formatMoneyStr(h.mktValHKD, true)}</td>
@@ -1036,7 +1103,7 @@ export default function PEHoldingsPage() {
                         })}
                     </tbody>
                     {displayHoldings.length > 0 && (
-                        <tfoot className="bg-indigo-50 border-t-2 border-indigo-200 sticky bottom-0 z-20">
+                        <tfoot className="bg-indigo-50 border-t-2 border-indigo-200">
                             <tr>
                                 <td colSpan={5} className="px-3 py-3 text-center font-bold text-indigo-900 tracking-widest">SUM</td>
                                 <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatMoneyStr(holdingSums.totalCostHKD, true)}</td>
@@ -1058,8 +1125,8 @@ export default function PEHoldingsPage() {
                 </table>
             </div>
 
-            {/* 当前市值二维统计矩阵 */}
-            <div className="bg-indigo-50 border-t border-indigo-100 p-5 rounded-lg shadow-inner">
+            {/* 当前市值二维统计 */}
+            <div className="bg-indigo-50 border-t border-indigo-100 p-5">
                 <div className="flex justify-between items-center mb-3">
                     <h3 className="font-bold text-indigo-800 text-sm">当前市值二维统计矩阵</h3>
                     <button 
@@ -1073,11 +1140,11 @@ export default function PEHoldingsPage() {
                     <table className="min-w-full text-xs text-right">
                         <thead className="bg-indigo-100/50 text-indigo-900 font-medium">
                             <tr>
-                                <th className="px-3 py-3 text-center border-b border-r border-indigo-100 bg-indigo-50/50">币种 \ 账户</th>
+                                <th className="px-3 py-2 text-center border-b border-r border-indigo-100 bg-indigo-50/50">币种 \ 账户</th>
                                 {currentMktStats.accounts.map(acc => (
-                                    <th key={acc} className="px-3 py-3 border-b border-indigo-100">{acc}</th>
+                                    <th key={acc} className="px-3 py-2 border-b border-indigo-100">{acc}</th>
                                 ))}
-                                <th className="px-3 py-3 border-b border-l border-indigo-100 bg-indigo-50/50">SUM {isHKDView ? '(HKD)' : '(原币种)'}</th>
+                                <th className="px-3 py-2 border-b border-l border-indigo-100 bg-indigo-50/50">SUM (HKD)</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-indigo-50">
@@ -1087,18 +1154,18 @@ export default function PEHoldingsPage() {
                                 let rawRowSum = 0;
                                 return (
                                     <tr key={mkt} className="hover:bg-indigo-50/30">
-                                        <td className="px-3 py-3 text-center font-bold text-gray-700 border-r border-indigo-50 bg-indigo-50/20">{mkt}</td>
+                                        <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-indigo-50 bg-indigo-50/20">{mkt}</td>
                                         {currentMktStats.accounts.map(acc => {
                                             const rawVal = currentMktStats.rawMatrix[mkt][acc] || 0;
                                             rawRowSum += rawVal;
                                             const displayVal = rawVal * rate;
                                             return (
-                                                <td key={acc} className={`px-3 py-3 font-mono ${displayVal > 0 ? 'text-gray-700' : 'text-red-600'}`}>
+                                                <td key={acc} className={`px-3 py-2 font-mono ${displayVal >= 0 ? 'text-gray-700' : 'text-red-600'}`}>
                                                     {displayVal === 0 ? '-' : formatMoneyStr(displayVal, isHKDView)}
                                                 </td>
                                             );
                                         })}
-                                        <td className="px-3 py-3 font-mono font-bold text-indigo-900 border-l border-indigo-50 bg-indigo-50/20">
+                                        <td className={`px-3 py-2 font-mono font-bold border-l border-indigo-50 bg-indigo-50/20 ${rawRowSum * actualRate >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
                                             {rawRowSum * actualRate === 0 ? '-' : formatMoneyStr(rawRowSum * actualRate, true)}
                                         </td>
                                     </tr>
@@ -1111,7 +1178,7 @@ export default function PEHoldingsPage() {
                         {currentMktStats.markets.length > 0 && (
                             <tfoot className="bg-indigo-100 text-indigo-900 border-t-2 border-indigo-200 shadow-inner">
                                 <tr>
-                                    <td className="px-3 py-4 text-center font-bold border-r border-emerald-200">SUM (HKD)</td>
+                                    <td className="px-3 py-3 text-center font-bold border-r border-indigo-200">SUM (HKD)</td>
                                     {currentMktStats.accounts.map(acc => {
                                         let colSumHKD = 0;
                                         currentMktStats.markets.forEach(mkt => {
@@ -1119,19 +1186,13 @@ export default function PEHoldingsPage() {
                                             colSumHKD += rawVal * (globalFxRates[mkt] || 1);
                                         });
                                         return (
-                                            <td key={acc} className={`px-3 py-4 font-mono font-bold text-indigo-900`}>
+                                            <td key={acc} className={`px-3 py-3 font-mono font-bold ${colSumHKD >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
                                                 {colSumHKD === 0 ? '-' : formatMoneyStr(colSumHKD, true)}
                                             </td>
                                         );
                                     })}
-                                    <td className={`px-3 py-4 font-mono font-bold text-sm border-l border-indigo-200 bg-indigo-200/50 text-indigo-900`}>
-                                        {formatMoneyStr(
-                                            currentMktStats.markets.reduce((sum, mkt) => {
-                                                let rSum = 0;
-                                                currentMktStats.accounts.forEach(a => rSum += currentMktStats.rawMatrix[mkt][a] || 0);
-                                                return sum + rSum * (globalFxRates[mkt] || 1);
-                                            }, 0), true
-                                        )} HKD
+                                    <td className={`px-3 py-3 font-mono font-bold text-sm border-l border-indigo-200 ${holdingSums.mktValHKD >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
+                                        {formatMoneyStr(holdingSums.mktValHKD, true)} HKD
                                     </td>
                                 </tr>
                             </tfoot>
@@ -1143,7 +1204,7 @@ export default function PEHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
                         <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※页面打开自动刷新，点击按钮才入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1151,7 +1212,7 @@ export default function PEHoldingsPage() {
                             <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                         </button>
                         {(!isHKDView && !hasActiveFilters) && (
-                            <button onClick={handleSaveMktValStats} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                             </button>
                         )}
@@ -1165,7 +1226,7 @@ export default function PEHoldingsPage() {
             <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
                 <h2 className="text-base font-bold text-gray-800 flex items-center gap-2">
                     <BarChartIcon size={18} className="text-rose-500" />
-                    盈亏分析明细与图表 (未实现浮盈 vs 已实现盈亏)
+                    盈亏分析明细与图表 (未实现 vs 已实现)
                 </h2>
                 <div className="flex bg-white rounded border border-gray-300 p-0.5 shadow-sm">
                     <button 
@@ -1188,7 +1249,7 @@ export default function PEHoldingsPage() {
                     <table className="w-full text-xs text-left">
                         <thead className="text-gray-500 font-medium bg-white sticky top-0 shadow-sm z-10">
                             <tr>
-                                <th className="px-4 py-2">私募基金</th>
+                                <th className="px-4 py-2">牛熊证/期货</th>
                                 <th className="px-4 py-2 text-right">未实现浮盈 (HKD)</th>
                                 <th className="px-4 py-2 text-right">已实现盈亏 (HKD)</th>
                                 <th className="px-4 py-2 text-right">总盈亏 (HKD)</th>
@@ -1313,10 +1374,10 @@ export default function PEHoldingsPage() {
                                     <td className="px-3 py-4 text-center font-bold border-r border-rose-200">
                                         {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
                                     </td>
-                                    <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (pnlSums.realized > 0 ? 'text-red-600' : pnlSums.realized < 0 ? 'text-green-600' : 'text-indigo-900')}`}>
+                                    <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (pnlSums.realized > 0 ? 'text-red-600' : pnlSums.realized < 0 ? 'text-green-600' : 'text-gray-500')}`}>
                                         {!isHKDView ? '-' : (pnlSums.realized > 0 ? '+' : '') + (pnlSums.realized === 0 ? '-' : formatMoneyStr(pnlSums.realized, true))}
                                     </td>
-                                    <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (pnlSums.unrealized > 0 ? 'text-red-600' : pnlSums.unrealized < 0 ? 'text-green-600' : 'text-indigo-900')}`}>
+                                    <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : (pnlSums.unrealized > 0 ? 'text-red-600' : pnlSums.unrealized < 0 ? 'text-green-600' : 'text-gray-500')}`}>
                                         {!isHKDView ? '-' : (pnlSums.unrealized > 0 ? '+' : '') + (pnlSums.unrealized === 0 ? '-' : formatMoneyStr(pnlSums.unrealized, true))}
                                     </td>
                                     <td className="px-3 py-4 font-mono font-bold text-sm border-l border-rose-200 bg-rose-200/50 text-rose-900">
@@ -1334,7 +1395,7 @@ export default function PEHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
                         <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※页面打开自动刷新，点击按钮才入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1342,7 +1403,7 @@ export default function PEHoldingsPage() {
                             <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                         </button>
                         {(!isHKDView && !hasActiveFilters) && (
-                            <button onClick={handleSavePlStats} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                             </button>
                         )}
@@ -1371,14 +1432,14 @@ export default function PEHoldingsPage() {
                 <table className="min-w-full text-xs text-left">
                     <thead className="bg-gray-50 text-gray-500 font-medium">
                         <tr>
-                            <Th label="申赎日期" sortKey="date" filterKey="date" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="100px" />
-                            <Th label="基金名称/简码" sortKey="fundCode" filterKey="fundCode" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="160px" />
+                            <Th label="交易日期" sortKey="date" filterKey="date" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="100px" />
+                            <Th label="标的名称/简码" sortKey="futuresCode" filterKey="futuresCode" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="160px" />
                             <Th label="账户" sortKey="account" filterKey="account" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="80px"/>
                             <Th label="币种" sortKey="market" filterKey="market" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="70px" />
                             <Th label="方向" sortKey="direction" filterKey="direction" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="80px" />
-                            <Th label="确认份额" sortKey="quantity" filterKey={null} currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="right" width="100px"/>
+                            <Th label="确认数量" sortKey="quantity" filterKey={null} currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="right" width="100px"/>
                             <Th label={`成交均价(含费) ${isHKDView?'HKD':''}`} sortKey="price" filterKey={null} currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="right" width="120px" />
-                            <Th label={`申赎总额(含费) ${isHKDView?'HKD':''}`} sortKey="amount" filterKey={null} currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="right" width="120px" />
+                            <Th label={`买卖总额(含费) ${isHKDView?'HKD':''}`} sortKey="amount" filterKey={null} currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="right" width="120px" />
                             <Th label="最终确认时间" sortKey="updatedAt" filterKey={null} currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="140px"/>
                             <Th label="执行人" sortKey="executor" filterKey="executor" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" />
                         </tr>
@@ -1393,13 +1454,13 @@ export default function PEHoldingsPage() {
                                 <tr key={t.id} className="hover:bg-blue-50/30 transition-colors">
                                     <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{t.date}</td>
                                     <td className="px-3 py-2 whitespace-nowrap">
-                                        <div className="font-bold text-gray-800">{t.fundName}</div>
-                                        <div className="text-[10px] text-gray-500 font-mono">{t.fundCode}</div>
+                                        <div className="font-bold text-gray-800">{t.futuresName}</div>
+                                        <div className="text-[10px] text-gray-400 font-mono">{t.futuresCode}</div>
                                     </td>
                                     <td className="px-3 py-2 text-center text-gray-600">{t.account}</td>
                                     <td className="px-3 py-2 text-center font-mono text-gray-500">{displayCurrency}</td>
                                     <td className="px-3 py-2 text-center">
-                                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${t.direction === 'BUY' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{t.direction === 'BUY' ? '申购' : '赎回'}</span>
+                                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${t.direction === 'BUY' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{t.direction === 'BUY' ? '买入' : '卖出'}</span>
                                     </td>
                                     <td className={`px-3 py-2 text-right font-mono font-bold ${t.quantity > 0 ? 'text-red-600' : 'text-green-600'}`}>
                                         {t.quantity > 0 ? '+' : ''}{t.quantity.toLocaleString(undefined, {maximumFractionDigits: 4})}
@@ -1416,13 +1477,13 @@ export default function PEHoldingsPage() {
             </div>
             
             {/* === 模块 4：资金净买入统计表 === */}
-            <div className="bg-teal-50 border-t border-teal-200 p-6 rounded-b-xl shadow-inner">
+            <div className="bg-teal-50 border-t border-teal-100 p-5 rounded-b-xl shadow-inner">
                 <div className="flex justify-between items-center mb-4">
                     <h3 className="font-bold text-teal-800 flex items-center gap-2 text-base">
                         <Database size={18}/> 资金净买入二维统计表
                     </h3>
                     <div className="flex items-center gap-4">
-                        <span className="text-xs text-teal-600 font-medium">净买入 = 初始投入金额 + 申购金额 - 赎回金额（仅手动入库）</span>
+                        <span className="text-xs text-teal-600 font-medium">净买入 = 初始投入金额 + 买入金额 - 卖出金额（仅手动入库）</span>
                         <button 
                             onClick={() => setIsHKDView(!isHKDView)}
                             className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-teal-600 text-white border-teal-600 shadow-inner' : 'bg-white text-teal-700 border-teal-200 hover:bg-teal-100 shadow-sm'}`}
@@ -1452,11 +1513,11 @@ export default function PEHoldingsPage() {
                                         <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-teal-50 bg-teal-50/20">{mkt}</td>
                                         {cashStats.accounts.map(acc => {
                                             const rawVal = cashStats.rawMatrix[mkt][acc] || 0;
-                                            const displayVal = rawVal * rate;
                                             rawRowSum += rawVal;
+                                            const displayVal = rawVal * rate;
                                             return (
                                                 <td key={acc} className={`px-3 py-2 font-mono ${displayVal > 0 ? 'text-red-600' : displayVal < 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                                    {displayVal === 0 ? '-' : formatMoneyStr(displayVal, isHKDView)}
+                                                    {displayVal > 0 ? '+' : ''}{displayVal === 0 ? '-' : formatMoneyStr(displayVal, isHKDView)}
                                                 </td>
                                             );
                                         })}
@@ -1499,7 +1560,7 @@ export default function PEHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
                         <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※页面打开自动刷新，点击按钮才入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1507,7 +1568,7 @@ export default function PEHoldingsPage() {
                             <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                         </button>
                         {(!isHKDView && !hasActiveFilters) && (
-                            <button onClick={handleSaveCashStats} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                             </button>
                         )}
@@ -1522,10 +1583,10 @@ export default function PEHoldingsPage() {
                 <div>
                     <h2 className="text-base font-bold text-gray-800 flex items-center gap-2">
                         <DollarSign size={18} className="text-emerald-500" />
-                        输入基金当前价格 (手动估值校准)
+                        输入标的当前价格 (手动现价校准)
                     </h2>
                     <p className="text-xs text-gray-500 mt-1">
-                        系统自动提取持仓出现过的 PE 资产。请在此处更新最新净值，更新后上方总表将实时重估市值。
+                        系统自动提取持仓出现过的 CBBC 资产。请在此处更新最新价格，更新后上方总表将实时重估市值。
                     </p>
                 </div>
             </div>
@@ -1533,38 +1594,50 @@ export default function PEHoldingsPage() {
                 <table className="min-w-full text-xs text-left">
                     <thead className="bg-emerald-50 text-emerald-800 font-medium">
                         <tr>
-                            <th className="px-4 py-3 whitespace-nowrap">【基金名称/简码】</th>
+                            <th className="px-4 py-3 whitespace-nowrap">【标的名称/简码】</th>
                             <th className="px-4 py-3 text-center whitespace-nowrap">【市场】</th>
                             <th className="px-4 py-3 text-right whitespace-nowrap">【当前价格】</th>
+                            <th className="px-4 py-3 text-center whitespace-nowrap">【状态】</th>
                             <th className="px-4 py-3 text-center whitespace-nowrap">【最后校准时间】</th>
                             <th className="px-4 py-3 text-center whitespace-nowrap">【操作】</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                        {uniqueFunds.length === 0 ? (
-                            <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">系统未检测到任何私募基金持仓记录</td></tr>
-                        ) : uniqueFunds.map(fund => {
-                            const lastRec = pePrices[fund.fundCode];
-                            const draftPrice = draftPrices[fund.fundCode] ?? (lastRec?.price?.toString() || '');
+                        {uniqueFutures.length === 0 ? (
+                            <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">系统未检测到任何标的持仓记录</td></tr>
+                        ) : uniqueFutures.map(f => {
+                            const lastRec = cbbcPrices[f.futuresCode];
+                            const draftPrice = draftPrices[f.futuresCode] ?? (lastRec?.price?.toString() || '');
                             const isChanged = draftPrice !== (lastRec?.price?.toString() || '');
+                            const knockedOut = Boolean(lastRec?.knockedOut);
 
                             return (
-                                <tr key={fund.fundCode} className="hover:bg-emerald-50/20 transition-colors">
+                                <tr key={f.futuresCode} className={`hover:bg-emerald-50/20 transition-colors ${knockedOut ? 'bg-red-50/40' : ''}`}>
                                     <td className="px-4 py-3">
-                                        <div className="font-bold text-gray-800">{fund.fundName}</div>
-                                        <div className="text-[10px] text-gray-500 font-mono">{fund.fundCode}</div>
+                                        <div className="font-bold text-gray-800">{f.futuresName}</div>
+                                        <div className="text-[10px] text-gray-500 font-mono">{f.futuresCode}</div>
                                     </td>
-                                    <td className="px-4 py-3 text-center font-mono text-gray-500">{fund.market}</td>
+                                    <td className="px-4 py-3 text-center font-mono text-gray-500">{f.market}</td>
                                     <td className="px-4 py-3 text-right">
                                         <input 
                                             type="number" 
                                             min="0"
                                             step="0.0001"
                                             value={draftPrice}
-                                            onChange={e => setDraftPrices({...draftPrices, [fund.fundCode]: e.target.value})}
+                                            onChange={e => setDraftPrices({...draftPrices, [f.futuresCode]: e.target.value})}
+                                            disabled={knockedOut}
                                             className={`w-28 p-1.5 border rounded text-right outline-none text-xs font-mono focus:ring-1 focus:ring-emerald-400 ${isChanged ? 'bg-yellow-50 border-yellow-300 text-yellow-800' : 'bg-white border-gray-200'}`}
                                             placeholder="如: 1.0500"
                                         />
+                                    </td>
+                                    <td className="px-4 py-3 text-center">
+                                        {knockedOut ? (
+                                            <span className="inline-flex items-center rounded-full border border-red-200 bg-red-100 px-2 py-0.5 text-[10px] font-black text-red-700">
+                                                被打靶
+                                            </span>
+                                        ) : (
+                                            <span className="text-[10px] text-gray-400">正常</span>
+                                        )}
                                     </td>
                                     <td className="px-4 py-3 text-center text-gray-500 font-mono">
                                         {lastRec ? formatTime(lastRec.updatedAt) : <span className="text-gray-300">尚未录入</span>}
@@ -1572,15 +1645,24 @@ export default function PEHoldingsPage() {
                                     <td className="px-4 py-3 text-center">
                                         <div className="flex items-center justify-center gap-2">
                                             <button 
-                                                onClick={() => handleSavePrice(fund.fundCode, fund.market, fund.fundName)}
-                                                disabled={!isChanged}
+                                                onClick={() => handleSavePrice(f.futuresCode, f.market, f.futuresName)}
+                                                disabled={!isChanged || knockedOut}
                                                 className={`px-3 py-1.5 rounded font-bold text-xs shadow-sm flex items-center justify-center gap-1 transition-colors ${isChanged ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
                                             >
                                                 <Save size={14} /> 保存净值
                                             </button>
+                                            {!knockedOut && (
+                                                <button
+                                                    onClick={() => handleKnockOut(f.futuresCode, f.market, f.futuresName)}
+                                                    className="px-3 py-1.5 rounded font-bold text-xs shadow-sm flex items-center justify-center gap-1 text-white bg-red-600 hover:bg-red-700 transition-colors"
+                                                    title="被打靶：按 0 元强制卖出当前剩余持仓"
+                                                >
+                                                    被打靶
+                                                </button>
+                                            )}
                                             {lastRec && (
                                                 <button 
-                                                    onClick={() => handleDeletePrice(fund.fundCode)}
+                                                    onClick={() => handleDeletePrice(f.futuresCode)}
                                                     className="px-2 py-1.5 rounded text-xs shadow-sm flex items-center justify-center gap-1 text-red-500 hover:bg-red-50 hover:text-red-700 transition-colors border border-red-100 bg-white"
                                                     title="删除该估值记录"
                                                 >
@@ -1602,7 +1684,7 @@ export default function PEHoldingsPage() {
             <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
                 <h2 className="text-base font-bold text-gray-800 flex items-center gap-2">
                     <Database size={18} className="text-purple-500" />
-                    初始基金持仓 (期初建账底座)
+                    初始标的持仓 (期初建账底座)
                 </h2>
                 <div className="flex items-center gap-3">
                     <label className="text-sm font-medium text-gray-600">全局基准日期:</label>
@@ -1632,11 +1714,11 @@ export default function PEHoldingsPage() {
                 <table className="min-w-full text-xs text-left">
                     <thead className="bg-gray-50 text-gray-500 font-medium border-b border-gray-200">
                         <tr>
-                            <th className="px-4 py-3 whitespace-nowrap">基金简码 (Code)</th>
+                            <th className="px-4 py-3 whitespace-nowrap">标的简码 (Code)</th>
                             <th className="px-4 py-3 whitespace-nowrap">名称</th>
                             <th className="px-4 py-3 text-center whitespace-nowrap">币种</th>
                             <th className="px-4 py-3 text-center whitespace-nowrap">账户</th>
-                            <th className="px-4 py-3 text-right whitespace-nowrap">期初份额数量</th>
+                            <th className="px-4 py-3 text-right whitespace-nowrap">期初持仓数量</th>
                             <th className="px-4 py-3 text-right whitespace-nowrap">期初成本均价</th>
                             <th className="px-4 py-3 text-right whitespace-nowrap">期初总投入金额</th>
                             <th className="px-4 py-3 text-center whitespace-nowrap">操作</th>
@@ -1648,8 +1730,8 @@ export default function PEHoldingsPage() {
                             const amt = h.quantity * h.costPrice * rate;
                             return (
                             <tr key={h.id} className="hover:bg-purple-50/30 transition-colors">
-                                <td className="px-4 py-2 font-bold text-gray-800 font-mono">{h.fundCode}</td>
-                                <td className="px-4 py-2 text-gray-600">{h.fundName}</td>
+                                <td className="px-4 py-2 font-bold text-gray-800 font-mono">{h.futuresCode}</td>
+                                <td className="px-4 py-2 text-gray-600">{h.futuresName}</td>
                                 <td className="px-4 py-2 text-center font-mono text-gray-500">{h.market}</td>
                                 <td className="px-4 py-2 text-center text-gray-600">{h.account}</td>
                                 <td className="px-4 py-2 text-right font-mono text-gray-800">{h.quantity.toLocaleString()}</td>
@@ -1666,10 +1748,10 @@ export default function PEHoldingsPage() {
                         {/* 录入空行 */}
                         <tr className="bg-purple-50/50 border-t-2 border-purple-100">
                             <td className="px-4 py-2">
-                                <input type="text" placeholder="如 PE001" value={newInit.fundCode} onChange={e => setNewInit({...newInit, fundCode: e.target.value.toUpperCase().trim()})} className="w-full p-1.5 border border-purple-200 rounded text-xs font-mono outline-none focus:ring-1 focus:ring-purple-400" />
+                                <input type="text" placeholder="如 50012.HK" value={newInit.futuresCode} onChange={e => setNewInit({...newInit, futuresCode: e.target.value.toUpperCase().trim()})} className="w-full p-1.5 border border-purple-200 rounded text-xs font-mono outline-none focus:ring-1 focus:ring-purple-400" />
                             </td>
                             <td className="px-4 py-2">
-                                <input type="text" placeholder="输入全称" value={newInit.fundName} onChange={e => setNewInit({...newInit, fundName: e.target.value.trim()})} className="w-full p-1.5 border border-purple-200 rounded text-xs outline-none focus:ring-1 focus:ring-purple-400" />
+                                <input type="text" placeholder="输入全称" value={newInit.futuresName} onChange={e => setNewInit({...newInit, futuresName: e.target.value.trim()})} className="w-full p-1.5 border border-purple-200 rounded text-xs outline-none focus:ring-1 focus:ring-purple-400" />
                             </td>
                             <td className="px-4 py-2">
                                 <select value={newInit.market} onChange={e => setNewInit({...newInit, market: e.target.value})} className="w-full p-1.5 border border-purple-200 rounded text-xs outline-none focus:ring-1 focus:ring-purple-400 bg-white">
@@ -1707,7 +1789,7 @@ export default function PEHoldingsPage() {
                         <span className="text-xs text-purple-600">采用锁定的建账汇率计算，确保历史成本恒定</span>
                         <button 
                             onClick={() => setIsHKDView(!isHKDView)}
-                            className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-purple-600 text-white border-purple-600 shadow-inner' : 'bg-white text-vintage-700 border-vintage-200 hover:bg-vintage-100 shadow-sm'}`}
+                            className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-purple-600 text-white border-purple-600 shadow-inner' : 'bg-white text-purple-700 border-purple-200 hover:bg-purple-100 shadow-sm'}`}
                         >
                             {isHKDView ? '恢复原始币种' : 'TO HKD (一键折算)'}
                         </button>
@@ -1737,7 +1819,7 @@ export default function PEHoldingsPage() {
                                             const displayVal = rawVal * rate;
                                             rawRowSum += rawVal;
                                             return (
-                                                <td key={acc} className={`px-3 py-2 font-mono text-gray-700`}>
+                                                <td key={acc} className="px-3 py-2 font-mono text-gray-700">
                                                     {displayVal === 0 ? '-' : formatMoneyStr(displayVal, isHKDView)}
                                                 </td>
                                             );
@@ -1763,7 +1845,7 @@ export default function PEHoldingsPage() {
                                             colSumHKD += rawVal * (baseFxRates[mkt] || globalFxRates[mkt] || 1);
                                         });
                                         return (
-                                            <td key={acc} className={`px-3 py-3 font-mono font-bold text-purple-900`}>
+                                            <td key={acc} className="px-3 py-3 font-mono font-bold text-purple-900">
                                                 {colSumHKD === 0 ? '-' : formatMoneyStr(colSumHKD, true)}
                                             </td>
                                         );
@@ -1784,41 +1866,6 @@ export default function PEHoldingsPage() {
                 </div>
             </div>
         </div>
-
-        {/* --- 汇率详情弹窗 --- */}
-        {showFxModal && (
-            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
-                    <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
-                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
-                            <Info className="text-blue-500" size={18} /> 全局汇率 (对 HKD)
-                        </h3>
-                        <button onClick={() => setShowFxModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
-                            <X size={20}/>
-                        </button>
-                    </div>
-                    <div className="p-5">
-                        {Object.keys(globalFxRates).length === 0 ? (
-                            <p className="text-sm text-gray-500 text-center py-4">暂无已缓存的汇率数据，请点击右上角“更新汇率”。</p>
-                        ) : (
-                            <div className="space-y-3">
-                                {Object.entries(globalFxRates).map(([currency, rate]) => (
-                                    <div key={currency} className="flex justify-between items-center border-b border-gray-100 pb-2 last:border-0 last:pb-0">
-                                        <span className="font-bold text-gray-700 font-mono">{currency}</span>
-                                        <span className="text-gray-600 font-mono">{Number(rate).toFixed(4)}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                    <div className="bg-gray-50 px-5 py-3 border-t border-gray-100 flex justify-end">
-                        <button onClick={() => setShowFxModal(false)} className="px-4 py-2 bg-blue-600 text-white text-sm font-bold rounded shadow-sm hover:bg-blue-700 transition-colors">
-                            关闭
-                        </button>
-                    </div>
-                </div>
-            </div>
-        )}
 
         {/* --- 汇率锁定弹窗 --- */}
         {showBaseFxModal && (
@@ -1872,11 +1919,46 @@ export default function PEHoldingsPage() {
                                 const val = parseFloat(v);
                                 if (!isNaN(val) && val > 0) parsed[k] = val;
                             });
-                            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_pe_start', '_global_config'), { baseFxRates: parsed }, { merge: true });
+                            await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_cbbc_start', '_global_config'), { baseFxRates: parsed }, { merge: true });
                             setShowBaseFxModal(false);
                             setBaseFxRates(parsed); // 立即更新UI状态
                         }} className="px-4 py-2 bg-purple-600 text-white text-sm font-bold rounded shadow-sm hover:bg-purple-700 transition-colors">
                             保存锁定
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* --- 汇率详情弹窗 --- */}
+        {showFxModal && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
+                    <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
+                        <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                            <Info className="text-blue-500" size={18} /> 全局汇率 (对 HKD)
+                        </h3>
+                        <button onClick={() => setShowFxModal(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
+                            <X size={20}/>
+                        </button>
+                    </div>
+                    <div className="p-5">
+                        {Object.keys(globalFxRates).length === 0 ? (
+                            <p className="text-sm text-gray-500 text-center py-4">暂无已缓存的汇率数据，请点击右上角“更新汇率”。</p>
+                        ) : (
+                            <div className="space-y-3">
+                                {Object.entries(globalFxRates).map(([currency, rate]) => (
+                                    <div key={currency} className="flex justify-between items-center border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+                                        <span className="font-bold text-gray-700 font-mono">{currency}</span>
+                                        <span className="text-gray-600 font-mono">{Number(rate).toFixed(4)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <div className="bg-gray-50 px-5 py-3 border-t border-gray-100 flex justify-end">
+                        <button onClick={() => setShowFxModal(false)} className="px-4 py-2 bg-blue-600 text-white text-sm font-bold rounded shadow-sm hover:bg-blue-700 transition-colors">
+                            关闭
                         </button>
                     </div>
                 </div>
@@ -1896,12 +1978,12 @@ export default function PEHoldingsPage() {
 
             <div className="flex gap-2 mb-4 border-b pb-2 overflow-x-auto">
                 {[
-                    'sip_trade_pe',
-                    'sip_holding_pe_start',
-                    'sip_holding_pe_lastprice',
-                    'sip_holding_pe_mktvalue',
-                    'sip_holding_pe_pl',
-                    'sip_holding_cash_pe'
+                    'sip_trade_cbbc',
+                    'sip_holding_cbbc_start',
+                    'sip_holding_cbbc_lastprice',
+                    'sip_holding_cbbc_mktvalue',
+                    'sip_holding_cbbc_pl',
+                    'sip_holding_cash_cbbc'
                 ].map(tab => (
                     <button 
                         key={tab} 

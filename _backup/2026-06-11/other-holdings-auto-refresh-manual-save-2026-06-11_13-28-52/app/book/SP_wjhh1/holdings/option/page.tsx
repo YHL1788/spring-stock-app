@@ -1094,9 +1094,9 @@ export default function OptionHoldingPage() {
         return total;
     }, [cashStats, globalFxRates]);
 
-    const handleSaveMktValStats = async () => {
+    const handleSaveMktValStats = async (isAuto = false) => {
         if (!user) return;
-        setIsSavingMktVal(true);
+        if (!isAuto) setIsSavingMktVal(true);
         try {
             const payload = {
                 accounts: currentMktStats.accounts,
@@ -1105,17 +1105,17 @@ export default function OptionHoldingPage() {
                 updatedAt: new Date().toISOString()
             };
             await publishLatestSummarySafely({ db, collectionName: 'sip_holding_option_mktvalue', payload, refreshGroup: 'holdings-option', sourcePage: '/book/SP_wjhh1/holdings/option' });
-            setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+            if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存当前市值统计失败:", e);
         } finally {
-            setIsSavingMktVal(false);
+            if (!isAuto) setIsSavingMktVal(false);
         }
     };
 
-    const handleSavePlStats = async () => {
+    const handleSavePlStats = async (isAuto = false) => {
         if (!user) return;
-        setIsSavingPl(true);
+        if (!isAuto) setIsSavingPl(true);
         try {
             const payload = {
                 markets: currentPlStats.markets,
@@ -1123,17 +1123,17 @@ export default function OptionHoldingPage() {
                 updatedAt: new Date().toISOString()
             };
             await publishLatestSummarySafely({ db, collectionName: 'sip_holding_option_pl', payload, refreshGroup: 'holdings-option', sourcePage: '/book/SP_wjhh1/holdings/option' });
-            setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+            if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存当前收益统计失败:", e);
         } finally {
-            setIsSavingPl(false);
+            if (!isAuto) setIsSavingPl(false);
         }
     };
 
-    const handleSaveCashStats = async () => {
+    const handleSaveCashStats = async (isAuto = false) => {
         if (!user) return;
-        setIsSavingCash(true);
+        if (!isAuto) setIsSavingCash(true);
         try {
             const payload = {
                 accounts: cashStats.accounts,
@@ -1142,28 +1142,30 @@ export default function OptionHoldingPage() {
                 updatedAt: new Date().toISOString()
             };
             await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_option', payload, refreshGroup: 'holdings-option', sourcePage: '/book/SP_wjhh1/holdings/option' });
-            setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+            if (!isAuto) {
+                setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+            }
         } catch (e) {
             console.error("保存 Option 资金净买入统计失败:", e);
         } finally {
-            setIsSavingCash(false);
+            if (!isAuto) setIsSavingCash(false);
         }
     };
 
-    const handleSaveExposure = async () => {
+    const handleSaveExposure = async (isAuto = false) => {
         if (!user || isHKDView || hasActiveFilters) return;
-        setIsSavingExposure(true);
+        if (!isAuto) setIsSavingExposure(true);
         try {
             const payload = {
                 data: riskExposureSummary,
                 updatedAt: new Date().toISOString()
             };
             await publishLatestSummarySafely({ db, collectionName: 'sip_exposure_option', payload, refreshGroup: 'holdings-option', sourcePage: '/book/SP_wjhh1/holdings/option' });
-            setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+            if (!isAuto) setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存暴露汇总失败:", e);
         } finally {
-            setIsSavingExposure(false);
+            if (!isAuto) setIsSavingExposure(false);
         }
     };
 
@@ -1551,7 +1553,7 @@ export default function OptionHoldingPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-red-500" /> 暴露汇总最后入库时间: <span className="font-mono font-medium text-gray-700">{lastExposureSavedTime}</span></span>
                         <span className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded border border-red-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※页面打开自动读取并计算，点击按钮才入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1559,7 +1561,7 @@ export default function OptionHoldingPage() {
                             <RefreshCw size={14} /> 刷新汇总
                         </button>
                         {(!isHKDView && !hasActiveFilters) && (
-                            <button onClick={handleSaveExposure} disabled={isSavingExposure} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={() => handleSaveExposure(false)} disabled={isSavingExposure} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 {isSavingExposure ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 暴露汇总手动入库
                             </button>
                         )}
@@ -1850,7 +1852,7 @@ export default function OptionHoldingPage() {
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
                             <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                                {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※页面打开自动读取并计算，点击按钮才入库'}
+                                {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
                             </span>
                         </div>
                         <div className="flex items-center gap-3">
@@ -1858,7 +1860,7 @@ export default function OptionHoldingPage() {
                                 <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                             </button>
                             {(!isHKDView && !hasActiveFilters) && (
-                                <button onClick={handleSaveMktValStats} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                     {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                                 </button>
                             )}
@@ -1920,21 +1922,21 @@ export default function OptionHoldingPage() {
                         </table>
                     </div>
                     
-                    {/* 收益统计底部功能区 */}
-                    <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-rose-100 shadow-sm">
+                    {/* 资金统计底部功能区 */}
+                    <div className="mt-4 flex items-center justify-between bg-white px-4 py-3 rounded border border-teal-100 shadow-sm">
                         <div className="flex items-center gap-4 text-xs text-gray-500">
-                            <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
-                            <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
-                                {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※页面打开自动读取并计算，点击按钮才入库'}
+                            <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
+                            <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">
+                                {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
                             </span>
                         </div>
                         <div className="flex items-center gap-3">
-                            <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-rose-600 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={() => fetchLatestFxRates()} disabled={isFetchingFx} className="flex items-center gap-2 px-4 py-2 bg-white border border-teal-600 text-teal-600 hover:bg-teal-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                             </button>
                             {(!isHKDView && !hasActiveFilters) && (
-                                <button onClick={handleSavePlStats} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                                    {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
+                                <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                    {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                                 </button>
                             )}
                         </div>

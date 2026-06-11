@@ -1000,20 +1000,20 @@ export default function FCNHoldingPage() {
         }));
     }, [finalRisk]);
 
-    const handleSaveExposure = async () => {
+    const handleSaveExposure = async (isAuto = false) => {
         if (!user) return;
-        setIsSavingExposure(true);
+        if (!isAuto) setIsSavingExposure(true);
         try {
             const payload = {
                 data: riskExposureSummary,
                 updatedAt: new Date().toISOString()
             };
             await publishLatestSummarySafely({ db, collectionName: 'sip_exposure_fcn', payload, refreshGroup: 'holdings-fcn', sourcePage: '/book/SP_wjhh1/holdings/fcn' });
-            setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+            if (!isAuto) setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存暴露汇总失败:", e);
         } finally {
-            setIsSavingExposure(false);
+            if (!isAuto) setIsSavingExposure(false);
         }
     };
 
@@ -1124,9 +1124,9 @@ export default function FCNHoldingPage() {
     }, [processedLiving, processedDied]);
 
     // --- 市值与盈亏数据入库逻辑 ---
-    const handleSaveMktValStats = async () => {
+    const handleSaveMktValStats = async (isAuto = false) => {
         if (!user) return;
-        setIsSavingMktVal(true);
+        if (!isAuto) setIsSavingMktVal(true);
         try {
             const payload = {
                 accounts: currentMktStats.accounts,
@@ -1135,17 +1135,17 @@ export default function FCNHoldingPage() {
                 updatedAt: new Date().toISOString()
             };
             await publishLatestSummarySafely({ db, collectionName: 'sip_holding_fcn_mktvalue', payload, refreshGroup: 'holdings-fcn', sourcePage: '/book/SP_wjhh1/holdings/fcn' });
-            setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+            if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
         } catch (e) {
             console.error("保存当前市值统计失败:", e);
         } finally {
-            setIsSavingMktVal(false);
+            if (!isAuto) setIsSavingMktVal(false);
         }
     };
 
-    const handleSavePlStats = async () => {
+    const handleSavePlStats = async (isAuto = false) => {
       if (!user) return;
-      setIsSavingPl(true);
+      if (!isAuto) setIsSavingPl(true);
       try {
           const payload = {
               markets: currentPlStats.markets,
@@ -1153,18 +1153,18 @@ export default function FCNHoldingPage() {
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_fcn_pl', payload, refreshGroup: 'holdings-fcn', sourcePage: '/book/SP_wjhh1/holdings/fcn' });
-          setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前收益统计失败:", e);
       } finally {
-          setIsSavingPl(false);
+          if (!isAuto) setIsSavingPl(false);
       }
     };
 
     // --- 资金净买入数据入库逻辑 ---
-    const handleSaveCashStats = async () => {
+    const handleSaveCashStats = async (isAuto = false) => {
         if (!user) return;
-        setIsSavingCash(true);
+        if (!isAuto) setIsSavingCash(true);
         try {
             const payload = {
                 accounts: cashStats.accounts,
@@ -1173,11 +1173,13 @@ export default function FCNHoldingPage() {
                 updatedAt: new Date().toISOString()
             };
             await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_fcn', payload, refreshGroup: 'holdings-fcn', sourcePage: '/book/SP_wjhh1/holdings/fcn' });
-            setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+            if (!isAuto) {
+                setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+            }
         } catch (e) {
             console.error("保存 FCN 资金净买入统计失败:", e);
         } finally {
-            setIsSavingCash(false);
+            if (!isAuto) setIsSavingCash(false);
         }
     };
 
@@ -1494,7 +1496,7 @@ export default function FCNHoldingPage() {
                             <RefreshCw size={14} /> 刷新汇总
                         </button>
                         {!isHKDView && (
-                            <button onClick={handleSaveExposure} disabled={isSavingExposure} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={() => handleSaveExposure(false)} disabled={isSavingExposure} className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 {isSavingExposure ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 暴露汇总手动入库
                             </button>
                         )}
@@ -1665,7 +1667,7 @@ export default function FCNHoldingPage() {
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
                             <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                                {isHKDView ? '※手动入库已在折算视图下暂停' : '※页面打开自动读取并计算，点击按钮才入库'}
+                                {isHKDView ? '※手动入库已在折算视图下暂停' : '※仅手动入库'}
                             </span>
                         </div>
                         <div className="flex items-center gap-3">
@@ -1673,7 +1675,7 @@ export default function FCNHoldingPage() {
                                 <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                             </button>
                             {!isHKDView && (
-                                <button onClick={handleSaveMktValStats} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                     {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                                 </button>
                             )}
@@ -1765,7 +1767,7 @@ export default function FCNHoldingPage() {
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
                             <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
-                                {isHKDView ? '※手动入库已在折算视图下暂停' : '※页面打开自动读取并计算，点击按钮才入库'}
+                                {isHKDView ? '※手动入库已在折算视图下暂停' : '※仅手动入库'}
                             </span>
                         </div>
                         <div className="flex items-center gap-3">
@@ -1773,7 +1775,7 @@ export default function FCNHoldingPage() {
                                 <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                             </button>
                             {!isHKDView && (
-                                <button onClick={handleSavePlStats} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                     {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                                 </button>
                             )}
@@ -1874,7 +1876,7 @@ export default function FCNHoldingPage() {
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
                             <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">
-                                {isHKDView ? '※手动入库已在折算视图下暂停' : '※页面打开自动读取并计算，点击按钮才入库'}
+                                {isHKDView ? '※手动入库已在折算视图下暂停' : '※仅手动入库'}
                             </span>
                         </div>
                         <div className="flex items-center gap-3">
@@ -1882,7 +1884,7 @@ export default function FCNHoldingPage() {
                                 <RefreshCw size={14} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
                             </button>
                             {!isHKDView && (
-                                <button onClick={handleSaveCashStats} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                                <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                     {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                                 </button>
                             )}
