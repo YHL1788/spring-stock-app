@@ -36,6 +36,7 @@ const navigation = [
     current: false,
     children: [
       { name: '衍生品测算', href: '/analysis/derivative-valuation' },
+      { name: '组合分析', href: '/analysis/portfolio-analysis' },
     ],
   },
   {
