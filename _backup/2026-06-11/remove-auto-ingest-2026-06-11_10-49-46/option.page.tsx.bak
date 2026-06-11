@@ -1169,6 +1169,19 @@ export default function OptionHoldingPage() {
         }
     };
 
+    useEffect(() => {
+        if (!user) return;
+        const intervalId = setInterval(() => {
+            if (!isHKDView && !hasActiveFilters) {
+                handleSaveMktValStats(true);
+                handleSavePlStats(true);
+                handleSaveCashStats(true);
+                handleSaveExposure(true); 
+            }
+        }, 60000); 
+        return () => clearInterval(intervalId);
+    }, [user, currentMktStats, currentPlStats, cashStats, riskExposureSummary, isHKDView, hasActiveFilters]);
+
     const getRecordSummary = (r: any, tab: string) => {
         try {
             if (tab.includes('input')) {
@@ -1553,7 +1566,7 @@ export default function OptionHoldingPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-red-500" /> 暴露汇总最后入库时间: <span className="font-mono font-medium text-gray-700">{lastExposureSavedTime}</span></span>
                         <span className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded border border-red-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
+                            {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1852,7 +1865,7 @@ export default function OptionHoldingPage() {
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
                             <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                                {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
+                                {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动入库'}
                             </span>
                         </div>
                         <div className="flex items-center gap-3">
@@ -1927,7 +1940,7 @@ export default function OptionHoldingPage() {
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
                             <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">
-                                {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
+                                {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动入库'}
                             </span>
                         </div>
                         <div className="flex items-center gap-3">

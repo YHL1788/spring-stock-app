@@ -960,6 +960,19 @@ export default function DQAQHoldingPage() {
         }
     };
 
+    // 每分钟自动保存统计 (带有 HKD 视图联动锁)
+    useEffect(() => {
+        if (!user) return;
+        const intervalId = setInterval(() => {
+            // 安全保护：仅在未开启 HKD 折算视图时，才进行自动入库，避免双重乘率脏数据污染
+            if (!isHKDView) {
+                handleSaveMktValStats(true);
+                handleSavePlStats(true);
+            }
+        }, 60000); 
+        return () => clearInterval(intervalId);
+    }, [user, currentMktStats, currentPlStats, isHKDView]); 
+
     return (
         <div className="space-y-8 pb-10">
             {/* === 全局 Header === */}
@@ -1128,7 +1141,7 @@ export default function DQAQHoldingPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-red-500" /> 暴露汇总最后入库时间: <span className="font-mono font-medium text-gray-700">{lastExposureSavedTime}</span></span>
                         <span className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded border border-red-100">
-                            {isHKDView ? '※手动入库已在折算视图下暂停，保护原始暴露数据' : '*后台暗线逻辑：已按标的(Ticker)合并计算总暴露成本与股数'}
+                            {isHKDView ? '※自动/手动入库已在折算视图下暂停，保护原始暴露数据' : '*后台暗线逻辑：已按标的(Ticker)合并计算总暴露成本与股数'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1372,7 +1385,7 @@ export default function DQAQHoldingPage() {
                             <div className="flex items-center gap-4 text-xs text-gray-500">
                                 <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
                                 <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                                    {isHKDView ? '※手动入库已在折算视图下暂停' : '※仅手动入库'}
+                                    {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
                                 </span>
                             </div>
                             <div className="flex items-center gap-3">
@@ -1459,7 +1472,7 @@ export default function DQAQHoldingPage() {
                             <div className="flex items-center gap-4 text-xs text-gray-500">
                                 <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
                                 <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
-                                    {isHKDView ? '※手动入库已在折算视图下暂停' : '※仅手动入库'}
+                                    {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
                                 </span>
                             </div>
                             <div className="flex items-center gap-3">

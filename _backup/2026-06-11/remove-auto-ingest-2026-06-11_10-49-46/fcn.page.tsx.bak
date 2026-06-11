@@ -1183,6 +1183,20 @@ export default function FCNHoldingPage() {
         }
     };
 
+    // 每分钟自动保存统计与资金净买入
+    useEffect(() => {
+        if (!user) return;
+        const intervalId = setInterval(() => {
+            // 在 HKD 视图下暂停自动入库，保护原始数据的纯净度
+            if (!isHKDView) {
+                handleSaveMktValStats(true);
+                handleSavePlStats(true);
+                handleSaveCashStats(true);
+            }
+        }, 60000); 
+        return () => clearInterval(intervalId);
+    }, [user, currentMktStats, currentPlStats, cashStats, isHKDView]);
+
     // --- 后台库管理 Handlers ---
     const handleDeleteRecord = async (id: string) => {
         if (!confirm("确定要永久删除这条记录吗？不可恢复。")) return;
@@ -1488,7 +1502,7 @@ export default function FCNHoldingPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-red-500" /> 暴露汇总最后入库时间: <span className="font-mono font-medium text-gray-700">{lastExposureSavedTime}</span></span>
                         <span className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded border border-red-100">
-                            {isHKDView ? '※手动入库已在折算视图下暂停，保护原始暴露数据' : '*后台暗线逻辑：已按标的(Ticker)合并计算总暴露成本与股数'}
+                            {isHKDView ? '※自动/手动入库已在折算视图下暂停，保护原始暴露数据' : '*后台暗线逻辑：已按标的(Ticker)合并计算总暴露成本与股数'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1667,7 +1681,7 @@ export default function FCNHoldingPage() {
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
                             <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                                {isHKDView ? '※手动入库已在折算视图下暂停' : '※仅手动入库'}
+                                {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
                             </span>
                         </div>
                         <div className="flex items-center gap-3">
@@ -1767,7 +1781,7 @@ export default function FCNHoldingPage() {
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
                             <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
-                                {isHKDView ? '※手动入库已在折算视图下暂停' : '※仅手动入库'}
+                                {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
                             </span>
                         </div>
                         <div className="flex items-center gap-3">
@@ -1793,7 +1807,7 @@ export default function FCNHoldingPage() {
                         <span className="text-sm font-normal text-gray-500 ml-2">存续中名义本金 - 累计已实现票息</span>
                     </h2>
                     <div className="flex items-center gap-4">
-                        <span className="text-xs text-gray-400">数据仅在点击入库按钮后存入 sip_holding_cash_fcn 库</span>
+                        <span className="text-xs text-gray-400">数据每分钟自动存入 sip_holding_cash_fcn 库</span>
                     </div>
                 </div>
                 <div className="bg-teal-50 border-t border-teal-100 p-5 rounded-lg">
@@ -1876,7 +1890,7 @@ export default function FCNHoldingPage() {
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                             <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
                             <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">
-                                {isHKDView ? '※手动入库已在折算视图下暂停' : '※仅手动入库'}
+                                {isHKDView ? '※自动入库已在折算视图下暂停' : '※每分钟自动入库'}
                             </span>
                         </div>
                         <div className="flex items-center gap-3">

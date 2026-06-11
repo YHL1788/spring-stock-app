@@ -903,6 +903,22 @@ export default function SpotHoldingsPage() {
       }
   };
 
+  // 每分钟自动保存各种统计 (带有 HKD 视图及筛选视图联动锁)
+  useEffect(() => {
+      if (!user) return;
+      const intervalId = setInterval(() => {
+          // 安全保护：仅在未开启 HKD 折算视图 且 没有有效搜索筛选时，才进行自动入库，避免残缺脏数据污染
+          if (!isHKDView && !hasActiveFilters) {
+              handleSaveCashStats(true);
+              handleSaveMktValStats(true);
+              handleSavePlStats(true);
+              handleSaveInitialStats(true);
+              handleSaveExposure(true);
+          }
+      }, 60000); 
+      return () => clearInterval(intervalId);
+  }, [user, netBuyStats, currentMktStats, currentPlStats, initialStats, riskExposureSummary, isHKDView, hasActiveFilters]);
+
   // --- 获取并刷新后台库数据 ---
   const fetchDbRecords = async (collectionName: string) => {
       if (!user) return;
@@ -1208,7 +1224,7 @@ export default function SpotHoldingsPage() {
                 <div className="flex items-center gap-4 text-xs text-gray-500">
                     <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 现货风控暴露最后入库时间: <span className="font-mono font-medium text-gray-700">{lastExposureSavedTime}</span></span>
                     <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                        {(isHKDView || hasActiveFilters) ? '※风控手动入库已在折算或筛选视图下暂停，保护数据纯净' : '*后台暗线逻辑：已基于现货持仓生成合并敞口数据'}
+                        {(isHKDView || hasActiveFilters) ? '※风控自动/手动入库已在折算或筛选视图下暂停，保护数据纯净' : '*后台暗线逻辑：已基于现货持仓生成合并敞口数据'}
                     </span>
                 </div>
                 <div className="flex items-center gap-3">
@@ -1303,7 +1319,7 @@ export default function SpotHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
                         <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
+                            {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1485,7 +1501,7 @@ export default function SpotHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
                         <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
+                            {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1652,7 +1668,7 @@ export default function SpotHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-blue-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
                         <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded border border-blue-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
+                            {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1889,7 +1905,7 @@ export default function SpotHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-purple-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastInitialSavedTime}</span></span>
                         <span className="text-[10px] bg-purple-50 text-purple-600 px-2 py-0.5 rounded border border-purple-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停，保护原始数据' : '※仅手动入库'}
+                            {(isHKDView || hasActiveFilters) ? '※自动/手动入库已在折算或筛选视图下暂停，保护原始数据' : '※每分钟自动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">

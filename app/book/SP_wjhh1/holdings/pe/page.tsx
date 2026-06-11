@@ -741,20 +741,6 @@ export default function PEHoldingsPage() {
       }
   };
 
-  // 每分钟自动保存统计与资金净买入 (带有联动锁)
-  useEffect(() => {
-      if (!user) return;
-      const intervalId = setInterval(() => {
-          // 安全保护：仅在未开启 HKD 折算视图 且 没有有效搜索筛选时，才进行自动入库，避免双重乘率或残缺脏数据污染
-          if (!isHKDView && !hasActiveFilters) {
-              handleSaveCashStats(true);
-              handleSaveMktValStats(true);
-              handleSavePlStats(true);
-          }
-      }, 60000); 
-      return () => clearInterval(intervalId);
-  }, [user, cashStats, currentMktStats, currentPlStats, isHKDView, hasActiveFilters]);
-
   // --- 获取并刷新后台库数据 ---
   const fetchDbRecords = async (collectionName: string) => {
       if (!user) return;
@@ -1159,7 +1145,7 @@ export default function PEHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
                         <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                            {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动刷新入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1350,7 +1336,7 @@ export default function PEHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
                         <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
-                            {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动刷新入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1438,7 +1424,7 @@ export default function PEHoldingsPage() {
                         <Database size={18}/> 资金净买入二维统计表
                     </h3>
                     <div className="flex items-center gap-4">
-                        <span className="text-xs text-teal-600 font-medium">净买入 = 初始投入金额 + 申购金额 - 赎回金额 (每分钟自动入库)</span>
+                        <span className="text-xs text-teal-600 font-medium">净买入 = 初始投入金额 + 申购金额 - 赎回金额（仅手动入库）</span>
                         <button 
                             onClick={() => setIsHKDView(!isHKDView)}
                             className={`text-xs font-bold px-3 py-1.5 rounded transition-colors border ${isHKDView ? 'bg-teal-600 text-white border-teal-600 shadow-inner' : 'bg-white text-teal-700 border-teal-200 hover:bg-teal-100 shadow-sm'}`}
@@ -1515,7 +1501,7 @@ export default function PEHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-teal-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
                         <span className="text-[10px] bg-teal-50 text-teal-600 px-2 py-0.5 rounded border border-teal-100">
-                            {(isHKDView || hasActiveFilters) ? '※自动入库已在折算或筛选视图下暂停' : '※每分钟自动刷新入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
