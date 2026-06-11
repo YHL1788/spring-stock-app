@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Building2, ListOrdered, PieChart, BarChart as BarChartIcon,
   Loader2, AlertCircle, RefreshCw, Search, Database, Save,
@@ -55,7 +55,6 @@ interface StockHolding {
   avgCost: number; 
   totalCostHKD: number; 
   currentPrice: number; 
-  hasValidQuote: boolean;
   dailyChangePct: number; 
   mktValHKD: number; 
   unrealizedPnlHKD: number; 
@@ -171,8 +170,6 @@ export default function SpotHoldingsPage() {
   const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
   const [realTimeQuotes, setRealTimeQuotes] = useState<Record<string, { price: number, changePercent: number }>>({});
   const [isFetchingRealTime, setIsFetchingRealTime] = useState(false);
-  const [quoteRefreshAttempted, setQuoteRefreshAttempted] = useState(false);
-  const quoteRequestIdRef = useRef(0);
   const [showFxModal, setShowFxModal] = useState(false);
   
   const [isSavingCash, setIsSavingCash] = useState(false);
@@ -430,9 +427,7 @@ export default function SpotHoldingsPage() {
   // --- API 调用：获取汇率与实时行情 ---
   const fetchMarketData = async () => {
     if (activeTrades.length === 0 && initialHoldings.length === 0) return;
-    const requestId = ++quoteRequestIdRef.current;
     setIsFetchingRealTime(true);
-    setQuoteRefreshAttempted(false);
     
     try {
       const markets = new Set<string>();
@@ -461,41 +456,28 @@ export default function SpotHoldingsPage() {
               }
           } catch(e) {}
       }));
-      if (requestId !== quoteRequestIdRef.current) return;
       setGlobalFxRates(newRates);
 
       const newQuotes: Record<string, { price: number, changePercent: number }> = {};
-
-      // 限制并发，避免大量标的一次性请求导致行情源限流。
-      const symbolList = Array.from(symbols);
-      const batchSize = 8;
-      for (let index = 0; index < symbolList.length; index += batchSize) {
-          if (requestId !== quoteRequestIdRef.current) return;
-          await Promise.all(symbolList.slice(index, index + batchSize).map(async (symbol) => {
-              try {
-                  const res = await fetch(`/api/quote?symbol=${encodeURIComponent(symbol)}`);
-                  if (res.ok) {
-                      const data = await res.json();
-                      const price = Number(data.regularMarketPrice || data.price || data.close);
-                      const rawChangePct = Number(data.changePercent ?? data.regularMarketChangePercent ?? 0);
-                      if (Number.isFinite(price) && price > 0) {
-                          newQuotes[symbol] = { price, changePercent: rawChangePct / 100 };
-                      }
+      
+      await Promise.all(Array.from(symbols).map(async (symbol) => {
+           try {
+              const res = await fetch(`/api/quote?symbol=${symbol}`);
+              if (res.ok) {
+                  const data = await res.json();
+                  const price = data.regularMarketPrice || data.price || data.close;
+                  const rawChangePct = data.changePercent ?? data.regularMarketChangePercent ?? 0;
+                  if (price) {
+                      newQuotes[symbol] = { price, changePercent: rawChangePct / 100 };
                   }
-              } catch (e) {
-                  console.warn(`行情获取失败: ${symbol}`, e);
               }
-          }));
-      }
-      if (requestId !== quoteRequestIdRef.current) return;
+           } catch(e) {}
+      }));
       setRealTimeQuotes(newQuotes);
     } catch (e) {
         console.error("Market data fetch error", e);
     } finally {
-        if (requestId === quoteRequestIdRef.current) {
-            setQuoteRefreshAttempted(true);
-            setIsFetchingRealTime(false);
-        }
+        setIsFetchingRealTime(false);
     }
   };
 
@@ -515,32 +497,6 @@ export default function SpotHoldingsPage() {
           stockPool,
       }).holdings;
   }, [activeTrades, initialHoldings, stockPool, globalFxRates, realTimeQuotes]);
-
-  const missingQuoteCodes = useMemo(() => {
-      return calculatedHoldings
-          .filter(h => Math.abs(h.quantity) > 0.000001 && !h.hasValidQuote)
-          .map(h => h.code)
-          .sort();
-  }, [calculatedHoldings]);
-
-  const hasIncompleteQuotes = missingQuoteCodes.length > 0;
-  const quoteValidationMessage = isFetchingRealTime
-      ? '行情正在刷新，请等待完成后再入库。'
-      : hasIncompleteQuotes
-          ? `${quoteRefreshAttempted ? '行情刷新后仍' : '当前'}缺少 ${missingQuoteCodes.length} 只持仓的有效行情：${missingQuoteCodes.join('、')}`
-          : '';
-
-  const ensureCompleteQuotes = (target: string) => {
-      if (isFetchingRealTime) {
-          alert(`无法保存${target}：行情仍在刷新，请稍候。`);
-          return false;
-      }
-      if (hasIncompleteQuotes) {
-          alert(`无法保存${target}：存在缺失行情。\n${missingQuoteCodes.join('、')}\n\n请先点击“更新行情”，确认全部报价成功后再入库。`);
-          return false;
-      }
-      return true;
-  };
 
   // --- 模块 1: 持仓统计处理 ---
   const displayHoldings = useMemo(() => {
@@ -855,9 +811,9 @@ export default function SpotHoldingsPage() {
   };
 
   // --- 数据入库归档逻辑 ---
-  const handleSaveCashStats = async () => {
+  const handleSaveCashStats = async (isAuto = false) => {
       if (!user) return;
-      setIsSavingCash(true);
+      if (!isAuto) setIsSavingCash(true);
       try {
           const payload = {
               accounts: netBuyStats.accounts,
@@ -866,18 +822,17 @@ export default function SpotHoldingsPage() {
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_stock', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
-          setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          if (!isAuto) setLastCashSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存资金净买入统计失败:", e);
       } finally {
-          setIsSavingCash(false);
+          if (!isAuto) setIsSavingCash(false);
       }
   };
 
-  const handleSaveMktValStats = async () => {
+  const handleSaveMktValStats = async (isAuto = false) => {
       if (!user) return;
-      if (!ensureCompleteQuotes('当前市值统计')) return;
-      setIsSavingMktVal(true);
+      if (!isAuto) setIsSavingMktVal(true);
       try {
           const payload = {
               accounts: currentMktStats.accounts,
@@ -886,18 +841,17 @@ export default function SpotHoldingsPage() {
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_stock_mktvalue', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
-          setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          if (!isAuto) setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前市值统计失败:", e);
       } finally {
-          setIsSavingMktVal(false);
+          if (!isAuto) setIsSavingMktVal(false);
       }
   };
 
-  const handleSavePlStats = async () => {
+  const handleSavePlStats = async (isAuto = false) => {
       if (!user) return;
-      if (!ensureCompleteQuotes('当前收益统计')) return;
-      setIsSavingPl(true);
+      if (!isAuto) setIsSavingPl(true);
       try {
           const payload = {
               markets: currentPlStats.markets,
@@ -905,17 +859,17 @@ export default function SpotHoldingsPage() {
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_stock_pl', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
-          setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          if (!isAuto) setLastPlSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前收益统计失败:", e);
       } finally {
-          setIsSavingPl(false);
+          if (!isAuto) setIsSavingPl(false);
       }
   };
 
-  const handleSaveInitialStats = async () => {
+  const handleSaveInitialStats = async (isAuto = false) => {
       if (!user) return;
-      setIsSavingInitial(true);
+      if (!isAuto) setIsSavingInitial(true);
       try {
           const payload = {
               accounts: initialStats.accounts,
@@ -924,29 +878,28 @@ export default function SpotHoldingsPage() {
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_spot_start', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
-          setLastInitialSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          if (!isAuto) setLastInitialSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存期初投入统计失败:", e);
       } finally {
-          setIsSavingInitial(false);
+          if (!isAuto) setIsSavingInitial(false);
       }
   };
 
-  const handleSaveExposure = async () => {
+  const handleSaveExposure = async (isAuto = false) => {
       if (!user) return;
-      if (!ensureCompleteQuotes('现货风控暴露')) return;
-      setIsSavingExposure(true);
+      if (!isAuto) setIsSavingExposure(true);
       try {
           const payload = {
               data: riskExposureSummary,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_exposure_spot', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
-          setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
+          if (!isAuto) setLastExposureSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存现货风控暴露失败:", e);
       } finally {
-          setIsSavingExposure(false);
+          if (!isAuto) setIsSavingExposure(false);
       }
   };
 
@@ -1144,31 +1097,6 @@ export default function SpotHoldingsPage() {
             </div>
         )}
 
-        {(isFetchingRealTime || hasIncompleteQuotes) && (
-            <div className="bg-amber-50 border border-amber-200 p-4 rounded-lg text-amber-800 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <div className="flex items-start gap-2 min-w-0">
-                    {isFetchingRealTime
-                        ? <Loader2 size={20} className="animate-spin mt-0.5 flex-none" />
-                        : <AlertCircle size={20} className="mt-0.5 flex-none" />}
-                    <div>
-                        <div className="font-bold">行情完整性校验未通过</div>
-                        <div className="mt-1 text-xs break-all">{quoteValidationMessage}</div>
-                        <div className="mt-1 text-[11px] text-amber-700">
-                            市值、盈亏和暴露入库已锁定，避免用成本价代替现价写入错误数据。
-                        </div>
-                    </div>
-                </div>
-                <button
-                    onClick={() => fetchMarketData()}
-                    disabled={isFetchingRealTime}
-                    className="flex-none inline-flex items-center justify-center gap-2 px-4 py-2 bg-white border border-amber-400 text-amber-800 hover:bg-amber-100 text-xs font-bold rounded shadow-sm disabled:opacity-50"
-                >
-                    <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} />
-                    重新获取行情
-                </button>
-            </div>
-        )}
-
         {/* === 模块 1：当前持仓统计表 === */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
@@ -1227,21 +1155,17 @@ export default function SpotHoldingsPage() {
                                     </td>
                                     <td className="px-3 py-2 text-right font-mono font-bold text-gray-800">{h.quantity.toLocaleString()}</td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-600">{h.avgCost.toFixed(4)}</td>
-                                    <td className="px-3 py-2 text-right font-mono font-medium text-indigo-700 bg-indigo-50/50">
-                                        {h.hasValidQuote ? h.currentPrice.toFixed(4) : <span className="text-amber-600 font-bold">--</span>}
-                                    </td>
-                                    <td className={`px-3 py-2 text-right font-mono font-bold ${h.hasValidQuote ? (h.dailyChangePct >= 0 ? 'text-red-600' : 'text-green-600') : 'text-amber-600'}`}>
-                                        {h.hasValidQuote ? `${h.dailyChangePct > 0 ? '+' : ''}${fmtPct(h.dailyChangePct)}` : '--'}
+                                    <td className="px-3 py-2 text-right font-mono font-medium text-indigo-700 bg-indigo-50/50">{h.currentPrice.toFixed(4)}</td>
+                                    <td className={`px-3 py-2 text-right font-mono font-bold ${h.dailyChangePct >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                        {h.dailyChangePct > 0 ? '+' : ''}{fmtPct(h.dailyChangePct)}
                                     </td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-700">{formatMoney(h.totalCostHKD, true)}</td>
-                                    <td className="px-3 py-2 text-right font-mono font-bold text-gray-900">
-                                        {h.hasValidQuote ? formatMoney(h.mktValHKD, true) : <span className="text-amber-600">--</span>}
+                                    <td className="px-3 py-2 text-right font-mono font-bold text-gray-900">{formatMoney(h.mktValHKD, true)}</td>
+                                    <td className={`px-3 py-2 text-right font-mono font-bold ${h.unrealizedPnlHKD >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                        {h.unrealizedPnlHKD > 0 ? '+' : ''}{formatMoney(h.unrealizedPnlHKD, true)}
                                     </td>
-                                    <td className={`px-3 py-2 text-right font-mono font-bold ${h.hasValidQuote ? (h.unrealizedPnlHKD >= 0 ? 'text-red-600' : 'text-green-600') : 'text-amber-600'}`}>
-                                        {h.hasValidQuote ? `${h.unrealizedPnlHKD > 0 ? '+' : ''}${formatMoney(h.unrealizedPnlHKD, true)}` : '--'}
-                                    </td>
-                                    <td className={`px-3 py-2 text-right font-mono font-bold ${h.hasValidQuote ? (h.pnlRatio >= 0 ? 'text-red-600' : 'text-green-600') : 'text-amber-600'}`}>
-                                        {h.hasValidQuote ? `${h.pnlRatio > 0 ? '+' : ''}${fmtPct(h.pnlRatio)}` : '--'}
+                                    <td className={`px-3 py-2 text-right font-mono font-bold ${h.pnlRatio >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                        {h.pnlRatio > 0 ? '+' : ''}{fmtPct(h.pnlRatio)}
                                     </td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-500">{fmtPct(pctOfTotalMktVal)}</td>
                                     <td className={`px-3 py-2 text-right font-mono ${pnlContribution >= 0 ? 'text-red-500' : 'text-green-500'}`}>
@@ -1284,15 +1208,15 @@ export default function SpotHoldingsPage() {
                 <div className="flex items-center gap-4 text-xs text-gray-500">
                     <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 现货风控暴露最后入库时间: <span className="font-mono font-medium text-gray-700">{lastExposureSavedTime}</span></span>
                     <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                        {(isHKDView || hasActiveFilters) ? '※风控手动入库已在折算或筛选视图下暂停，保护数据纯净' : '※打开页面自动刷新，点击按钮才入库'}
+                        {(isHKDView || hasActiveFilters) ? '※风控手动入库已在折算或筛选视图下暂停，保护数据纯净' : '*后台暗线逻辑：已基于现货持仓生成合并敞口数据'}
                     </span>
                 </div>
                 <div className="flex items-center gap-3">
-                    <button onClick={() => fetchMarketData()} disabled={isFetchingRealTime} className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-600 text-indigo-600 hover:bg-indigo-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
-                        <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} /> 刷新风控汇总
+                    <button onClick={() => alert('汇总敞口数据已根据当前页面状态实时更新！您可以直接点击“手动保存入库”。')} className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-600 text-indigo-600 hover:bg-indigo-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                        <RefreshCw size={14} /> 刷新风控汇总
                     </button>
                     {(!isHKDView && !hasActiveFilters) && (
-                        <button onClick={handleSaveExposure} disabled={isSavingExposure || isFetchingRealTime || hasIncompleteQuotes} title={quoteValidationMessage || undefined} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                        <button onClick={() => handleSaveExposure(false)} disabled={isSavingExposure} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                             {isSavingExposure ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 暴露汇总手动入库
                         </button>
                     )}
@@ -1379,7 +1303,7 @@ export default function SpotHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
                         <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※打开页面自动刷新，点击按钮才入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1387,7 +1311,7 @@ export default function SpotHoldingsPage() {
                             <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} /> 手动刷新
                         </button>
                         {(!isHKDView && !hasActiveFilters) && (
-                            <button onClick={handleSaveMktValStats} disabled={isSavingMktVal || isFetchingRealTime || hasIncompleteQuotes} title={quoteValidationMessage || undefined} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={() => handleSaveMktValStats(false)} disabled={isSavingMktVal} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 {isSavingMktVal ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                             </button>
                         )}
@@ -1561,7 +1485,7 @@ export default function SpotHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
                         <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※打开页面自动刷新，点击按钮才入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1569,7 +1493,7 @@ export default function SpotHoldingsPage() {
                             <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} /> 手动刷新
                         </button>
                         {(!isHKDView && !hasActiveFilters) && (
-                            <button onClick={handleSavePlStats} disabled={isSavingPl || isFetchingRealTime || hasIncompleteQuotes} title={quoteValidationMessage || undefined} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={() => handleSavePlStats(false)} disabled={isSavingPl} className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 {isSavingPl ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                             </button>
                         )}
@@ -1728,7 +1652,7 @@ export default function SpotHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-blue-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
                         <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded border border-blue-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※打开页面自动刷新，点击按钮才入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※仅手动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1736,7 +1660,7 @@ export default function SpotHoldingsPage() {
                             <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} /> 手动刷新
                         </button>
                         {(!isHKDView && !hasActiveFilters) && (
-                            <button onClick={handleSaveCashStats} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={() => handleSaveCashStats(false)} disabled={isSavingCash} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 {isSavingCash ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                             </button>
                         )}
@@ -1965,7 +1889,7 @@ export default function SpotHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-purple-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastInitialSavedTime}</span></span>
                         <span className="text-[10px] bg-purple-50 text-purple-600 px-2 py-0.5 rounded border border-purple-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停，保护原始数据' : '※打开页面自动刷新，点击按钮才入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停，保护原始数据' : '※仅手动入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1973,7 +1897,7 @@ export default function SpotHoldingsPage() {
                             <RefreshCw size={14} className={isFetchingRealTime ? 'animate-spin' : ''} /> 手动刷新
                         </button>
                         {(!isHKDView && !hasActiveFilters) && (
-                            <button onClick={handleSaveInitialStats} disabled={isSavingInitial} className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
+                            <button onClick={() => handleSaveInitialStats(false)} disabled={isSavingInitial} className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50">
                                 {isSavingInitial ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 手动保存入库
                             </button>
                         )}

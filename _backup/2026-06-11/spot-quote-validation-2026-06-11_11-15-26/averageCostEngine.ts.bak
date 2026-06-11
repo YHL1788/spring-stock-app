@@ -48,7 +48,6 @@ export interface AverageCostHolding {
   avgCost: number;
   totalCostHKD: number;
   currentPrice: number;
-  hasValidQuote: boolean;
   dailyChangePct: number;
   mktValHKD: number;
   grossExposureHKD: number;
@@ -140,7 +139,6 @@ const createHolding = (
     avgCost: 0,
     totalCostHKD: 0,
     currentPrice: 0,
-    hasValidQuote: false,
     dailyChangePct: 0,
     mktValHKD: 0,
     grossExposureHKD: 0,
@@ -293,9 +291,7 @@ export const calculateAverageCostHoldings = ({
   const holdings = Object.values(holdingsMap).map((holding) => {
     const fxRate = fxRates[holding.market] || 1;
     const quote = quotes[holding.code];
-    const quotePrice = toFiniteNumber(quote?.price);
-    const hasValidQuote = quotePrice > EPSILON;
-    const currentPrice = hasValidQuote ? quotePrice : holding.avgCost;
+    const currentPrice = quote?.price || holding.avgCost;
     const marketValueLocal = holding.quantity * currentPrice;
     const totalCostLocal = holding.quantity * holding.avgCost;
     const unrealizedPnlLocal = holding.quantity * (currentPrice - holding.avgCost);
@@ -309,7 +305,6 @@ export const calculateAverageCostHoldings = ({
       ...holding,
       side: getSide(holding.quantity),
       currentPrice,
-      hasValidQuote,
       dailyChangePct: quote?.changePercent || 0,
       totalCostHKD,
       mktValHKD,
