@@ -291,8 +291,22 @@ def compute_risk_score_v2(persist_days: int = 3) -> pd.DataFrame:
         "leading_weak": leading_indicators_signal(),
     }
 
-    # 对齐所有信号到统一日期范围
-    df = pd.concat(sigs, axis=1).fillna(0)
+    # Use the NDX trading calendar as the canonical timeline. Weekly CFTC data
+    # may extend into weekends or the current, not-yet-closed business day;
+    # an outer join would otherwise create a false latest row with 0s for all
+    # market-based signals.
+    ndx_prices = db.load_prices("^NDX")
+    if ndx_prices.empty:
+        logger.warning("NDX prices unavailable; falling back to signal dates.")
+        market_index = pd.concat(sigs, axis=1).index
+    else:
+        market_index = pd.DatetimeIndex(ndx_prices.index).sort_values().unique()
+
+    aligned = {
+        name: signal.sort_index().reindex(market_index).ffill()
+        for name, signal in sigs.items()
+    }
+    df = pd.concat(aligned, axis=1).fillna(0)
     df.columns = list(sigs.keys())
 
     # 多少个信号"激活" (> 0.4)

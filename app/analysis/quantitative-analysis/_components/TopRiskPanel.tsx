@@ -7,7 +7,6 @@ import {
   Clock3,
   Database,
   ExternalLink,
-  Gauge,
   RefreshCw,
   ShieldCheck,
   Waves,
@@ -233,39 +232,80 @@ export default function TopRiskPanel() {
   }
 
   const signals = current.subSignals || EMPTY_SIGNALS;
-  const gaugeDegrees = Math.min(180, Math.max(0, current.confirmedScore * 180));
+  const gaugeProgress = Math.min(100, Math.max(0, current.confirmedScore * 100));
+  const gaugeAngle = Math.PI + (gaugeProgress / 100) * Math.PI;
+  const gaugeDotX = 100 + Math.cos(gaugeAngle) * 80;
+  const gaugeDotY = 100 + Math.sin(gaugeAngle) * 80;
 
   return (
     <div className="space-y-6">
       <section className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
         <div className="relative overflow-hidden rounded-[26px] border border-slate-900/10 bg-[#102a2a] p-6 text-white">
-          <div className="absolute -right-10 -top-12 h-40 w-40 rounded-full bg-[#e76f36]/15" />
-          <div className="relative flex items-center justify-between">
+          <div className="absolute -right-12 -top-14 h-44 w-44 rounded-full border border-[#f0ad79]/10 bg-[#e76f36]/10" />
+          <div className="absolute -bottom-24 -left-20 h-52 w-52 rounded-full border border-white/5" />
+
+          <div className="relative flex items-start justify-between gap-4">
             <div>
               <div className="text-[10px] font-black uppercase tracking-[0.22em] text-[#f0ad79]">
                 Confirmed Score
               </div>
               <div className="mt-2 text-5xl font-semibold tracking-tight">{pct(current.confirmedScore)}</div>
             </div>
-            <Gauge size={44} className="text-[#f0ad79]" />
-          </div>
-
-          <div className="relative mt-8 h-24 overflow-hidden">
-            <div className="absolute left-1/2 top-2 h-40 w-40 -translate-x-1/2 rounded-full border-[18px] border-white/10" />
-            <div
-              className="absolute left-1/2 top-2 h-40 w-40 -translate-x-1/2 rounded-full border-[18px] border-transparent border-t-[#e76f36] transition-transform duration-700"
-              style={{ transform: `translateX(-50%) rotate(${gaugeDegrees - 90}deg)` }}
-            />
-          </div>
-
-          <div className="relative mt-1 flex items-end justify-between">
-            <div>
-              <div className="text-xs text-slate-400">原始评分</div>
-              <div className="mt-1 text-xl font-semibold">{pct(current.rawScore)}</div>
-            </div>
-            <span className={`rounded-full border px-3 py-1.5 text-xs font-black ${riskTone(current.confirmedScore)}`}>
+            <div className={`rounded-full border px-3 py-1.5 text-xs font-black ${riskTone(current.confirmedScore)}`}>
               {current.riskLabel}
-            </span>
+            </div>
+          </div>
+
+          <div className="relative mx-auto mt-5 max-w-[290px]">
+            <svg viewBox="0 0 200 118" className="w-full overflow-visible" role="img" aria-label={`确认评分 ${pct(current.confirmedScore)}`}>
+              <defs>
+                <linearGradient id="confirmed-score-gradient" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%" stopColor="#17a398" />
+                  <stop offset="55%" stopColor="#f0ad79" />
+                  <stop offset="100%" stopColor="#e76f36" />
+                </linearGradient>
+              </defs>
+              <path
+                d="M 20 100 A 80 80 0 0 1 180 100"
+                fill="none"
+                stroke="rgba(255,255,255,0.10)"
+                strokeWidth="14"
+                strokeLinecap="round"
+                pathLength="100"
+              />
+              <path
+                d="M 20 100 A 80 80 0 0 1 180 100"
+                fill="none"
+                stroke="url(#confirmed-score-gradient)"
+                strokeWidth="14"
+                strokeLinecap="round"
+                pathLength="100"
+                strokeDasharray={`${gaugeProgress} 100`}
+                className="transition-all duration-700"
+              />
+              <circle cx={gaugeDotX} cy={gaugeDotY} r="5.5" fill="#fff" stroke="#e76f36" strokeWidth="3" />
+              <line x1="100" y1="92" x2="100" y2="100" stroke="rgba(255,255,255,0.3)" strokeWidth="2" />
+              <text x="18" y="116" fill="rgba(255,255,255,0.52)" fontSize="9">0</text>
+              <text x="100" y="78" textAnchor="middle" fill="rgba(255,255,255,0.52)" fontSize="9">50</text>
+              <text x="182" y="116" textAnchor="end" fill="rgba(255,255,255,0.52)" fontSize="9">100</text>
+              <text x="100" y="101" textAnchor="middle" fill="#fff" fontSize="18" fontWeight="700">
+                {Math.round(gaugeProgress)}
+              </text>
+              <text x="100" y="113" textAnchor="middle" fill="rgba(255,255,255,0.52)" fontSize="8">
+                确认风险分
+              </text>
+            </svg>
+          </div>
+
+          <div className="relative mt-2 grid grid-cols-2 gap-3 border-t border-white/10 pt-4">
+            <div>
+              <div className="text-[11px] text-slate-400">原始评分</div>
+              <div className="mt-1 text-xl font-semibold tabular-nums">{pct(current.rawScore)}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-[11px] text-slate-400">已激活信号</div>
+              <div className="mt-1 text-xl font-semibold tabular-nums">{current.activeSignals}<span className="text-sm text-slate-400"> / 5</span></div>
+            </div>
           </div>
         </div>
 
