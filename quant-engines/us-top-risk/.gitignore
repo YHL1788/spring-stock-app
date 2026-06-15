@@ -1,0 +1,91 @@
+# ─── Python ───
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+build/
+develop-eggs/
+dist/
+downloads/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ─── Virtualenvs ───
+.venv/
+venv/
+env/
+ENV/
+.env
+.envrc
+
+# ─── IDEs ───
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── Testing & coverage ───
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ─── Project: data & logs ───
+# SQLite database (auto-generated, can be reproduced via extend-history)
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# Cached intermediate files
+data/raw/
+data/cache/
+data/logs/
+*.log
+
+# Backtest outputs (regeneratable)
+data/backtest/*.csv
+data/backtest/*.png
+data/backtest/*.md
+!data/backtest/.gitkeep
+
+# Reports (daily generated, not source)
+data/reports/
+
+# ─── Project: secrets ───
+.usmd_env
+config/secrets.py
+*.token
+*.key
+*.pem
+
+# Local user overrides
+config/local_settings.py
+
+# ─── Notebooks (if any) ───
+.ipynb_checkpoints/
+*.ipynb
+
+# ─── Misc ───
+*.bak
+*.tmp
+.cache/
+node_modules/

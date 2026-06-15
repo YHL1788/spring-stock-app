@@ -1,0 +1,71 @@
+name: Update US Top Risk Score
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 06:30 Asia/Shanghai, after the US market close.
+    - cron: '30 22 * * 1-5'
+
+permissions:
+  contents: read
+
+jobs:
+  update-score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: quant-engines/us-top-risk/requirements-sync.txt
+
+      - name: Resolve cache date
+        id: cache-date
+        shell: bash
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore quant database
+        uses: actions/cache@v4
+        with:
+          path: .quant-cache/us-top-risk
+          key: us-top-risk-${{ runner.os }}-${{ steps.cache-date.outputs.date }}
+          restore-keys: |
+            us-top-risk-${{ runner.os }}-
+
+      - name: Install research engine
+        run: pip install -r quant-engines/us-top-risk/requirements-sync.txt
+
+      - name: Update market data and scores
+        env:
+          PYTHONPATH: quant-engines/us-top-risk
+          USMD_DATA_DIR: ${{ github.workspace }}/.quant-cache/us-top-risk/data
+          USMD_LOG_DIR: ${{ github.workspace }}/.quant-cache/us-top-risk/logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f "$USMD_DATA_DIR/us_market.db" ]; then
+            python -m us_market_dashboard extend-history --years 10
+          else
+            python -m us_market_dashboard daily --skip-push
+            python -m us_market_dashboard fetch-external
+          fi
+          python -m us_market_dashboard score-v2
+
+      - name: Publish snapshot to Firebase
+        env:
+          PYTHONPATH: quant-engines/us-top-risk
+          USMD_DATA_DIR: ${{ github.workspace }}/.quant-cache/us-top-risk/data
+          USMD_LOG_DIR: ${{ github.workspace }}/.quant-cache/us-top-risk/logs
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          NEXT_PUBLIC_APP_ID: ${{ secrets.NEXT_PUBLIC_APP_ID }}
+        run: |
+          python scripts/sync_top_risk_to_firebase.py \
+            --engine-root quant-engines/us-top-risk \
+            --history-limit 756
+
