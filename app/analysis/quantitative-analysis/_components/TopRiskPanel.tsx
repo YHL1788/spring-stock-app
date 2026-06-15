@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  CircleHelp,
   Clock3,
   Database,
   ExternalLink,
@@ -63,12 +64,98 @@ const SIGNALS: Array<{
   key: keyof SubSignals;
   title: string;
   subtitle: string;
+  weight: number;
+  explanation: {
+    watches: string;
+    trigger: string;
+    meaning: string;
+    current: {
+      low: string;
+      medium: string;
+      high: string;
+    };
+  };
 }> = [
-  { key: 'factorReversal', title: '因子反转', subtitle: '拥挤因子从近期极端峰值回落' },
-  { key: 'soxReversal', title: 'SOX 反转', subtitle: '半导体超买状态开始消化' },
-  { key: 'cftcExtreme', title: 'CFTC 极端持续', subtitle: '快钱极端空头及快慢钱分歧' },
-  { key: 'vixRising', title: 'VIX 上升', subtitle: '波动率上行与期限结构恶化' },
-  { key: 'leadingWeak', title: '领先指标转弱', subtitle: '信用、小盘、半导体等同步走弱' },
+  {
+    key: 'factorReversal',
+    title: '因子反转',
+    subtitle: '拥挤因子从近期极端峰值回落',
+    weight: 0.2,
+    explanation: {
+      watches: '观察多个风格因子的拥挤度 z-score 是否由极端位置转向。',
+      trigger: '近20日曾高于 2σ，且当前较峰值回落超过 0.5σ；多个因子同时回落时分数更高。',
+      meaning: '高拥挤本身不算顶部，只有拥挤交易开始松动才得分。',
+      current: {
+        low: '拥挤因子尚未出现广泛回落，当前更接近动量延续或中性状态。',
+        medium: '部分拥挤因子已经从高位回落，但反转范围或幅度尚不足以形成全面确认。',
+        high: '多个拥挤因子正从极端位置明显回落，拥挤交易松动信号较强。',
+      },
+    },
+  },
+  {
+    key: 'soxReversal',
+    title: 'SOX 反转',
+    subtitle: '半导体超买状态开始消化',
+    weight: 0.15,
+    explanation: {
+      watches: '观察费城半导体指数相对20日均线的偏离程度。',
+      trigger: '近30日最大正偏离超过 12%，且当前较该峰值回落超过4个百分点。',
+      meaning: '表示半导体短期动能明显降温，不等于长期趋势已经转空。',
+      current: {
+        low: 'SOX 尚未从近期超买峰值明显回落，半导体动能暂未出现反转确认。',
+        medium: 'SOX 已有一定降温迹象，但从超买峰值回落的幅度仍属中等。',
+        high: 'SOX 已从近期极端偏离显著回落，半导体短期动能反转信号充分触发。',
+      },
+    },
+  },
+  {
+    key: 'cftcExtreme',
+    title: 'CFTC 极端持续',
+    subtitle: '快钱极端空头及快慢钱分歧',
+    weight: 0.3,
+    explanation: {
+      watches: '观察纳指期货中杠杆资金与资产管理机构的净持仓分歧。',
+      trigger: '杠杆资金净空头低于 -40% OI 并持续至少两周，同时考察慢钱是否净多及空头是否继续加深。',
+      meaning: '反映机构仓位结构极端。它是重要预警，但单独出现不代表市场马上下跌。',
+      current: {
+        low: '纳指期货机构持仓尚未达到模型定义的持续极端状态。',
+        medium: '机构持仓已出现一定极端或快慢钱分歧，但持续性与加深程度尚不完整。',
+        high: '杠杆资金极端净空并持续，且快慢钱分歧明显；这是强仓位预警，但仍需价格信号配合。',
+      },
+    },
+  },
+  {
+    key: 'vixRising',
+    title: 'VIX 上升',
+    subtitle: '波动率上行与期限结构恶化',
+    weight: 0.15,
+    explanation: {
+      watches: '观察 VIX 的短期涨速、相对60日均线位置及 VIX/VIX3M 期限结构。',
+      trigger: 'VIX五日涨幅超过 15% 得主要分；同时高于60日均线、VIX/VIX3M 超过 0.95 时继续加分。',
+      meaning: '衡量风险溢价是否正在快速回归，而不是简单判断 VIX 当前高不高。',
+      current: {
+        low: 'VIX 暂未快速上升，期限结构也未明显恶化，市场尚未集中买入短期保护。',
+        medium: '波动率已有抬升或期限结构趋紧，但风险溢价回归尚未全面确认。',
+        high: 'VIX 快速上升并伴随期限结构恶化，市场正在显著提高短期风险定价。',
+      },
+    },
+  },
+  {
+    key: 'leadingWeak',
+    title: '领先指标转弱',
+    subtitle: '信用、小盘、半导体等同步走弱',
+    weight: 0.2,
+    explanation: {
+      watches: '综合 HYG/LQD、IWM/SPY、SOXX/SPY、IYT/XLI、XLY/XLP 五组相对强弱。',
+      trigger: '每组按60日跌幅低于 -5%、处于60日最低20%区域、跌破200日均线分别计分，再取五组平均值。',
+      meaning: '分数越高，说明风险偏好恶化越广泛；接近0表示市场内部结构整体仍健康。',
+      current: {
+        low: '信用、小盘、半导体、运输及可选消费的相对表现整体健康，弱化尚未广泛扩散。',
+        medium: '部分领先市场已经走弱，但尚未形成跨资产、跨板块的一致恶化。',
+        high: '多组领先指标同步转弱，风险偏好恶化已具有较强的市场广度。',
+      },
+    },
+  },
 ];
 
 const EMPTY_SIGNALS: SubSignals = {
@@ -147,6 +234,28 @@ function signalTone(value: number) {
   return 'bg-teal-600';
 }
 
+function signalState(value: number) {
+  if (value >= 0.6) {
+    return {
+      key: 'high' as const,
+      label: '强信号',
+      tone: 'border-rose-200 bg-rose-50 text-rose-800',
+    };
+  }
+  if (value >= 0.3) {
+    return {
+      key: 'medium' as const,
+      label: '部分触发',
+      tone: 'border-amber-200 bg-amber-50 text-amber-800',
+    };
+  }
+  return {
+    key: 'low' as const,
+    label: '未明显触发',
+    tone: 'border-teal-200 bg-teal-50 text-teal-800',
+  };
+}
+
 async function readFirebaseSnapshot(): Promise<TopRiskData | null> {
   if (!auth.currentUser) await signInAnonymously(auth);
   const [latestSnapshot, historySnapshot] = await Promise.all([
@@ -177,6 +286,7 @@ export default function TopRiskPanel() {
   const [data, setData] = useState<TopRiskData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [openSignalHelp, setOpenSignalHelp] = useState<keyof SubSignals | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -232,6 +342,12 @@ export default function TopRiskPanel() {
   }
 
   const signals = current.subSignals || EMPTY_SIGNALS;
+  const selectedSignal = SIGNALS.find(signal => signal.key === openSignalHelp) || null;
+  const selectedSignalValue = selectedSignal ? signals[selectedSignal.key] : 0;
+  const selectedSignalState = signalState(selectedSignalValue);
+  const selectedSignalContribution = selectedSignal
+    ? selectedSignalValue * selectedSignal.weight * 100
+    : 0;
   const gaugeProgress = Math.min(100, Math.max(0, current.confirmedScore * 100));
   const gaugeAngle = Math.PI + (gaugeProgress / 100) * Math.PI;
   const gaugeDotX = 100 + Math.cos(gaugeAngle) * 80;
@@ -334,7 +450,22 @@ export default function TopRiskPanel() {
               return (
                 <div key={signal.key} className="rounded-2xl border border-slate-100 bg-[#faf9f5] p-4">
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-bold text-slate-800">{signal.title}</span>
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="text-sm font-bold text-slate-800">{signal.title}</span>
+                      <button
+                        type="button"
+                        aria-label={`查看${signal.title}解释`}
+                        aria-expanded={openSignalHelp === signal.key}
+                        onClick={() => setOpenSignalHelp(current => current === signal.key ? null : signal.key)}
+                        className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                          openSignalHelp === signal.key
+                            ? 'border-[#d95f2b] bg-[#d95f2b] text-white'
+                            : 'border-slate-300 bg-white text-slate-400 hover:border-[#d95f2b] hover:text-[#d95f2b]'
+                        }`}
+                      >
+                        <CircleHelp size={13} />
+                      </button>
+                    </div>
                     <span className="font-mono text-sm font-bold text-slate-700">{value.toFixed(2)}</span>
                   </div>
                   <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200">
@@ -347,6 +478,38 @@ export default function TopRiskPanel() {
                 </div>
               );
             })}
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-[#e8d8c8] bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-[#d95f2b]">
+              <CircleHelp size={15} /> 因子解释
+            </div>
+            {selectedSignal ? (
+              <div className="mt-3 text-[11px] leading-5 text-slate-600">
+                <div className={`mb-3 rounded-xl border px-3 py-3 ${selectedSignalState.tone}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-black">
+                      {selectedSignal.title} · {selectedSignalState.label}
+                    </span>
+                    <span className="font-mono font-bold">
+                      {selectedSignalValue.toFixed(2)} · 贡献 {selectedSignalContribution.toFixed(1)} 分
+                    </span>
+                  </div>
+                  <p className="mt-1.5 leading-5">
+                    {selectedSignal.explanation.current[selectedSignalState.key]}
+                  </p>
+                </div>
+                <div className="grid gap-x-5 gap-y-1 lg:grid-cols-3">
+                  <p><span className="font-bold text-slate-800">观察什么：</span>{selectedSignal.explanation.watches}</p>
+                  <p><span className="font-bold text-slate-800">如何触发：</span>{selectedSignal.explanation.trigger}</p>
+                  <p><span className="font-bold text-slate-800">如何理解：</span>{selectedSignal.explanation.meaning}</p>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-slate-500">
+                点击任一因子名称旁的问号，在这里查看结合当前数值的解释。
+              </p>
+            )}
           </div>
         </div>
       </section>
