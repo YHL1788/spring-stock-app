@@ -15,17 +15,11 @@ import {
   Edit2
 } from 'lucide-react';
 
-import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc, setDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { FCNPricer, FCNParams, FCNResult } from '@/app/lib/fcnPricer';
-import {
-    calculateFCNSettlement,
-    currencyToMarket,
-    marketToCurrency
-} from '@/app/book/SP_wjhh1/lib/fcnSettlementEngine';
-import type { FCNSettlementFxType } from '@/app/book/SP_wjhh1/lib/fcnSettlementEngine';
 
 // --- 時間解析輔助函數 ---
 const getTime = (val: any) => {
@@ -63,17 +57,7 @@ const replaceUndefinedWithNull = (obj: any): any => {
 
 // --- 類型定義 ---
 interface UnderlyingRow {
-    id: string;
-    ticker: string;
-    name: string;
-    market: string;
-    currency: string;
-    initialPrice: string;
-    currentPrice: string;
-    settlementFxType: FCNSettlementFxType;
-    settlementFxRate: string;
-    dividendDate: string;
-    dividendAmount: string;
+    id: string; ticker: string; name: string; initialPrice: string; currentPrice: string; dividendDate: string; dividendAmount: string;
 }
 interface DateRow {
     id: string; obsDate: string; payDate: string;
@@ -83,32 +67,11 @@ interface TransactionRecord {
     direction: string; quantity: number; priceNoFee: number; amountNoFee: number; fee: number; amountWithFee: number; priceWithFee: number; hkdAmount: number;
     firebaseId?: string; 
     tradeId?: string;    
-    noteCurrency?: string;
-    settlementFxRate?: number;
-    settlementFxPair?: string;
-    underlyingFxToHKD?: number;
-    residualCash?: number;
-    residualCashCurrency?: string;
-    settlementSchemaVersion?: number;
 }
-
-const createUnderlyingRow = (id: string): UnderlyingRow => ({
-    id,
-    ticker: '',
-    name: '',
-    market: 'US',
-    currency: 'USD',
-    initialPrice: '',
-    currentPrice: '',
-    settlementFxType: 'FLOATING',
-    settlementFxRate: '',
-    dividendDate: '',
-    dividendAmount: ''
-});
 
 // 示例参数
 const EXAMPLE_PARAMS: FCNParams & { executor?: string } = {
-    schemaVersion: 2, broker_name: "MS", account_name: "FUTU", executor: "Jerry", market: "HKD", noteCurrency: "HKD",
+    broker_name: "MS", account_name: "FUTU", executor: "Jerry", market: "HKD",
     total_notional: 2000000, denomination: 100000,
     tickers: ['9880.HK', '2050.HK', '6613.HK'], ticker_name: ["优必选", "三花", "蓝思"],
     initial_spots: [134.7, 40.06, 35.38], current_spots: [],
@@ -121,8 +84,7 @@ const INITIAL_BASIC = {
     broker_name: '', account_name: '', executor: '', market: 'HKD', total_notional: '' as number | string,
     denomination: '' as number | string, trade_date: '', strike_pct: '' as number | string, trigger_pct: '' as number | string,
     coupon_rate: '' as number | string, coupon_freq: '' as number | string, risk_free_rate: '' as number | string,
-    fx_rate: '' as number | string, history_start_date: '', n_sims: '' as number | string, seed: '' as number | string,
-    aggregateNotesForDelivery: false, ndsRoundingDecimals: 3, residualCashEnabled: true
+    fx_rate: '' as number | string, history_start_date: '', n_sims: '' as number | string, seed: '' as number | string
 };
 
 // --- 精準過期時間推算 (HKT UTC+8) ---
@@ -162,7 +124,9 @@ export default function FCNTradePage() {
     const [user, setUser] = useState<any>(null);
 
     const [basicParams, setBasicParams] = useState(INITIAL_BASIC);
-    const [underlyingRows, setUnderlyingRows] = useState<UnderlyingRow[]>([createUnderlyingRow('init_1')]);
+    const [underlyingRows, setUnderlyingRows] = useState<UnderlyingRow[]>([{
+        id: 'init_1', ticker: '', name: '', initialPrice: '', currentPrice: '', dividendDate: '', dividendAmount: ''
+    }]);
     const [dateRows, setDateRows] = useState<DateRow[]>([{ id: 'init_d1', obsDate: '', payDate: '' }]);
     const [loading, setLoading] = useState(false);
     const [fetchStatus, setFetchStatus] = useState<string>('');
@@ -253,21 +217,9 @@ export default function FCNTradePage() {
         } catch { return null; }
     };
 
-    const fetchCurrencyToHKD = async (currency: string): Promise<number | null> => {
-        if (currency === 'HKD') return 1;
-        try {
-            const res = await fetch(`/api/quote?currency=${encodeURIComponent(currency)}`);
-            if (!res.ok) return null;
-            const data = await res.json();
-            return typeof data?.rate === 'number' && data.rate > 0 ? data.rate : null;
-        } catch {
-            return null;
-        }
-    };
-
     const fetchHistoricalPrices = async (symbol: string, startDate: string, endDate?: string): Promise<{ date: string, close: number }[]> => {
         try {
-            const apiUrl = `/api/history?symbol=${encodeURIComponent(symbol)}&from=${startDate}${endDate ? `&to=${endDate}` : ''}`;
+            const apiUrl = `/api/history?symbol=${symbol}&start=${startDate}${endDate ? `&end=${endDate}` : ''}`;
             const res = await fetch(apiUrl);
             if (!res.ok) return [];
             const data = await res.json();
@@ -287,20 +239,11 @@ export default function FCNTradePage() {
         const { name, value } = e.target;
         if (value === '') { setBasicParams(prev => ({ ...prev, [name]: '' })); return; }
         let parsedValue: any = value;
-        if (['total_notional', 'denomination', 'coupon_freq', 'n_sims', 'fx_rate', 'seed', 'ndsRoundingDecimals'].includes(name)) {
+        if (['total_notional', 'denomination', 'coupon_freq', 'n_sims', 'fx_rate', 'seed'].includes(name)) {
             const floatVal = parseFloat(value);
             parsedValue = isNaN(floatVal) ? '' : floatVal;
         }
         setBasicParams(prev => ({ ...prev, [name]: parsedValue }));
-        if (name === 'market') {
-            setUnderlyingRows(rows => rows.map(row => ({
-                ...row,
-                settlementFxType: row.currency === value ? 'SAME_CURRENCY' : (
-                    row.settlementFxType === 'SAME_CURRENCY' ? 'FLOATING' : row.settlementFxType
-                ),
-                settlementFxRate: row.currency === value ? '1' : row.settlementFxRate
-            })));
-        }
     };
     const handlePercentChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value } = e.target;
@@ -309,38 +252,8 @@ export default function FCNTradePage() {
         setBasicParams(prev => ({ ...prev, [name]: isNaN(floatVal) ? '' : floatVal / 100 }));
     };
 
-    const updateUnderlyingRow = (id: string, field: keyof UnderlyingRow, value: string) => {
-        setUnderlyingRows(rows => rows.map(row => {
-            if (row.id !== id) return row;
-            const next = { ...row, [field]: value } as UnderlyingRow;
-
-            if (field === 'ticker') {
-                const normalized = value.trim().toUpperCase();
-                const inferredMarket = normalized.endsWith('.HK') ? 'HK'
-                    : normalized.endsWith('.T') ? 'JP'
-                    : normalized.endsWith('.SS') || normalized.endsWith('.SZ') ? 'CH'
-                    : 'US';
-                next.market = inferredMarket;
-                next.currency = marketToCurrency(inferredMarket);
-            } else if (field === 'market') {
-                next.currency = marketToCurrency(value);
-            } else if (field === 'currency') {
-                next.market = currencyToMarket(value);
-            }
-
-            if (['ticker', 'market', 'currency'].includes(field)) {
-                next.settlementFxType = next.currency === basicParams.market ? 'SAME_CURRENCY' : (
-                    next.settlementFxType === 'SAME_CURRENCY' ? 'FLOATING' : next.settlementFxType
-                );
-                if (next.settlementFxType === 'SAME_CURRENCY') next.settlementFxRate = '1';
-            }
-            if (field === 'settlementFxType' && value === 'SAME_CURRENCY') {
-                next.settlementFxRate = '1';
-            }
-            return next;
-        }));
-    };
-    const addUnderlyingRow = () => setUnderlyingRows(rows => [...rows, createUnderlyingRow(Math.random().toString(36).substr(2, 9))]);
+    const updateUnderlyingRow = (id: string, field: keyof UnderlyingRow, value: string) => setUnderlyingRows(underlyingRows.map(r => r.id === id ? { ...r, [field]: value } : r));
+    const addUnderlyingRow = () => setUnderlyingRows([...underlyingRows, { id: Math.random().toString(36).substr(2, 9), ticker: '', name: '', initialPrice: '', currentPrice: '', dividendDate: '', dividendAmount: '' }]);
     const removeUnderlyingRow = (id: string) => setUnderlyingRows(underlyingRows.filter(r => r.id !== id));
     const updateDateRow = (id: string, field: keyof DateRow, value: string) => setDateRows(dateRows.map(r => r.id === id ? { ...r, [field]: value } : r));
     const addDateRow = () => setDateRows([...dateRows, { id: Math.random().toString(36).substr(2, 9), obsDate: '', payDate: '' }]);
@@ -364,7 +277,6 @@ export default function FCNTradePage() {
             const ticker_names: string[] = [];
             const initial_spots: number[] = [];
             const current_spots_manual: (number | null)[] = [];
-            const underlying_terms: NonNullable<FCNParams['underlyingTerms']> = [];
             const discrete_dividends: { [key: string]: [string, number][] } = {};
             const processedTickers = new Set<string>();
 
@@ -384,20 +296,6 @@ export default function FCNTradePage() {
                     initial_spots.push(initP);
                     const cp = parseFloat(row.currentPrice);
                     current_spots_manual.push(isNaN(cp) ? null : cp);
-                    const configuredFxRate = parseFloat(row.settlementFxRate);
-                    underlying_terms.push({
-                        ticker: row.ticker,
-                        name: row.name,
-                        market: row.market,
-                        currency: row.currency,
-                        initialPrice: initP,
-                        currentPrice: isNaN(cp) ? undefined : cp,
-                        settlementFxType: row.currency === basicParams.market ? 'SAME_CURRENCY' : row.settlementFxType,
-                        settlementFxRate: row.currency === basicParams.market
-                            ? 1
-                            : (isNaN(configuredFxRate) ? undefined : configuredFxRate),
-                        settlementFxPair: `${row.currency}/${basicParams.market}`
-                    });
                 }
             }
 
@@ -415,28 +313,11 @@ export default function FCNTradePage() {
 
             // --- 鐵血邏輯：精準判定最後觀察日是否過期 ---
             const last_obs_date = obs_dates[obs_dates.length - 1];
-            const expiryCurrency = underlying_terms.some(term => term.currency === 'USD') ? 'USD'
-                : underlying_terms.some(term => term.currency === 'HKD') ? 'HKD'
-                : underlying_terms.some(term => term.currency === 'CNY') ? 'CNY'
-                : underlying_terms.some(term => term.currency === 'JPY') ? 'JPY'
-                : basicParams.market;
-            const expireTimeMs = getExpirationTimeMs(last_obs_date, expiryCurrency);
+            const expireTimeMs = getExpirationTimeMs(last_obs_date, basicParams.market);
             const isExpired = Date.now() >= expireTimeMs;
 
             const calcParams: FCNParams = {
-                ...basicParams,
-                schemaVersion: 2,
-                noteCurrency: basicParams.market,
-                reportingCurrency: 'HKD',
-                tickers, ticker_name: ticker_names, initial_spots, current_spots: [],
-                underlyingTerms: underlying_terms,
-                deliveryRules: {
-                    aggregateNotesForDelivery: basicParams.aggregateNotesForDelivery,
-                    ndsRoundingDecimals: Number(basicParams.ndsRoundingDecimals),
-                    ndsRoundingMode: 'CEIL',
-                    integralSharesRounding: 'FLOOR',
-                    residualCashEnabled: basicParams.residualCashEnabled
-                },
+                ...basicParams, tickers, ticker_name: ticker_names, initial_spots, current_spots: [],
                 hist_prices: {}, discrete_dividends, obs_dates, pay_dates,
                 fx_rate: basicParams.fx_rate === '' ? undefined : (basicParams.fx_rate as number),
                 seed: basicParams.seed === '' ? undefined : (basicParams.seed as number),
@@ -471,10 +352,6 @@ export default function FCNTradePage() {
                 }
             }));
             calcParams.current_spots = fetchedSpots;
-            calcParams.underlyingTerms = calcParams.underlyingTerms?.map((term, index) => ({
-                ...term,
-                currentPrice: fetchedSpots[index]
-            }));
 
             const updatedRows = underlyingRows.map(row => {
                 const tIdx = tickers.indexOf(row.ticker);
@@ -505,48 +382,13 @@ export default function FCNTradePage() {
 
             if (calcParams.market !== 'HKD' && (!calcParams.fx_rate || isNaN(calcParams.fx_rate))) {
                 setFetchStatus(`正在获取 ${calcParams.market}/HKD 汇率...`);
-                const rate = await fetchCurrencyToHKD(calcParams.market || 'HKD');
-                if (!rate) throw new Error(`无法获取票据币种 ${calcParams.market}/HKD 汇率`);
-                calcParams.fx_rate = rate;
+                const fxSymbol = `${calcParams.market}HKD=X`;
+                const rate = await fetchQuotePrice(fxSymbol);
+                calcParams.fx_rate = rate !== null ? rate : 1.0;
                 setBasicParams(prev => ({ ...prev, fx_rate: calcParams.fx_rate || '' }));
             } else if (calcParams.market === 'HKD') { 
                 calcParams.fx_rate = 1.0; 
             }
-
-            const noteCurrencyToHKD = calcParams.fx_rate || 1;
-            const underlyingCurrencyToHKD: Record<string, number> = { HKD: 1 };
-            await Promise.all(Array.from(new Set((calcParams.underlyingTerms || []).map(term => term.currency || calcParams.market || 'HKD'))).map(async currency => {
-                if (currency === 'HKD') return;
-                const rate = await fetchCurrencyToHKD(currency);
-                if (!rate) throw new Error(`无法获取标的币种 ${currency}/HKD 汇率`);
-                underlyingCurrencyToHKD[currency] = rate;
-            }));
-
-            calcParams.underlyingTerms = (calcParams.underlyingTerms || []).map(term => {
-                const currency = term.currency || calcParams.market || 'HKD';
-                if (currency === calcParams.market) {
-                    return { ...term, settlementFxType: 'SAME_CURRENCY', settlementFxRate: 1 };
-                }
-                if (term.settlementFxType === 'FIXED') {
-                    if (!term.settlementFxRate || term.settlementFxRate <= 0) {
-                        throw new Error(`${term.ticker} 选择固定结算汇率后必须填写正数汇率`);
-                    }
-                    return term;
-                }
-                const underlyingToHKD = underlyingCurrencyToHKD[currency];
-                return {
-                    ...term,
-                    settlementFxType: 'FLOATING',
-                    settlementFxRate: noteCurrencyToHKD / underlyingToHKD,
-                    settlementFxPair: `${currency}/${calcParams.market}`
-                };
-            });
-            setUnderlyingRows(rows => rows.map(row => {
-                const term = calcParams.underlyingTerms?.find(item => item.ticker === row.ticker);
-                return term?.settlementFxRate
-                    ? { ...row, settlementFxRate: term.settlementFxRate.toPrecision(8) }
-                    : row;
-            }));
 
             setFetchStatus('计算中...');
             
@@ -605,46 +447,29 @@ export default function FCNTradePage() {
                 const worstIdx = currentResult.loss_attribution.findIndex(val => val === 1.0);
                 if (worstIdx !== -1) {
                     const pricerParams = currentCalcParams.pricerParams;
-                    const settlement = calculateFCNSettlement(
-                        pricerParams,
-                        worstIdx,
-                        pricerParams.current_spots?.[worstIdx],
-                        pricerParams.current_spots?.[worstIdx]
-                    );
-                    const ticker = settlement.underlying.ticker;
-                    const strikePrice = settlement.strikePrice;
-                    const quantity = settlement.totalIntegralShares;
-                    const amountNoFee = settlement.deliveryAmountLocal;
+                    const ticker = pricerParams.tickers[worstIdx];
+                    const strikePrice = pricerParams.initial_spots[worstIdx] * pricerParams.strike_pct;
+                    const quantity = pricerParams.total_notional / strikePrice;
+                    const amountNoFee = strikePrice * quantity;
                     const amountWithFee = amountNoFee;
-                    const underlyingToHKD = await fetchCurrencyToHKD(settlement.underlying.currency);
-                    if (!underlyingToHKD) {
-                        throw new Error(`无法获取 ${settlement.underlying.currency}/HKD 汇率，接货记录未生成`);
-                    }
 
                     const newDelivery: TransactionRecord = {
                         tradeId, 
                         date: pricerParams.pay_dates[pricerParams.pay_dates.length - 1],
                         account: pricerParams.account_name || basicParams.account_name,
-                        market: settlement.underlying.market,
+                        market: pricerParams.market === 'USD' ? 'US' : pricerParams.market === 'JPY' ? 'JP' : pricerParams.market === 'CNY' ? 'CH' : 'HK',
                         executor: pricerParams.executor || basicParams.executor,
                         type: "FCN接货",
                         stockCode: ticker,
-                        stockName: settlement.underlying.name,
+                        stockName: pricerParams.ticker_name?.[worstIdx] || ticker,
                         direction: "BUY",
-                        quantity,
+                        quantity: Math.round(quantity),
                         priceNoFee: strikePrice,
                         amountNoFee: amountNoFee,
                         fee: 0,
                         amountWithFee: amountWithFee,
-                        priceWithFee: quantity > 0 ? amountWithFee / quantity : strikePrice,
-                        hkdAmount: amountWithFee * underlyingToHKD,
-                        noteCurrency: settlement.noteCurrency,
-                        settlementFxRate: settlement.settlementFxRate,
-                        settlementFxPair: settlement.underlying.settlementFxPair,
-                        underlyingFxToHKD: underlyingToHKD,
-                        residualCash: settlement.residualCashTotal,
-                        residualCashCurrency: settlement.noteCurrency,
-                        settlementSchemaVersion: settlement.schemaVersion
+                        priceWithFee: amountWithFee / quantity,
+                        hkdAmount: amountWithFee * (pricerParams.fx_rate || 1.0)
                     };
                     
                     const cleanDelivery = replaceUndefinedWithNull({
@@ -652,12 +477,7 @@ export default function FCNTradePage() {
                         createdAt: exactNow
                     });
                     delete cleanDelivery.id;
-                    const pendingDeliveryId = `${tradeId}__${ticker.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-                    await setDoc(
-                        doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery', pendingDeliveryId),
-                        cleanDelivery,
-                        { merge: true }
-                    );
+                    await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'), cleanDelivery);
                     fetchPendingDeliveries(); 
 
                     alert(`参数与结果已保存至 [${lifeCycle}] 库，并已自动生成接货纪录至下方展示模块(缓冲库)！`);
@@ -693,9 +513,7 @@ export default function FCNTradePage() {
                 newData.amountNoFee = qty * price;
                 newData.amountWithFee = newData.amountNoFee + fee;
                 newData.priceWithFee = qty > 0 ? newData.amountWithFee / qty : 0;
-                const underlyingFxToHKD = newData.underlyingFxToHKD
-                    || (editFormData.amountWithFee ? editFormData.hkdAmount / editFormData.amountWithFee : 1);
-                newData.hkdAmount = newData.amountWithFee * underlyingFxToHKD;
+                newData.hkdAmount = newData.amountWithFee * (basicParams.fx_rate as number || 1.0);
             }
         }
         setEditFormData(newData as any);
@@ -732,23 +550,10 @@ export default function FCNTradePage() {
                 delete cleanRecord.id;
                 const { firebaseId, ...recordData } = cleanRecord;
                 
-                const finalDelivery = {
+                await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_get-stock'), {
                     ...recordData,
                     createdAt: new Date()
-                };
-                if (record.tradeId && record.stockCode) {
-                    const finalDeliveryId = `${record.tradeId}__${record.stockCode.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-                    await setDoc(
-                        doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_get-stock', finalDeliveryId),
-                        finalDelivery,
-                        { merge: true }
-                    );
-                } else {
-                    await addDoc(
-                        collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_fcn_output_get-stock'),
-                        finalDelivery
-                    );
-                }
+                });
 
                 if (firebaseId) {
                     await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery', firebaseId));
@@ -820,7 +625,7 @@ export default function FCNTradePage() {
     // 3. 清空输入
     const handleReset = () => {
         setBasicParams(INITIAL_BASIC);
-        setUnderlyingRows([createUnderlyingRow('init_1')]);
+        setUnderlyingRows([{ id: 'init_1', ticker: '', name: '', initialPrice: '', currentPrice: '', dividendDate: '', dividendAmount: '' }]);
         setDateRows([{ id: 'init_d1', obsDate: '', payDate: '' }]);
         setCurrentResult(null);
         setDeliveryRecords([]);
@@ -899,7 +704,7 @@ export default function FCNTradePage() {
                             <div><label className="block text-gray-600 mb-1">账户 (Account)</label><input type="text" name="account_name" value={basicParams.account_name} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.account_name} className="w-full border-gray-300 rounded border p-1.5 outline-none focus:ring-1 focus:ring-blue-500" /></div>
                             <div><label className="block text-gray-600 mb-1">执行人 (Executor)</label><input type="text" name="executor" value={basicParams.executor} onChange={handleBasicChange} placeholder={EXAMPLE_PARAMS.executor} className="w-full border-gray-300 rounded border p-1.5 outline-none focus:ring-1 focus:ring-blue-500" /></div>
                             <div>
-                                <label className="block text-gray-600 mb-1">票据币种</label>
+                                <label className="block text-gray-600 mb-1">计价货币</label>
                                 <select name="market" value={basicParams.market} onChange={handleBasicChange} className="w-full border-gray-300 rounded border p-1.5 outline-none">
                                     <option value="HKD">HKD</option><option value="USD">USD</option><option value="CNY">CNY</option><option value="JPY">JPY</option>
                                 </select>
@@ -920,7 +725,7 @@ export default function FCNTradePage() {
                                 <h3 className="text-sm font-bold text-gray-800 border-l-4 border-blue-500 pl-2">2. 标的信息</h3>
                                 <button onClick={addUnderlyingRow} className="text-xs text-blue-600 hover:text-blue-800 font-medium">+ 添加标的</button>
                             </div>
-                            <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                            <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                                 {underlyingRows.map(row => (
                                     <div key={row.id} className="bg-gray-50 p-2 rounded border border-gray-200 text-xs">
                                         <div className="grid grid-cols-2 gap-2 mb-2">
@@ -931,42 +736,6 @@ export default function FCNTradePage() {
                                             <input type="number" placeholder="初始价" value={row.initialPrice} onChange={(e) => updateUnderlyingRow(row.id, 'initialPrice', e.target.value)} className="border-gray-300 rounded p-1" />
                                             <input type="number" placeholder="过期无视手填" value={row.currentPrice} onChange={(e) => updateUnderlyingRow(row.id, 'currentPrice', e.target.value)} className="border-gray-300 rounded p-1 bg-blue-50" />
                                         </div>
-                                        <div className="grid grid-cols-4 gap-2 mb-2">
-                                            <select value={row.market} onChange={(e) => updateUnderlyingRow(row.id, 'market', e.target.value)} className="border-gray-300 rounded p-1">
-                                                <option value="US">美股</option>
-                                                <option value="HK">港股</option>
-                                                <option value="JP">日股</option>
-                                                <option value="CH">A股</option>
-                                            </select>
-                                            <select value={row.currency} onChange={(e) => updateUnderlyingRow(row.id, 'currency', e.target.value)} className="border-gray-300 rounded p-1">
-                                                <option value="USD">USD</option>
-                                                <option value="HKD">HKD</option>
-                                                <option value="JPY">JPY</option>
-                                                <option value="CNY">CNY</option>
-                                            </select>
-                                            <select
-                                                value={row.currency === basicParams.market ? 'SAME_CURRENCY' : row.settlementFxType}
-                                                onChange={(e) => updateUnderlyingRow(row.id, 'settlementFxType', e.target.value)}
-                                                disabled={row.currency === basicParams.market}
-                                                className="border-gray-300 rounded p-1 disabled:bg-gray-100"
-                                            >
-                                                <option value="SAME_CURRENCY">同币种</option>
-                                                <option value="FLOATING">浮动汇率</option>
-                                                <option value="FIXED">固定汇率</option>
-                                            </select>
-                                            <input
-                                                type="number"
-                                                step="0.00000001"
-                                                placeholder={`${row.currency}/${basicParams.market}`}
-                                                value={row.settlementFxRate}
-                                                onChange={(e) => updateUnderlyingRow(row.id, 'settlementFxRate', e.target.value)}
-                                                disabled={row.currency === basicParams.market}
-                                                className="border-gray-300 rounded p-1 disabled:bg-gray-100"
-                                            />
-                                        </div>
-                                        <p className="mb-2 text-[10px] text-gray-500">
-                                            结算汇率单位：1 {basicParams.market} = X {row.currency}。浮动模式留空时自动获取。
-                                        </p>
                                         <div className="grid grid-cols-5 gap-2 items-center">
                                             <div className="col-span-2"><input type="date" placeholder="分红日" value={row.dividendDate} onChange={(e) => updateUnderlyingRow(row.id, 'dividendDate', e.target.value)} className="w-full border-gray-300 rounded p-1" /></div>
                                             <div className="col-span-2"><input type="number" step="0.01" placeholder="分红额" value={row.dividendAmount} onChange={(e) => updateUnderlyingRow(row.id, 'dividendAmount', e.target.value)} className="w-full border-gray-300 rounded p-1" /></div>
@@ -1005,55 +774,10 @@ export default function FCNTradePage() {
                                     <label className="block text-gray-600 mb-1">&nbsp;</label>
                                     <button onClick={() => {
                                         setBasicParams({ ...INITIAL_BASIC, ...EXAMPLE_PARAMS });
-                                        setUnderlyingRows(EXAMPLE_PARAMS.tickers.map((t, i) => ({
-                                            ...createUnderlyingRow(`ex_${i}`),
-                                            ticker: t,
-                                            name: EXAMPLE_PARAMS.ticker_name?.[i] || '',
-                                            market: 'HK',
-                                            currency: 'HKD',
-                                            initialPrice: EXAMPLE_PARAMS.initial_spots[i].toString(),
-                                            settlementFxType: 'SAME_CURRENCY',
-                                            settlementFxRate: '1'
-                                        })));
+                                        setUnderlyingRows(EXAMPLE_PARAMS.tickers.map((t, i) => ({ id: `ex_${i}`, ticker: t, name: EXAMPLE_PARAMS.ticker_name?.[i] || '', initialPrice: EXAMPLE_PARAMS.initial_spots[i].toString(), currentPrice: '', dividendDate: '', dividendAmount: '' })));
                                         setDateRows(EXAMPLE_PARAMS.obs_dates.map((d, i) => ({ id: `ex_d_${i}`, obsDate: d, payDate: EXAMPLE_PARAMS.pay_dates[i] })));
                                     }} className="w-full bg-gray-100 text-gray-600 p-1 rounded hover:bg-gray-200 border">载入测试数据</button>
                                 </div>
-                            </div>
-                            <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-3 text-xs">
-                                <div className="mb-2 font-semibold text-amber-900">实物交割规则</div>
-                                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                                    <label className="flex items-center gap-2 text-gray-700">
-                                        <input
-                                            type="checkbox"
-                                            checked={basicParams.aggregateNotesForDelivery}
-                                            onChange={(e) => setBasicParams(prev => ({ ...prev, aggregateNotesForDelivery: e.target.checked }))}
-                                        />
-                                        跨票据合并计算股数
-                                    </label>
-                                    <label className="flex items-center gap-2 text-gray-700">
-                                        NDS 小数位
-                                        <input
-                                            type="number"
-                                            min="0"
-                                            max="8"
-                                            name="ndsRoundingDecimals"
-                                            value={basicParams.ndsRoundingDecimals}
-                                            onChange={handleBasicChange}
-                                            className="w-16 rounded border border-gray-300 p-1"
-                                        />
-                                    </label>
-                                    <label className="flex items-center gap-2 text-gray-700">
-                                        <input
-                                            type="checkbox"
-                                            checked={basicParams.residualCashEnabled}
-                                            onChange={(e) => setBasicParams(prev => ({ ...prev, residualCashEnabled: e.target.checked }))}
-                                        />
-                                        计算现金尾差
-                                    </label>
-                                </div>
-                                <p className="mt-2 text-[10px] leading-4 text-amber-800">
-                                    默认按每张票据计算、NDS 向上保留 3 位、整数股向下取整，适配不允许 Notes aggregation 的条款。
-                                </p>
                             </div>
                         </div>
                     </div>
@@ -1335,15 +1059,7 @@ export default function FCNTradePage() {
                                             // 浏览状态
                                             <>
                                                 <td className="px-3 py-2 text-gray-600"><div>{t.date}</div><div className="text-xs">{t.account}</div></td>
-                                                <td className="px-3 py-2 font-medium">
-                                                    <div>{t.stockCode}</div>
-                                                    <div className="text-xs text-gray-500">{t.stockName}</div>
-                                                    {!!t.residualCash && (
-                                                        <div className="mt-1 text-[10px] text-amber-700">
-                                                            现金尾差 {fmtMoney(t.residualCash, t.residualCashCurrency || t.noteCurrency || 'HKD')}
-                                                        </div>
-                                                    )}
-                                                </td>
+                                                <td className="px-3 py-2 font-medium"><div>{t.stockCode}</div><div className="text-xs text-gray-500">{t.stockName}</div></td>
                                                 <td className="px-3 py-2 text-right font-mono">{t.quantity.toLocaleString()}</td>
                                                 <td className="px-3 py-2 text-right font-mono">{fmtMoney(t.priceNoFee, ccy)}</td>
                                                 <td className="px-3 py-2 text-right font-mono">{fmtMoney(t.fee, ccy)}</td>

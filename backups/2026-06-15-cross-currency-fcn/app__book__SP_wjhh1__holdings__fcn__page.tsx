@@ -10,11 +10,6 @@ import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'fi
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 import { FCNPricer, FCNParams, FCNResult } from '@/app/lib/fcnPricer';
-import {
-    calculateFCNSettlement,
-    getFCNNoteCurrency,
-    normalizeFCNUnderlyingTerms
-} from '@/app/book/SP_wjhh1/lib/fcnSettlementEngine';
 
 // --- 時間解析輔助函數 ---
 const getTime = (val: any) => {
@@ -390,7 +385,7 @@ export default function FCNHoldingPage() {
 
     const fetchHistoricalPrices = async (symbol: string, startDate: string, endDate?: string): Promise<{ date: string, close: number }[]> => {
         try {
-            const apiUrl = `/api/history?symbol=${encodeURIComponent(symbol)}&from=${startDate}${endDate ? `&to=${endDate}` : ''}`;
+            const apiUrl = `/api/history?symbol=${symbol}&start=${startDate}${endDate ? `&end=${endDate}` : ''}`;
             const res = await fetch(apiUrl);
             if (!res.ok) return [];
             const data = await res.json();
@@ -417,14 +412,13 @@ export default function FCNHoldingPage() {
 
     const fetchLatestFxRates = async () => {
         const markets = new Set<string>();
-        [...livingRecords, ...diedRecords].forEach(r => {
-            const params = r.inputData?.pricerParams as FCNParams | undefined;
-            if (!params) return;
-            const noteCurrency = getFCNNoteCurrency(params);
-            if (noteCurrency !== 'HKD') markets.add(noteCurrency);
-            normalizeFCNUnderlyingTerms(params).forEach(term => {
-                if (term.currency !== 'HKD') markets.add(term.currency);
-            });
+        livingRecords.forEach(r => {
+            const mkt = r.inputData?.pricerParams?.market;
+            if (mkt && mkt !== 'HKD') markets.add(mkt);
+        });
+        diedRecords.forEach(r => {
+            const mkt = r.inputData?.pricerParams?.market;
+            if (mkt && mkt !== 'HKD') markets.add(mkt);
         });
         if (markets.size === 0) return;
         setIsFetchingFx(true);
@@ -520,21 +514,8 @@ export default function FCNHoldingPage() {
         const worstIdx = result.loss_attribution.findIndex((val: number) => val === 1.0);
         if (worstIdx !== -1) {
             const name = params.ticker_name?.[worstIdx] || params.tickers[worstIdx];
-            try {
-                const settlement = calculateFCNSettlement(
-                    params,
-                    worstIdx,
-                    params.current_spots?.[worstIdx],
-                    params.current_spots?.[worstIdx]
-                );
-                const residual = settlement.residualCashTotal > 0
-                    ? `，现金尾差 ${settlement.residualCashTotal.toFixed(2)} ${settlement.noteCurrency}`
-                    : '';
-                return `${name} ${settlement.totalIntegralShares.toFixed(3)}股${residual}`;
-            } catch {
-                const qty = params.total_notional / (params.initial_spots[worstIdx] * params.strike_pct);
-                return `${name} ${Math.round(qty)}股`;
-            }
+            const qty = params.total_notional / (params.initial_spots[worstIdx] * params.strike_pct);
+            return `${name} ${Math.round(qty)}股`;
         }
         return '';
     };
@@ -553,13 +534,7 @@ export default function FCNHoldingPage() {
         if (!pricerParams) throw new Error("Missing pricerParams");
 
         const last_obs_date = pricerParams.obs_dates[pricerParams.obs_dates.length - 1];
-        const normalizedTerms = normalizeFCNUnderlyingTerms(pricerParams);
-        const expiryCurrency = normalizedTerms.some(term => term.currency === 'USD') ? 'USD'
-            : normalizedTerms.some(term => term.currency === 'HKD') ? 'HKD'
-            : normalizedTerms.some(term => term.currency === 'CNY') ? 'CNY'
-            : normalizedTerms.some(term => term.currency === 'JPY') ? 'JPY'
-            : getFCNNoteCurrency(pricerParams);
-        const expireTimeMs = getExpirationTimeMs(last_obs_date, expiryCurrency);
+        const expireTimeMs = getExpirationTimeMs(last_obs_date, pricerParams.market || 'HKD');
         const isExpired = Date.now() >= expireTimeMs;
 
         const fetchedSpots = await Promise.all(pricerParams.tickers.map(async (t, i) => {
@@ -580,12 +555,6 @@ export default function FCNHoldingPage() {
         }));
 
         pricerParams.current_spots = fetchedSpots;
-        if (Array.isArray(pricerParams.underlyingTerms)) {
-            pricerParams.underlyingTerms = pricerParams.underlyingTerms.map((term, index) => ({
-                ...term,
-                currentPrice: fetchedSpots[index]
-            }));
-        }
         const today = new Date(); today.setHours(0,0,0,0);
         const hasPastObservation = pricerParams.obs_dates.some(d => new Date(d) <= today);
         const cutoffDate = isExpired ? last_obs_date : new Date().toISOString().split('T')[0];
@@ -598,35 +567,12 @@ export default function FCNHoldingPage() {
             pricerParams.hist_prices = histMap;
         }
 
-        const noteCurrency = getFCNNoteCurrency(pricerParams);
-        if (noteCurrency !== 'HKD') {
-            pricerParams.fx_rate = await fetchRealTimeFxRate(noteCurrency) || pricerParams.fx_rate || 1.0;
+        if (pricerParams.market !== 'HKD') {
+            const res = await fetch(`/api/quote?currency=${pricerParams.market}`);
+            const data = res.ok ? await res.json() : null;
+            pricerParams.fx_rate = data?.rate || pricerParams.fx_rate || 1.0;
         } else {
             pricerParams.fx_rate = 1.0;
-        }
-
-        if (Array.isArray(pricerParams.underlyingTerms)) {
-            const currencyToHKD: Record<string, number> = { HKD: 1 };
-            await Promise.all(Array.from(new Set(pricerParams.underlyingTerms.map(term => term.currency || noteCurrency))).map(async currency => {
-                if (currency === 'HKD') return;
-                const rate = await fetchRealTimeFxRate(currency) || globalFxRates[currency];
-                if (!rate) throw new Error(`无法获取标的币种 ${currency}/HKD 汇率`);
-                currencyToHKD[currency] = rate;
-            }));
-            const noteToHKD = pricerParams.fx_rate || 1;
-            pricerParams.underlyingTerms = pricerParams.underlyingTerms.map(term => {
-                const currency = term.currency || noteCurrency;
-                if (currency === noteCurrency) {
-                    return { ...term, settlementFxType: 'SAME_CURRENCY', settlementFxRate: 1 };
-                }
-                if (term.settlementFxType === 'FIXED' && term.settlementFxRate) return term;
-                return {
-                    ...term,
-                    settlementFxType: 'FLOATING',
-                    settlementFxRate: noteToHKD / (currencyToHKD[currency] || 1),
-                    settlementFxPair: `${currency}/${noteCurrency}`
-                };
-            });
         }
         
         const pricer = new FCNPricer(pricerParams);
@@ -636,45 +582,28 @@ export default function FCNHoldingPage() {
         if (newResult.status === 'Terminated_Delivery') {
             const worstIdx = newResult.loss_attribution.findIndex((val: number) => val === 1.0);
             if (worstIdx !== -1) {
-                const settlement = calculateFCNSettlement(
-                    pricerParams,
-                    worstIdx,
-                    pricerParams.current_spots?.[worstIdx],
-                    pricerParams.current_spots?.[worstIdx]
-                );
-                const ticker = settlement.underlying.ticker;
-                const strikePrice = settlement.strikePrice;
-                const quantity = settlement.totalIntegralShares;
-                const amountNoFee = settlement.deliveryAmountLocal;
-                const underlyingToHKD = await fetchRealTimeFxRate(settlement.underlying.currency);
-                if (!underlyingToHKD) {
-                    throw new Error(`无法获取 ${settlement.underlying.currency}/HKD 汇率，接货记录未生成`);
-                }
+                const ticker = pricerParams.tickers[worstIdx];
+                const strikePrice = pricerParams.initial_spots[worstIdx] * pricerParams.strike_pct;
+                const quantity = pricerParams.total_notional / strikePrice;
+                const amountNoFee = strikePrice * quantity;
                 
                 deliveryRecord = {
                     tradeId: mergedRecord.tradeId,
                     date: pricerParams.pay_dates[pricerParams.pay_dates.length - 1],
                     account: pricerParams.account_name || inputData.inputParams?.account_name || '',
-                    market: settlement.underlying.market,
+                    market: pricerParams.market === 'USD' ? 'US' : pricerParams.market === 'JPY' ? 'JP' : pricerParams.market === 'CNY' ? 'CH' : 'HK',
                     executor: pricerParams.executor || inputData.inputParams?.executor || '',
                     type: "FCN接货",
                     stockCode: ticker,
-                    stockName: settlement.underlying.name,
+                    stockName: pricerParams.ticker_name?.[worstIdx] || ticker,
                     direction: "BUY",
-                    quantity,
+                    quantity: Math.round(quantity),
                     priceNoFee: strikePrice,
                     amountNoFee: amountNoFee,
                     fee: 0,
                     amountWithFee: amountNoFee,
-                    priceWithFee: quantity > 0 ? amountNoFee / quantity : strikePrice,
-                    hkdAmount: amountNoFee * underlyingToHKD,
-                    noteCurrency: settlement.noteCurrency,
-                    settlementFxRate: settlement.settlementFxRate,
-                    settlementFxPair: settlement.underlying.settlementFxPair,
-                    underlyingFxToHKD: underlyingToHKD,
-                    residualCash: settlement.residualCashTotal,
-                    residualCashCurrency: settlement.noteCurrency,
-                    settlementSchemaVersion: settlement.schemaVersion
+                    priceWithFee: amountNoFee / quantity,
+                    hkdAmount: amountNoFee * (pricerParams.fx_rate || 1.0)
                 };
             }
         }
@@ -724,12 +653,7 @@ export default function FCNHoldingPage() {
                             createdAt: exactNow
                         });
                         allNewDeliveries.push(cleanDelivery);
-                        const pendingDeliveryId = `${mergedRecord.tradeId}__${String(deliveryRecord.stockCode).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-                        await setDoc(
-                            doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery', pendingDeliveryId),
-                            cleanDelivery,
-                            { merge: true }
-                        );
+                        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery'), cleanDelivery);
                     }
                 }
             }
@@ -908,11 +832,9 @@ export default function FCNHoldingPage() {
             if (result.status === 'Settling_Delivery' || (result.status === 'Active' && result.loss_prob > 0)) {
                 const factor = Number(params.total_notional) / Number(params.denomination);
                 const account = params.account_name || inputData.inputParams?.account_name || 'N/A';
-                const normalizedTerms = normalizeFCNUnderlyingTerms(params);
                 params.tickers.forEach((ticker, idx) => {
-                    const term = normalizedTerms[idx];
-                    const initialP = term?.initialPrice || params.initial_spots[idx];
-                    const currentP = term?.currentPrice || params.current_spots?.[idx] || initialP;
+                    const initialP = params.initial_spots[idx];
+                    const currentP = params.current_spots?.[idx] || initialP;
                     const strikePrice = initialP * params.strike_pct;
                     const exposureShares = (result.exposure_shares_avg[idx] || 0) * factor;
                     const exposureCost = strikePrice * exposureShares;
@@ -931,18 +853,14 @@ export default function FCNHoldingPage() {
                         mktVal: exposureMktVal,
                         pnlRatio: exposureCost > 0.0001 ? (exposureMktVal / exposureCost) - 1 : 0,
                         isWorst: result.loss_attribution[idx] === 1.0,
-                        market: term?.currency || getFCNNoteCurrency(params),
-                        fx_rate: globalFxRates[term?.currency || ''] || (
-                            (term?.currency || getFCNNoteCurrency(params)) === getFCNNoteCurrency(params)
-                                ? params.fx_rate || 1
-                                : 1
-                        )
+                        market: params.market,
+                        fx_rate: params.fx_rate || 1
                     });
                 });
             }
         });
         return rows;
-    }, [livingRecords, globalFxRates]);
+    }, [livingRecords]);
 
     const processedDied = useMemo(() => {
         return diedRecords.map(mergedRecord => {

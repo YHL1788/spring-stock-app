@@ -3,15 +3,6 @@
 // --- 日期工具函数 ---
 
 // 解析日期并归一化到本地午夜 00:00:00，避免时间差异
-import {
-  calculateFCNSettlement,
-} from '@/app/book/SP_wjhh1/lib/fcnSettlementEngine';
-import type {
-  FCNDeliveryRules,
-  FCNSettlementBreakdown,
-  FCNUnderlyingTerm,
-} from '@/app/book/SP_wjhh1/lib/fcnSettlementEngine';
-
 function parseISO(dateStr: string): Date {
   const [y, m, d] = dateStr.split('-').map(Number);
   return new Date(y, m - 1, d, 0, 0, 0, 0);
@@ -102,7 +93,6 @@ function computeCholesky(matrix: number[][]): number[][] {
 // --- 类型定义 ---
 
 export interface FCNParams {
-  schemaVersion?: number;
   product_name?: string;
   broker_name?: string;
   account_name?: string; // 新增：账户名称
@@ -133,10 +123,6 @@ export interface FCNParams {
   vols?: number[];         
   corr_matrix?: number[][]; 
   market?: string; 
-  noteCurrency?: string;
-  reportingCurrency?: string;
-  underlyingTerms?: FCNUnderlyingTerm[];
-  deliveryRules?: FCNDeliveryRules;
   fx_rate?: number; 
   seed?: number; // 随机种子，选填
 }
@@ -380,7 +366,6 @@ export class FCNPricer {
         
         let is_delivery = false;
         let delivery_val_unit = 0; 
-        let deliverySettlement: FCNSettlementBreakdown | null = null;
         let worst_idx = -1;
         let worst_pct = 1.0;
 
@@ -401,13 +386,10 @@ export class FCNPricer {
 
             if (worst_pct < this.K_pct) {
                 is_delivery = true;
-                deliverySettlement = calculateFCNSettlement(
-                  this.params,
-                  worst_idx,
-                  final_prices[worst_idx],
-                  this.S_curr[worst_idx],
-                );
-                delivery_val_unit = deliverySettlement.markToMarketNoteCurrencyPerNote;
+                const strike_price = this.S0[worst_idx] * this.K_pct;
+                const num_shares_unit = this.denom / strike_price; 
+                // 注意：由于是接货后持仓，其现值(PV)盯市依然使用 S_curr 算，这是对的。
+                delivery_val_unit = num_shares_unit * this.S_curr[worst_idx]; 
             }
         }
 
@@ -446,14 +428,9 @@ export class FCNPricer {
             // 子状态 C: 结算中，有接货
             else {
                 const tickerName = this.params.ticker_name?.[worst_idx] || this.params.tickers[worst_idx];
-                const settlement = deliverySettlement || calculateFCNSettlement(
-                  this.params,
-                  worst_idx,
-                  undefined,
-                  this.S_curr[worst_idx],
-                );
-                const num_shares_total = settlement.totalIntegralShares;
-                const num_shares_unit = settlement.integralSharesPerNote;
+                const strike_price = this.S0[worst_idx] * this.K_pct;
+                const num_shares_total = this.params.total_notional / strike_price; 
+                const num_shares_unit = this.denom / strike_price;
 
                 const p_pv = delivery_val_unit;
                 const dirty = p_pv + pending;   
@@ -483,10 +460,7 @@ export class FCNPricer {
                     autocall_attribution: [],
                     exposure_value_avg, 
                     exposure_shares_avg,
-                    settlement_info: {
-                      desc: `到期接货 ${tickerName} ${num_shares_total.toFixed(3)}股 (等待结算)`,
-                      ...settlement,
-                    },
+                    settlement_info: { desc: `到期接货 ${tickerName} ${num_shares_total.toFixed(0)}股 (等待结算)` },
                     product_name_display: this.params.product_name,
                     market: this.params.market,
                     fx_rate: this.params.fx_rate,
@@ -535,15 +509,10 @@ export class FCNPricer {
             // 子状态 F: 结束已接货
             else {
                 const tickerName = this.params.ticker_name?.[worst_idx] || this.params.tickers[worst_idx];
-                const settlement = deliverySettlement || calculateFCNSettlement(
-                  this.params,
-                  worst_idx,
-                  undefined,
-                  this.S_curr[worst_idx],
-                );
-                const num_shares_total = settlement.totalIntegralShares;
-                const num_shares_unit = settlement.integralSharesPerNote;
-                const desc = `到期接货 ${tickerName} ${num_shares_total.toFixed(3)}股 (已结束)`;
+                const strike_price = this.S0[worst_idx] * this.K_pct;
+                const num_shares_total = this.params.total_notional / strike_price;
+                const num_shares_unit = this.denom / strike_price;
+                const desc = `到期接货 ${tickerName} ${num_shares_total.toFixed(0)}股 (已结束)`;
 
                 // 同样需要填充归因数据，以便后续生成交易记录
                 const loss_attribution = new Array(this.S0.length).fill(0);
@@ -560,7 +529,7 @@ export class FCNPricer {
                     loss_attribution, // 填充，供 page.tsx 使用
                     exposure_shares_avg,
                     exposure_value_avg,
-                    settlement_info: { desc, ...settlement }
+                    settlement_info: { desc }
                 };
             }
         }
@@ -599,15 +568,10 @@ export class FCNPricer {
             };
         } else {
              const tickerName = this.params.ticker_name?.[worst_idx] || this.params.tickers[worst_idx];
-             const settlement = calculateFCNSettlement(
-               this.params,
-               worst_idx,
-               this.S_curr[worst_idx],
-               this.S_curr[worst_idx],
-             );
-             const num_shares_total = settlement.totalIntegralShares;
-             const num_shares_unit = settlement.integralSharesPerNote;
-             const delivery_val = settlement.markToMarketNoteCurrencyPerNote;
+             const strike_price = this.S0[worst_idx] * this.K_pct;
+             const num_shares_total = this.params.total_notional / strike_price;
+             const num_shares_unit = this.denom / strike_price;
+             const delivery_val = num_shares_unit * this.S_curr[worst_idx];
              const dirty = delivery_val + pending;
              
              // 填充归因
@@ -626,10 +590,7 @@ export class FCNPricer {
                 early_redemption_prob: 0, autocall_prob: 0, loss_prob: 1,
                 loss_attribution, autocall_attribution: [], 
                 exposure_value_avg, exposure_shares_avg,
-                settlement_info: {
-                  desc: `观察日当日 (拟接货 ${tickerName} ${num_shares_total.toFixed(3)}股)`,
-                  ...settlement,
-                },
+                settlement_info: { desc: `观察日当日 (拟接货 ${tickerName} ${num_shares_total.toFixed(0)}股)` },
                 product_name_display: this.params.product_name, market: this.params.market, fx_rate: this.params.fx_rate, avg_period_coupon
              };
         }
@@ -739,13 +700,8 @@ export class FCNPricer {
                 loss_count++;
                 loss_attribution[worst_idx]++;
                 
-                const settlement = calculateFCNSettlement(
-                  this.params,
-                  worst_idx,
-                  current_prices[worst_idx],
-                  current_prices[worst_idx],
-                );
-                const num_shares = settlement.integralSharesPerNote;
+                const strike_price = this.S0[worst_idx] * this.K_pct;
+                const num_shares = this.denom / strike_price;
                 exposure_value_sum[worst_idx] += redemption;
                 exposure_shares_sum[worst_idx] += num_shares;
             }
