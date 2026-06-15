@@ -20,8 +20,9 @@ v2 的设计原则:
   v2 评分 < 0.3 = "正常或动量延续"
 """
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -33,8 +34,34 @@ from us_market_dashboard.storage import db
 
 logger = logging.getLogger(__name__)
 
+US_MARKET_TIMEZONE = ZoneInfo("America/New_York")
+US_MARKET_DATA_READY_HOUR = 16
+US_MARKET_DATA_READY_MINUTE = 30
+
 
 # ============ 工具函数 ============
+
+
+def _latest_completed_us_market_date(now: Optional[datetime] = None) -> pd.Timestamp:
+    """Return the latest calendar date whose US cash session is complete."""
+    if now is None:
+        now_et = datetime.now(US_MARKET_TIMEZONE)
+    elif now.tzinfo is None:
+        now_et = now.replace(tzinfo=US_MARKET_TIMEZONE)
+    else:
+        now_et = now.astimezone(US_MARKET_TIMEZONE)
+
+    data_ready_at = now_et.replace(
+        hour=US_MARKET_DATA_READY_HOUR,
+        minute=US_MARKET_DATA_READY_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+    completed_date = now_et.date()
+    if now_et < data_ready_at:
+        completed_date -= timedelta(days=1)
+    return pd.Timestamp(completed_date)
+
 
 def _peak_distance(series: pd.Series, lookback: int = 30) -> pd.Series:
     """
@@ -291,16 +318,27 @@ def compute_risk_score_v2(persist_days: int = 3) -> pd.DataFrame:
         "leading_weak": leading_indicators_signal(),
     }
 
-    # Use the NDX trading calendar as the canonical timeline. Weekly CFTC data
-    # may extend into weekends or the current, not-yet-closed business day;
-    # an outer join would otherwise create a false latest row with 0s for all
-    # market-based signals.
+    # Use completed NDX sessions as the canonical timeline. Some providers can
+    # expose a row for today's date during pre-market hours; it must not be
+    # treated as a completed daily bar.
     ndx_prices = db.load_prices("^NDX")
     if ndx_prices.empty:
-        logger.warning("NDX prices unavailable; falling back to signal dates.")
-        market_index = pd.concat(sigs, axis=1).index
-    else:
-        market_index = pd.DatetimeIndex(ndx_prices.index).sort_values().unique()
+        raise RuntimeError("NDX prices unavailable; cannot determine completed US sessions.")
+
+    market_index = pd.DatetimeIndex(ndx_prices.index).sort_values().unique()
+    if market_index.tz is not None:
+        market_index = market_index.tz_convert(US_MARKET_TIMEZONE).tz_localize(None)
+
+    completed_through = _latest_completed_us_market_date()
+    market_index = market_index[market_index.normalize() <= completed_through]
+    if market_index.empty:
+        raise RuntimeError(
+            f"No completed NDX session is available through {completed_through.date()}."
+        )
+    logger.info(
+        "Scoring through completed US session %s (data cutoff 16:30 America/New_York).",
+        market_index[-1].date(),
+    )
 
     aligned = {
         name: signal.sort_index().reindex(market_index).ffill()
