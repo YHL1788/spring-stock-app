@@ -763,6 +763,7 @@ return (
               <Th label="日期" sortKey="date" filterKey="date" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="110px" />
               <Th label="账户" sortKey="account" filterKey="account" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} align="center" width="100px" />
               <Th label="代码/名称" filterKey="codeOrName" currentSort={tradeSort} onSort={toggleTradeSort} currentFilter={tradeFilters} onFilter={updateTradeFilter} width="160px" />
+              <Th label="币种" align="center" />
               <Th label="方向" align="center" />
               <Th label="数量" align="right" />
               <Th label="均价(不含费)" align="right" />
@@ -775,7 +776,7 @@ return (
           <tbody className="divide-y divide-gray-100">
             {loading ? (
               <tr>
-                <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
+                <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
                   <div className="flex justify-center items-center gap-2">
                     <Loader2 className="animate-spin" size={16} /> 加载数据中...
                   </div>
@@ -783,7 +784,7 @@ return (
               </tr>
             ) : displayTransactions.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-4 py-8 text-center text-gray-400 flex flex-col items-center">
+                <td colSpan={11} className="px-4 py-8 text-center text-gray-400 flex flex-col items-center">
                   <AlertCircle size={24} className="mb-2 opacity-50" />
                   暂无匹配交易记录
                 </td>
@@ -799,6 +800,11 @@ return (
                   <td className="px-3 py-2 whitespace-nowrap">
                     <div className="font-medium text-gray-900">{t.code}</div>
                     <div className="text-xs text-gray-500">{t.name}</div>
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap text-center">
+                    <span className="rounded-full border border-gray-200 bg-gray-50 px-2 py-0.5 font-mono text-xs font-semibold text-gray-600">
+                      {t.market || '-'}
+                    </span>
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap text-center">
                     <span className={`px-2 py-0.5 rounded text-xs font-bold ${t.direction === 'BUY' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
