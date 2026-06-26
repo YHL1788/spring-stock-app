@@ -26,6 +26,7 @@ const navigation = [
     children: [
       { name: '全球概览', href: '/market/overview' },
       { name: '重大事件日历', href: '/market/calendar' },
+      { name: '权威持仓', href: '/market/authoritative-holdings' },
       { name: '个股查询', href: '/market/quote' },
       { name: '我的自选股', href: '/market/pools' },
     ],

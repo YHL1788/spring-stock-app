@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Loader2, RefreshCw } from 'lucide-react';
+import { AlertCircle, FileSpreadsheet, Loader2, RefreshCw } from 'lucide-react';
 import { doc, getDoc } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { useStockPool } from '@/app/hooks/useStockPool';
 
@@ -59,6 +60,14 @@ type SortState = {
 } | null;
 
 type TextFilterKey = 'symbol' | 'market' | 'name' | 'sectorLevel1' | 'sectorLevel2';
+type ExposureChartGroupKey = 'market' | 'sectorLevel1' | 'sectorLevel2';
+
+interface ExposurePieSlice {
+  name: string;
+  value: number;
+  signedValue: number;
+  count: number;
+}
 
 const EXPOSURE_SOURCES: ExposureSource[] = [
   { key: 'dqaq', label: 'DQ-AQ', collection: 'sip_exposure_dqaq' },
@@ -66,6 +75,14 @@ const EXPOSURE_SOURCES: ExposureSource[] = [
   { key: 'option', label: 'Option', collection: 'sip_exposure_option' },
   { key: 'spot', label: 'Spot', collection: 'sip_exposure_spot' },
 ];
+
+const EXPOSURE_CHART_GROUPS: Array<{ key: ExposureChartGroupKey; label: string }> = [
+  { key: 'market', label: '市场' },
+  { key: 'sectorLevel1', label: '一级行业' },
+  { key: 'sectorLevel2', label: '二级行业' },
+];
+
+const PIE_COLORS = ['#2563eb', '#059669', '#f59e0b', '#dc2626', '#7c3aed', '#0891b2', '#db2777', '#65a30d', '#ea580c', '#475569'];
 
 const emptyBreakdown = (): Record<ExposureSourceKey, SourceBreakdown> => ({
   dqaq: { shares: 0, cost: 0 },
@@ -83,6 +100,16 @@ const formatPercent = (value: number | null | undefined) => {
   if (value === null || value === undefined || Number.isNaN(value)) return '-';
   return `${(value * 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 };
+
+const excelCell = (value: string | number | null | undefined) => {
+  if (value === null || value === undefined) return '';
+  const text = String(value).replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
+  return /^[=+\-@]/.test(text) ? `'${text}` : text;
+};
+
+const buildExcelText = (rows: Array<Array<string | number | null | undefined>>) => (
+  rows.map((row) => row.map(excelCell).join('\t')).join('\n')
+);
 
 const normalizeSymbol = (symbol: string) => symbol.trim().toUpperCase();
 
@@ -185,6 +212,9 @@ export default function ExposureUnderlyingPage() {
   });
   const deferredFilters = useDeferredValue(filters);
   const [sortState, setSortState] = useState<SortState>(null);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [copyStatus, setCopyStatus] = useState('');
+  const [chartGroupBy, setChartGroupBy] = useState<ExposureChartGroupKey>('market');
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -399,6 +429,88 @@ export default function ExposureUnderlyingPage() {
     });
   }, [deferredFilters, rows, sortState]);
 
+  const exportTableRows = useMemo(() => {
+    const header: Array<string | number | null | undefined> = [
+      '股票代码',
+      '市场',
+      '股票名称',
+      '总暴露股数',
+      '平均暴露成本',
+      '现价',
+      '盈亏比%',
+      '总暴露成本HKD',
+      '总暴露市值HKD',
+      '总暴露盈亏HKD',
+      '一级行业',
+      '二级行业',
+    ];
+
+    const body = filteredRows.map((row) => [
+      row.symbol,
+      row.market,
+      row.name,
+      row.totalShares,
+      row.avgCost === null ? '' : row.avgCost,
+      row.currentPrice === null ? '' : row.currentPrice,
+      row.pnlRatio === null ? '' : Number((row.pnlRatio * 100).toFixed(4)),
+      row.totalCostHKD,
+      row.totalMktValHKD === null ? '' : row.totalMktValHKD,
+      row.totalPnlHKD === null ? '' : row.totalPnlHKD,
+      row.sectorLevel1,
+      row.sectorLevel2,
+    ]);
+
+    return [header, ...body];
+  }, [filteredRows]);
+
+  const exportText = useMemo(() => buildExcelText(exportTableRows), [exportTableRows]);
+
+  const handleExportExcel = useCallback(() => {
+    setCopyStatus('');
+    setShowExportModal(true);
+  }, []);
+
+  const handleCopyExportText = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(exportText);
+      setCopyStatus('已复制，可直接粘贴到 Excel');
+    } catch {
+      setCopyStatus('复制失败，请手动选中文本复制');
+    }
+  }, [exportText]);
+
+  const exposurePieData = useMemo<ExposurePieSlice[]>(() => {
+    const grouped = new Map<string, ExposurePieSlice>();
+
+    filteredRows.forEach((row) => {
+      if (row.totalMktValHKD === null || Number.isNaN(row.totalMktValHKD)) return;
+      const absoluteExposure = Math.abs(row.totalMktValHKD);
+      if (absoluteExposure <= 0) return;
+
+      const name = String(row[chartGroupBy] || '未知');
+      const existing = grouped.get(name) || { name, value: 0, signedValue: 0, count: 0 };
+      existing.value += absoluteExposure;
+      existing.signedValue += row.totalMktValHKD;
+      existing.count += 1;
+      grouped.set(name, existing);
+    });
+
+    const sorted = Array.from(grouped.values()).sort((a, b) => b.value - a.value);
+    if (sorted.length <= 10) return sorted;
+
+    const top = sorted.slice(0, 9);
+    const other = sorted.slice(9).reduce<ExposurePieSlice>((sum, item) => ({
+      name: '其他',
+      value: sum.value + item.value,
+      signedValue: sum.signedValue + item.signedValue,
+      count: sum.count + item.count,
+    }), { name: '其他', value: 0, signedValue: 0, count: 0 });
+
+    return [...top, other].filter((item) => item.value > 0);
+  }, [chartGroupBy, filteredRows]);
+
+  const exposurePieTotal = useMemo(() => exposurePieData.reduce((sum, item) => sum + item.value, 0), [exposurePieData]);
+
   const summary = useMemo(() => {
     const totalCostHKD = rows.reduce((sum, row) => sum + row.totalCostHKD, 0);
     const totalMktValHKD = rows.reduce((sum, row) => sum + (row.totalMktValHKD || 0), 0);
@@ -513,7 +625,18 @@ export default function ExposureUnderlyingPage() {
               {stockPoolLoading ? '；股票池加载中' : ''}
             </p>
           </div>
-          <div className="text-xs text-gray-400">可在表头按代码、市场、名称和行业组合筛选</div>
+          <div className="flex flex-col gap-2 text-xs text-gray-400 sm:flex-row sm:items-center">
+            <button
+              type="button"
+              onClick={handleExportExcel}
+              disabled={filteredRows.length === 0}
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 transition-colors hover:border-emerald-300 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <FileSpreadsheet size={14} />
+              导出Excel
+            </button>
+            <span>可在表头按代码、市场、名称和行业组合筛选</span>
+          </div>
         </div>
 
         {loading ? (
@@ -573,10 +696,165 @@ export default function ExposureUnderlyingPage() {
           </div>
         )}
 
+        <div className="border-t border-slate-100 bg-white px-5 py-5">
+          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h3 className="text-base font-black text-slate-900">暴露市值占比图</h3>
+              <p className="mt-1 text-xs text-slate-500">
+                使用当前表格筛选结果，按绝对暴露市值HKD计算占比；类别超过 10 项时会合并为“其他”。
+              </p>
+            </div>
+            <div className="inline-flex rounded-2xl border border-slate-200 bg-slate-50 p-1">
+              {EXPOSURE_CHART_GROUPS.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setChartGroupBy(item.key)}
+                  className={`rounded-xl px-3 py-2 text-xs font-black transition-colors ${
+                    chartGroupBy === item.key
+                      ? 'bg-slate-950 text-white shadow-sm'
+                      : 'text-slate-500 hover:bg-white hover:text-slate-900'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {exposurePieData.length === 0 ? (
+            <div className="flex h-56 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-sm font-bold text-slate-400">
+              暂无可绘制的暴露市值数据
+            </div>
+          ) : (
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
+              <div className="h-[360px] rounded-2xl border border-slate-100 bg-gradient-to-br from-white to-slate-50 p-3">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={exposurePieData}
+                      dataKey="value"
+                      nameKey="name"
+                      cx="50%"
+                      cy="50%"
+                      innerRadius="48%"
+                      outerRadius="76%"
+                      paddingAngle={2}
+                      labelLine={false}
+                      label={(props: any) => {
+                        if (!props.percent || props.percent < 0.055) return '';
+                        return `${props.name} ${(props.percent * 100).toFixed(1)}%`;
+                      }}
+                    >
+                      {exposurePieData.map((entry, index) => (
+                        <Cell key={entry.name} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      formatter={(value: any, _name: any, props: any) => [
+                        `${formatNumber(Number(value))} HKD`,
+                        props?.payload?.name || '暴露市值',
+                      ]}
+                      labelFormatter={() => ''}
+                    />
+                    <Legend verticalAlign="bottom" height={32} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+                <div className="mb-3 flex items-center justify-between text-xs font-black text-slate-500">
+                  <span>分布明细</span>
+                  <span>合计 {formatNumber(exposurePieTotal)} HKD</span>
+                </div>
+                <div className="max-h-[320px] space-y-2 overflow-auto pr-1">
+                  {exposurePieData.map((item, index) => {
+                    const ratio = exposurePieTotal > 0 ? item.value / exposurePieTotal : 0;
+                    return (
+                      <div key={item.name} className="rounded-xl border border-white bg-white px-3 py-2 shadow-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className="h-2.5 w-2.5 flex-none rounded-full" style={{ backgroundColor: PIE_COLORS[index % PIE_COLORS.length] }} />
+                            <span className="truncate text-sm font-bold text-slate-800">{item.name}</span>
+                          </div>
+                          <span className="font-mono text-sm font-black text-slate-900">{formatPercent(ratio)}</span>
+                        </div>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                          <div className="h-full rounded-full" style={{ width: `${Math.min(ratio * 100, 100)}%`, backgroundColor: PIE_COLORS[index % PIE_COLORS.length] }} />
+                        </div>
+                        <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
+                          <span>{item.count} 个标的</span>
+                          <span>{formatNumber(item.value)} HKD</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 text-xs text-slate-500">
           行情来自现有 <span className="font-mono">/api/quote</span>，行业与名称来自 <span className="font-mono">useStockPool()</span>。本页只读展示，不写回数据库。
         </div>
       </div>
+
+      {showExportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-5xl overflow-hidden rounded-3xl border border-white/70 bg-white shadow-2xl shadow-slate-900/20">
+            <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 px-6 py-5 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700 ring-1 ring-emerald-100">
+                  <FileSpreadsheet size={14} />
+                  Excel Paste
+                </div>
+                <h3 className="mt-3 text-2xl font-black tracking-tight text-slate-950">导出综合标的暴露表</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  以下内容已用 Tab 分隔，复制后可直接粘贴到 Excel。当前共 {filteredRows.length} 条记录。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowExportModal(false)}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 transition-colors hover:bg-slate-100"
+              >
+                关闭
+              </button>
+            </div>
+
+            <div className="p-6">
+              <textarea
+                readOnly
+                value={exportText}
+                className="h-[420px] w-full resize-none rounded-2xl border border-slate-200 bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-50 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                onFocus={(event) => event.currentTarget.select()}
+              />
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-xs text-slate-500">
+                  {copyStatus || '提示：也可以点击文本框后 Ctrl+A / Ctrl+C 手动复制。'}
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCopyExportText}
+                    className="rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-black text-white shadow-lg shadow-emerald-100 transition-colors hover:bg-emerald-700"
+                  >
+                    一键复制
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowExportModal(false)}
+                    className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-bold text-slate-600 transition-colors hover:bg-slate-100"
+                  >
+                    关闭
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
