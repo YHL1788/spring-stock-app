@@ -15,11 +15,6 @@ import {
     getFCNNoteCurrency,
     normalizeFCNUnderlyingTerms
 } from '@/app/book/SP_wjhh1/lib/fcnSettlementEngine';
-import {
-    applyCorporateActionsToFCNParams,
-    CORPORATE_ACTION_COLLECTION,
-    CorporateActionRecord
-} from '@/app/book/SP_wjhh1/lib/corporateActionEngine';
 
 // --- 時間解析輔助函數 ---
 const getTime = (val: any) => {
@@ -176,7 +171,6 @@ export default function FCNHoldingPage() {
     const [isDeleting, setIsDeleting] = useState(false);
     const [selectedLivingTradeIds, setSelectedLivingTradeIds] = useState<string[]>([]);
     const [selectedDiedTradeIds, setSelectedDiedTradeIds] = useState<string[]>([]);
-    const [corporateActions, setCorporateActions] = useState<CorporateActionRecord[]>([]);
 
     // --- 全局最新汇率与 HKD 视图状态 ---
     const [isHKDView, setIsHKDView] = useState(false);
@@ -353,17 +347,6 @@ export default function FCNHoldingPage() {
         } catch(e) { console.error(e); }
     };
 
-    const loadCorporateActions = async () => {
-        try {
-            const snap = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', CORPORATE_ACTION_COLLECTION));
-            const rows = snap.docs.map(document => ({ id: document.id, ...document.data() } as CorporateActionRecord));
-            setCorporateActions(rows);
-        } catch (error) {
-            console.warn('Load corporate actions failed:', error);
-            setCorporateActions([]);
-        }
-    };
-
     // --- 获取并刷新后台库数据 ---
     const fetchDbRecords = async (collectionName: string) => {
         if (!user) return;
@@ -396,7 +379,6 @@ export default function FCNHoldingPage() {
     useEffect(() => {
         if (user) {
             loadRecords();
-            loadCorporateActions();
         }
     }, [user]);
 
@@ -657,9 +639,8 @@ export default function FCNHoldingPage() {
     const evaluateFCN = async (mergedRecord: MergedRecord) => {
         const inputData = replaceNullWithUndefined(mergedRecord.inputData);
         const outputData = replaceNullWithUndefined(mergedRecord.outputData);
-        const sourcePricerParams = inputData.pricerParams as FCNParams;
-        if (!sourcePricerParams) throw new Error("Missing pricerParams");
-        const pricerParams = JSON.parse(JSON.stringify(sourcePricerParams)) as FCNParams;
+        const pricerParams = inputData.pricerParams as FCNParams;
+        if (!pricerParams) throw new Error("Missing pricerParams");
 
         const last_obs_date = pricerParams.obs_dates[pricerParams.obs_dates.length - 1];
         const normalizedTerms = normalizeFCNUnderlyingTerms(pricerParams);
@@ -738,14 +719,7 @@ export default function FCNHoldingPage() {
             });
         }
         
-        const valuationDate = isExpired ? last_obs_date : new Date().toISOString().split('T')[0];
-        const {
-            adjusted: adjustedPricerParams,
-            details: corporateActionAdjustments
-        } = applyCorporateActionsToFCNParams(pricerParams, corporateActions, valuationDate);
-
-        const pricingParams = adjustedPricerParams;
-        const pricer = new FCNPricer(pricingParams);
+        const pricer = new FCNPricer(pricerParams);
         const newResult = pricer.simulate_price();
         let deliveryRecord = null;
 
@@ -753,10 +727,10 @@ export default function FCNHoldingPage() {
             const worstIdx = newResult.loss_attribution.findIndex((val: number) => val === 1.0);
             if (worstIdx !== -1) {
                 const settlement = calculateFCNSettlement(
-                    pricingParams,
+                    pricerParams,
                     worstIdx,
-                    pricingParams.current_spots?.[worstIdx],
-                    pricingParams.current_spots?.[worstIdx]
+                    pricerParams.current_spots?.[worstIdx],
+                    pricerParams.current_spots?.[worstIdx]
                 );
                 const ticker = settlement.underlying.ticker;
                 const strikePrice = settlement.strikePrice;
@@ -769,10 +743,10 @@ export default function FCNHoldingPage() {
                 
                 deliveryRecord = {
                     tradeId: mergedRecord.tradeId,
-                    date: pricingParams.pay_dates[pricingParams.pay_dates.length - 1],
-                    account: pricingParams.account_name || inputData.inputParams?.account_name || '',
+                    date: pricerParams.pay_dates[pricerParams.pay_dates.length - 1],
+                    account: pricerParams.account_name || inputData.inputParams?.account_name || '',
                     market: settlement.underlying.market,
-                    executor: pricingParams.executor || inputData.inputParams?.executor || '',
+                    executor: pricerParams.executor || inputData.inputParams?.executor || '',
                     type: "FCN接货",
                     stockCode: ticker,
                     stockName: settlement.underlying.name,
@@ -806,8 +780,6 @@ export default function FCNHoldingPage() {
         const cleanOutput = replaceUndefinedWithNull({ 
             ...outputData, 
             result: newResult,
-            adjustedPricerParams: corporateActionAdjustments.length > 0 ? pricingParams : null,
-            corporateActionAdjustments,
             updatedAt: exactNow 
         });
         delete cleanOutput.id; delete cleanOutput.inputId; delete cleanOutput.outputId;
@@ -969,7 +941,7 @@ export default function FCNHoldingPage() {
             const inputData = replaceNullWithUndefined(mergedRecord.inputData);
             const outputData = replaceNullWithUndefined(mergedRecord.outputData);
             const res = outputData.result as FCNResult;
-            const p = (outputData.adjustedPricerParams || inputData.pricerParams) as FCNParams;
+            const p = inputData.pricerParams as FCNParams;
             if (!res || !p) return null;
             
             const factor = Number(p.total_notional) / Number(p.denomination);
@@ -1032,7 +1004,7 @@ export default function FCNHoldingPage() {
             const inputData = replaceNullWithUndefined(mergedRecord.inputData);
             const outputData = replaceNullWithUndefined(mergedRecord.outputData);
             const result = outputData.result as FCNResult;
-            const params = (outputData.adjustedPricerParams || inputData.pricerParams) as FCNParams;
+            const params = inputData.pricerParams as FCNParams;
             if (!result || !params) return;
             
             if (result.status === 'Settling_Delivery' || (result.status === 'Active' && result.loss_prob > 0)) {
@@ -1079,7 +1051,7 @@ export default function FCNHoldingPage() {
             const inputData = replaceNullWithUndefined(mergedRecord.inputData);
             const outputData = replaceNullWithUndefined(mergedRecord.outputData);
             const res = outputData.result as FCNResult;
-            const p = (outputData.adjustedPricerParams || inputData.pricerParams) as FCNParams;
+            const p = inputData.pricerParams as FCNParams;
             if (!res || !p) return null;
             
             const factor = Number(p.total_notional) / Number(p.denomination);
