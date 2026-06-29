@@ -5,6 +5,7 @@ import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'fi
 import { collection, deleteDoc, doc, getDoc, getDocs, setDoc } from 'firebase/firestore';
 import {
   CartesianGrid,
+  LabelList,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -12,7 +13,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Database, Loader2, RefreshCw, Save, Trash2, TrendingUp } from 'lucide-react';
+import { Database, Loader2, Plus, RefreshCw, Save, Trash2, TrendingUp, X } from 'lucide-react';
 
 import { auth, db, APP_ID } from '@/app/lib/stockService';
 import {
@@ -35,6 +36,7 @@ const NAV_CONFIG_COLLECTION = 'sip_holding_summary_nav_config';
 const SNAPSHOT_COLLECTION = 'sip_holding_summary_snapshots';
 const CASH_TRADE_COLLECTION = 'sip_trade_cash';
 const SHARPE_SETTINGS_KEY = 'sip_summary_sharpe_settings';
+const BENCHMARK_COLORS = ['#0f766e', '#7c3aed', '#ea580c', '#0891b2', '#65a30d', '#be123c'];
 
 type SnapshotWithExposure = PortfolioSnapshot & {
   totalExposureMarketValueHKD?: number;
@@ -47,6 +49,14 @@ type SnapshotWithExposure = PortfolioSnapshot & {
 
 type ChartView = 'nav' | 'exposure' | 'profit';
 type LedgerView = 'snapshots' | 'flows' | 'initial';
+type ProfitChartMode = 'hkd' | 'percent';
+
+type BenchmarkPoint = {
+  date: string;
+  close: number;
+};
+
+type BenchmarkSeriesMap = Record<string, BenchmarkPoint[]>;
 
 export default function PerformanceHistoryTab() {
   const [user, setUser] = useState<any>(null);
@@ -56,9 +66,16 @@ export default function PerformanceHistoryTab() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [chartView, setChartView] = useState<ChartView>('nav');
+  const [profitChartMode, setProfitChartMode] = useState<ProfitChartMode>('hkd');
   const [ledgerView, setLedgerView] = useState<LedgerView>('snapshots');
   const [riskFreeRate, setRiskFreeRate] = useState(0);
   const [annualizationFactor, setAnnualizationFactor] = useState(252);
+  const [showBenchmark, setShowBenchmark] = useState(false);
+  const [benchmarkInput, setBenchmarkInput] = useState('');
+  const [benchmarkSymbols, setBenchmarkSymbols] = useState<string[]>(['SPY']);
+  const [benchmarkSeriesMap, setBenchmarkSeriesMap] = useState<BenchmarkSeriesMap>({});
+  const [benchmarkLoading, setBenchmarkLoading] = useState(false);
+  const [benchmarkError, setBenchmarkError] = useState('');
 
   const [initialState, setInitialState] = useState<InitialPortfolioState | null>(null);
   const [snapshots, setSnapshots] = useState<SnapshotWithExposure[]>([]);
@@ -186,6 +203,85 @@ export default function PerformanceHistoryTab() {
     setSnapshots((prev) => prev.filter((item) => item.id !== snapshot.id));
   }
 
+  function addBenchmarkSymbol() {
+    const symbol = benchmarkInput.trim().toUpperCase();
+    if (!symbol) return;
+    setBenchmarkSymbols((prev) => Array.from(new Set([...prev, symbol])));
+    setBenchmarkInput('');
+    setBenchmarkSeriesMap({});
+    setBenchmarkError('');
+  }
+
+  function removeBenchmarkSymbol(symbol: string) {
+    setBenchmarkSymbols((prev) => prev.filter((item) => item !== symbol));
+    setBenchmarkSeriesMap((prev) => {
+      const next = { ...prev };
+      delete next[symbol];
+      return next;
+    });
+    setBenchmarkError('');
+  }
+
+  async function loadBenchmarkSeries() {
+    const symbols = benchmarkSymbols;
+
+    if (!symbols.length) {
+      setBenchmarkError('请先用 + 添加至少一个可比指数代码。');
+      return;
+    }
+    if (!chartData.length) {
+      setBenchmarkError('暂无净值曲线日期，无法对齐指数。');
+      return;
+    }
+
+    setBenchmarkLoading(true);
+    setBenchmarkError('');
+    try {
+      const from = chartData[0].date;
+      const to = chartData[chartData.length - 1].date;
+      const results = await Promise.allSettled(symbols.map(async (symbol) => {
+        const response = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {
+          cache: 'no-store',
+        });
+        const payload = await response.json();
+        if (!response.ok || !Array.isArray(payload?.data)) {
+          throw new Error(`${symbol}: ${payload?.error || '历史行情读取失败'}`);
+        }
+
+        const points = payload.data
+          .map((item: any) => ({
+            date: String(item.date).slice(0, 10),
+            close: Number(item.adjClose ?? item.close),
+          }))
+          .filter((item: BenchmarkPoint) => item.date && Number.isFinite(item.close) && item.close > 0)
+          .sort((a: BenchmarkPoint, b: BenchmarkPoint) => a.date.localeCompare(b.date));
+
+        if (!points.length) throw new Error(`${symbol}: 没有获得有效指数行情`);
+        return {
+          symbol: String(payload.symbol || symbol).toUpperCase(),
+          points,
+        };
+      }));
+
+      const successful = results
+        .filter((result): result is PromiseFulfilledResult<{ symbol: string; points: BenchmarkPoint[] }> => result.status === 'fulfilled')
+        .map((result) => result.value);
+      const failed = results
+        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+        .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
+
+      if (!successful.length) throw new Error(failed.join('；') || '没有获得有效指数行情。');
+      setBenchmarkSeriesMap(Object.fromEntries(successful.map((item) => [item.symbol, item.points])));
+      setBenchmarkSymbols(successful.map((item) => item.symbol));
+      setBenchmarkError(failed.length ? `部分指数读取失败：${failed.join('；')}` : '');
+    } catch (err: any) {
+      setBenchmarkSeriesMap({});
+      setBenchmarkError(err?.message || '可比指数读取失败');
+    } finally {
+      setBenchmarkLoading(false);
+    }
+  }
+
   const navSeries = useMemo(() => calculateNavSeries(initialState, snapshots, flows), [initialState, snapshots, flows]);
   const performanceStats = useMemo(() => calculatePerformanceStats(navSeries), [navSeries]);
   const sharpeRatio = useMemo(
@@ -215,6 +311,8 @@ export default function PerformanceHistoryTab() {
           ?? (exposureMarketValueHKD !== null && point.totalMarketValueHKD !== 0
             ? exposureMarketValueHKD / point.totalMarketValueHKD
             : null);
+      const attributionPnlHKD = index === 0 ? 0 : point.totalPnlHKD;
+      const initialCapitalHKD = initialState?.initialCapitalHKD || 0;
 
       return {
         date: point.date,
@@ -224,10 +322,49 @@ export default function PerformanceHistoryTab() {
         totalExposureMarketValueHKD: exposureMarketValueHKD,
         exposureRatio,
         navPnlHKD: point.cumulativeProfitHKD,
-        attributionPnlHKD: index === 0 ? 0 : point.totalPnlHKD,
+        attributionPnlHKD,
+        navPnlPct: point.unitNav - 1,
+        attributionPnlPct: initialCapitalHKD !== 0 ? attributionPnlHKD / initialCapitalHKD : null,
       };
     });
   }, [initialState, navSeries, snapshots]);
+
+  const chartDataWithBenchmark = useMemo(() => {
+    const symbols = Object.keys(benchmarkSeriesMap);
+    if (!showBenchmark || !symbols.length) return chartData;
+
+    const trackers = Object.fromEntries(symbols.map((symbol) => [
+      symbol,
+      {
+        cursor: 0,
+        latestClose: null as number | null,
+        baseClose: null as number | null,
+      },
+    ]));
+
+    return chartData.map((point) => {
+      const nextPoint: Record<string, any> = { ...point };
+
+      symbols.forEach((symbol) => {
+        const series = benchmarkSeriesMap[symbol] || [];
+        const tracker = trackers[symbol];
+        while (tracker.cursor < series.length && series[tracker.cursor].date <= point.date) {
+          tracker.latestClose = series[tracker.cursor].close;
+          tracker.cursor += 1;
+        }
+
+        const fieldKey = benchmarkFieldKey(symbol);
+        if (tracker.latestClose === null) {
+          nextPoint[fieldKey] = null;
+          return;
+        }
+        if (tracker.baseClose === null) tracker.baseClose = tracker.latestClose;
+        nextPoint[fieldKey] = tracker.baseClose !== 0 ? tracker.latestClose / tracker.baseClose - 1 : null;
+      });
+
+      return nextPoint;
+    });
+  }, [benchmarkSeriesMap, chartData, showBenchmark]);
 
   const exposurePointCount = chartData.filter((point) => point.totalExposureMarketValueHKD !== null).length;
 
@@ -344,15 +481,129 @@ export default function PerformanceHistoryTab() {
             />
           </div>
         ) : (
-          <div className="mt-5">
+          <div className="mt-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+              <div>
+                <div className="text-sm font-black text-slate-800">收益曲线显示口径</div>
+                <div className="mt-1 text-xs text-slate-500">
+                  百分比模式下，净值收益率=单位净值-1；归因收益率=归因盈亏HKD/期初净资产。
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {profitChartMode === 'percent' && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-blue-100 bg-white px-3 py-2 shadow-sm">
+                    <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-black text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={showBenchmark}
+                        onChange={(event) => setShowBenchmark(event.target.checked)}
+                        className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                      />
+                      可比指数
+                    </label>
+                    {showBenchmark && (
+                      <div className="flex max-w-[520px] flex-wrap items-center gap-2">
+                        <div className="flex items-center gap-1">
+                          <input
+                            value={benchmarkInput}
+                            onChange={(event) => setBenchmarkInput(event.target.value.toUpperCase())}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                addBenchmarkSymbol();
+                              }
+                            }}
+                            placeholder="SPY / QQQ / ^HSI"
+                            className="h-8 w-36 rounded-xl border border-slate-200 bg-slate-50 px-3 font-mono text-xs font-bold text-slate-800 outline-none focus:border-blue-400"
+                          />
+                          <button
+                            type="button"
+                            onClick={addBenchmarkSymbol}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-blue-200 bg-blue-50 text-blue-700 transition-colors hover:bg-blue-100"
+                            title="添加指数"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                        <div className="flex max-w-[260px] flex-wrap items-center gap-1">
+                          {benchmarkSymbols.map((symbol) => (
+                            <span key={symbol} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 font-mono text-[11px] font-black text-slate-700">
+                              {symbol}
+                              <button
+                                type="button"
+                                onClick={() => removeBenchmarkSymbol(symbol)}
+                                className="text-slate-400 hover:text-rose-600"
+                                title={`删除 ${symbol}`}
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void loadBenchmarkSeries()}
+                          disabled={benchmarkLoading || benchmarkSymbols.length === 0}
+                          className="inline-flex h-8 items-center gap-1 rounded-xl bg-blue-600 px-3 text-xs font-black text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          {benchmarkLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                          加载
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setProfitChartMode('hkd')}
+                    className={`rounded-xl px-3 py-2 text-xs font-black transition-colors ${
+                      profitChartMode === 'hkd'
+                        ? 'bg-slate-950 text-white'
+                        : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    金额HKD
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setProfitChartMode('percent')}
+                    className={`rounded-xl px-3 py-2 text-xs font-black transition-colors ${
+                      profitChartMode === 'percent'
+                        ? 'bg-slate-950 text-white'
+                        : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    百分比%
+                  </button>
+                </div>
+              </div>
+            </div>
+            {profitChartMode === 'percent' && showBenchmark && benchmarkError && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-700">
+                {benchmarkError}
+              </div>
+            )}
             <HistoryLineChart
-              title="收益曲线"
-              data={chartData}
-              lines={[
-                { key: 'navPnlHKD', label: '净值盈亏HKD', color: '#2563eb' },
-                { key: 'attributionPnlHKD', label: '归因盈亏HKD', color: '#e11d48' },
-              ]}
-              valueType="hkd"
+              title={profitChartMode === 'hkd' ? '收益曲线 HKD' : '收益曲线 %'}
+              data={profitChartMode === 'percent' ? chartDataWithBenchmark : chartData}
+              lines={profitChartMode === 'hkd'
+                ? [
+                    { key: 'navPnlHKD', label: '净值盈亏HKD', color: '#2563eb' },
+                    { key: 'attributionPnlHKD', label: '归因盈亏HKD', color: '#e11d48' },
+                  ]
+                : [
+                    { key: 'navPnlPct', label: '净值收益率', color: '#2563eb' },
+                    { key: 'attributionPnlPct', label: '归因收益率', color: '#e11d48' },
+                    ...(showBenchmark
+                      ? Object.keys(benchmarkSeriesMap).map((symbol, index) => ({
+                          key: benchmarkFieldKey(symbol),
+                          label: `${symbol}收益率`,
+                          color: BENCHMARK_COLORS[index % BENCHMARK_COLORS.length],
+                        }))
+                      : []),
+                  ]}
+              valueType={profitChartMode === 'hkd' ? 'hkd' : 'percent'}
               height={390}
             />
           </div>
@@ -570,18 +821,66 @@ function HistoryLineChart({
   height?: number;
 }) {
   const chartHeight = height || (compact ? 230 : 300);
-  const compressedAxis = buildCompressedTimeAxis(data, lines.map((line) => line.key));
+  const [hiddenLineKeys, setHiddenLineKeys] = useState<Set<string>>(() => new Set());
+  const visibleLines = useMemo(
+    () => lines.filter((line) => !hiddenLineKeys.has(line.key)),
+    [hiddenLineKeys, lines],
+  );
+  const compressedAxis = buildCompressedTimeAxis(data, visibleLines.map((line) => line.key));
+  const tailLabelIndexByKey = useMemo(() => {
+    const next: Record<string, number> = {};
+    visibleLines.forEach((line) => {
+      for (let index = compressedAxis.data.length - 1; index >= 0; index -= 1) {
+        const value = compressedAxis.data[index]?.[`${line.key}__history`];
+        if (value !== null && value !== undefined && Number.isFinite(Number(value))) {
+          next[line.key] = index;
+          break;
+        }
+      }
+    });
+    return next;
+  }, [compressedAxis.data, visibleLines]);
+  const toggleLine = (key: string) => {
+    setHiddenLineKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
   return (
     <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-black text-slate-700">{title}</h3>
-        {compressedAxis.hasBreak && (
-          <div className="text-[10px] font-bold text-slate-400">虚线为期初至首个快照；波浪处压缩时间跨度</div>
-        )}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {lines.map((line) => {
+            const hidden = hiddenLineKeys.has(line.key);
+            return (
+              <button
+                key={line.key}
+                type="button"
+                onClick={() => toggleLine(line.key)}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-black transition-colors ${
+                  hidden
+                    ? 'border-slate-200 bg-white text-slate-300 line-through'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+                title={hidden ? '点击显示曲线' : '点击隐藏曲线'}
+              >
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: hidden ? '#cbd5e1' : line.color }} />
+                {line.label}
+              </button>
+            );
+          })}
+          {compressedAxis.hasBreak && (
+            <div className="text-[10px] font-bold text-slate-400">虚线为期初至首个快照；波浪处压缩时间跨度</div>
+          )}
+        </div>
       </div>
       <div style={{ height: chartHeight }}>
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={compressedAxis.data} margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
+          <LineChart data={compressedAxis.data} margin={{ top: 8, right: 112, left: 8, bottom: 8 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
             <XAxis
               type="number"
@@ -599,8 +898,8 @@ function HistoryLineChart({
               height={34}
             />
             <YAxis tickFormatter={(value) => formatAxisValue(Number(value), valueType)} width={76} />
-            <Tooltip content={<HistoryTooltip lines={lines} valueType={valueType} />} />
-            {lines.map((line) => (
+            <Tooltip content={<HistoryTooltip lines={visibleLines} valueType={valueType} />} />
+            {visibleLines.map((line, lineIndex) => (
               <React.Fragment key={line.key}>
                 <Line
                   type="linear"
@@ -622,13 +921,79 @@ function HistoryLineChart({
                   dot={{ r: 3 }}
                   activeDot={{ r: 5 }}
                   connectNulls={false}
-                />
+                >
+                  <LabelList
+                    content={(props: any) => (
+                      <TailValueLabel
+                        {...props}
+                        line={line}
+                        lineIndex={lineIndex}
+                        tailIndex={tailLabelIndexByKey[line.key]}
+                        valueType={valueType}
+                      />
+                    )}
+                  />
+                </Line>
               </React.Fragment>
             ))}
           </LineChart>
         </ResponsiveContainer>
       </div>
     </div>
+  );
+}
+
+function TailValueLabel({
+  x,
+  y,
+  value,
+  index,
+  line,
+  lineIndex,
+  tailIndex,
+  valueType,
+}: {
+  x?: number;
+  y?: number;
+  value?: number | string;
+  index?: number;
+  line: { key: string; label: string; color: string };
+  lineIndex: number;
+  tailIndex?: number;
+  valueType: 'hkd' | 'nav' | 'percent';
+}) {
+  if (tailIndex === undefined || index !== tailIndex) return null;
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || x === undefined || y === undefined) return null;
+
+  const offsetPattern = [-10, 0, 10, 20, -20, 30];
+  const yOffset = offsetPattern[lineIndex % offsetPattern.length];
+  const label = formatChartValue(numericValue, valueType);
+
+  return (
+    <g aria-label={`${line.label} 最新值 ${label}`}>
+      <text
+        x={Number(x) + 9}
+        y={Number(y) + 4 + yOffset}
+        fontSize={11}
+        fontWeight={900}
+        fill={line.color}
+        stroke="#ffffff"
+        strokeWidth={4}
+        paintOrder="stroke"
+      >
+        {label}
+      </text>
+      <text
+        x={Number(x) + 9}
+        y={Number(y) + 4 + yOffset}
+        fontSize={11}
+        fontWeight={900}
+        fill={line.color}
+      >
+        {label}
+      </text>
+    </g>
   );
 }
 
@@ -785,6 +1150,10 @@ function chartPointTime(point: Record<string, any>) {
 
 function axisPositionKey(value: number) {
   return Number(value).toFixed(6);
+}
+
+function benchmarkFieldKey(symbol: string) {
+  return `benchmarkReturnPct_${symbol.replace(/[^A-Z0-9]/gi, '_')}`;
 }
 
 function formatAxisDate(value: string) {

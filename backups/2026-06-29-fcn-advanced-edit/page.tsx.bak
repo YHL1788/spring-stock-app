@@ -3,9 +3,9 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   RefreshCw, Database, FileJson, Trash2, X, Save, Loader2, 
-  AlertCircle, TrendingUp, LineChart, PieChart, Clock, BarChart, Edit3, Settings
+  AlertCircle, TrendingUp, LineChart, PieChart, Clock, BarChart
 } from 'lucide-react';
-import { collection, getDocs, doc, updateDoc, addDoc, deleteDoc, setDoc, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, addDoc, deleteDoc, setDoc, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
@@ -166,11 +166,6 @@ export default function FCNHoldingPage() {
     const [diedRecords, setDiedRecords] = useState<MergedRecord[]>([]);
     const [loadingLiving, setLoadingLiving] = useState(false);
     const [loadingDied, setLoadingDied] = useState(false);
-    const [isEditModeLiving, setIsEditModeLiving] = useState(false);
-    const [isEditModeDied, setIsEditModeDied] = useState(false);
-    const [isDeleting, setIsDeleting] = useState(false);
-    const [selectedLivingTradeIds, setSelectedLivingTradeIds] = useState<string[]>([]);
-    const [selectedDiedTradeIds, setSelectedDiedTradeIds] = useState<string[]>([]);
 
     // --- 全局最新汇率与 HKD 视图状态 ---
     const [isHKDView, setIsHKDView] = useState(false);
@@ -182,7 +177,7 @@ export default function FCNHoldingPage() {
     const [activeDbTab, setActiveDbTab] = useState('sip_holding_fcn_output_living');
     const [dbRecords, setDbRecords] = useState<any[]>([]);
     const [loadingDb, setLoadingDb] = useState(false);
-    const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string, targetCollection?: string, targetDocId?: string} | null>(null);
+    const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
 
     // --- 股价点位图 Modal 状态 ---
     const [chartModalData, setChartModalData] = useState<{ title: string, charts: FCNChartData[] } | null>(null);
@@ -381,91 +376,6 @@ export default function FCNHoldingPage() {
             loadRecords();
         }
     }, [user]);
-
-    const getDataCollectionRef = (collectionName: string) => (
-        collection(db, 'artifacts', APP_ID, 'public', 'data', collectionName)
-    );
-
-    const deleteCascadeRecords = async (tradeId: string, lifecycle: 'living' | 'died') => {
-        const collectionsToDelete = [
-            `sip_trade_fcn_input_${lifecycle}`,
-            `sip_holding_fcn_output_${lifecycle}`,
-            'sip_trade_fcn_pending_delivery',
-            'sip_holding_fcn_output_get-stock',
-            'sip_holding_cash_fcn'
-        ];
-
-        let deletedCount = 0;
-        for (const colName of collectionsToDelete) {
-            const colRef = getDataCollectionRef(colName);
-            const snap = await getDocs(query(colRef, where('tradeId', '==', tradeId)));
-            const deletedDocIds = new Set<string>();
-            for (const document of snap.docs) {
-                await deleteDoc(document.ref);
-                deletedDocIds.add(document.id);
-                deletedCount++;
-            }
-
-            if (colName === 'sip_trade_fcn_pending_delivery') {
-                const pendingSnap = await getDocs(colRef);
-                for (const document of pendingSnap.docs) {
-                    if (document.id.startsWith(`${tradeId}__`) && !deletedDocIds.has(document.id)) {
-                        await deleteDoc(document.ref);
-                        deletedCount++;
-                    }
-                }
-            }
-        }
-        return deletedCount;
-    };
-
-    const handleCascadeDelete = async (tradeId: string, lifecycle: 'living' | 'died') => {
-        if (!confirm(`High-risk cascade delete.\n\nThis will permanently delete all FCN records linked to tradeId: ${tradeId}, including input/output, pending delivery, get-stock and related cash records.\n\nContinue?`)) return;
-        setIsDeleting(true);
-        try {
-            const deletedCount = await deleteCascadeRecords(tradeId, lifecycle);
-            if (lifecycle === 'living') setSelectedLivingTradeIds(prev => prev.filter(id => id !== tradeId));
-            else setSelectedDiedTradeIds(prev => prev.filter(id => id !== tradeId));
-            await loadRecords();
-            if (activeDbTab.includes('_fcn_') || activeDbTab === 'sip_holding_cash_fcn') fetchDbRecords(activeDbTab);
-            alert(`Cascade delete completed. Removed ${deletedCount} linked records.`);
-        } catch (e: any) {
-            alert(`Cascade delete failed: ${e.message}`);
-        } finally {
-            setIsDeleting(false);
-        }
-    };
-
-    const handleBatchCascadeDelete = async (lifecycle: 'living' | 'died') => {
-        const selectedIds = lifecycle === 'living' ? selectedLivingTradeIds : selectedDiedTradeIds;
-        const uniqueIds = Array.from(new Set(selectedIds)).filter(Boolean);
-        if (uniqueIds.length === 0) {
-            alert('Please select records first.');
-            return;
-        }
-        if (!confirm(`High-risk batch cascade delete.\n\nThis will permanently delete ${uniqueIds.length} FCN records and their linked input/output, pending delivery, get-stock and cash records.\n\nContinue?`)) return;
-        setIsDeleting(true);
-        try {
-            let deletedCount = 0;
-            for (const tradeId of uniqueIds) {
-                deletedCount += await deleteCascadeRecords(tradeId, lifecycle);
-            }
-            if (lifecycle === 'living') setSelectedLivingTradeIds([]);
-            else setSelectedDiedTradeIds([]);
-            await loadRecords();
-            if (activeDbTab.includes('_fcn_') || activeDbTab === 'sip_holding_cash_fcn') fetchDbRecords(activeDbTab);
-            alert(`Batch cascade delete completed. Removed ${uniqueIds.length} FCN trades and ${deletedCount} linked records.`);
-        } catch (e: any) {
-            alert(`Batch cascade delete failed: ${e.message}`);
-        } finally {
-            setIsDeleting(false);
-        }
-    };
-
-    const toggleSelectedTradeId = (lifecycle: 'living' | 'died', tradeId: string) => {
-        const setter = lifecycle === 'living' ? setSelectedLivingTradeIds : setSelectedDiedTradeIds;
-        setter(prev => prev.includes(tradeId) ? prev.filter(id => id !== tradeId) : [...prev, tradeId]);
-    };
 
     // --- API 调用 ---
     const fetchQuotePrice = async (symbol: string): Promise<number | null> => {
@@ -788,15 +698,11 @@ export default function FCNHoldingPage() {
     };
 
     // --- 刷新当前持仓 (Living) ---
-    const handleRefreshLiving = async (onlyTradeIds?: string[]) => {
+    const handleRefreshLiving = async () => {
         setLoadingLiving(true);
         let deliveredCount = 0;
         try {
-            const selectedIds = Array.from(new Set(onlyTradeIds || [])).filter(Boolean);
-            const allLiving = await fetchMergedRecords('living');
-            const currentLiving = selectedIds.length > 0
-                ? allLiving.filter(record => selectedIds.includes(record.tradeId))
-                : allLiving;
+            const currentLiving = await fetchMergedRecords('living');
             if (currentLiving.length === 0) { setLoadingLiving(false); return; }
             const allNewDeliveries: any[] = [];
             for (const mergedRecord of currentLiving) {
@@ -831,7 +737,6 @@ export default function FCNHoldingPage() {
             await loadRecords();
             await fetchLatestFxRates();
             if (activeDbTab === 'sip_holding_fcn_output_living' || activeDbTab === 'sip_trade_fcn_input_living') fetchDbRecords(activeDbTab);
-            if (selectedIds.length > 0) setSelectedLivingTradeIds(prev => prev.filter(id => !selectedIds.includes(id)));
 
             if (deliveredCount > 0) {
                 alert(`刷新完毕！有 ${deliveredCount} 笔FCN触发了接货并已结束。接货记录已发往缓冲池，请移步 FCN Trade 页面的接货展示模块进行验证与推库！`);
@@ -846,15 +751,11 @@ export default function FCNHoldingPage() {
     };
 
     // --- 刷新历史持仓 (Died) ---
-    const handleRefreshDied = async (onlyTradeIds?: string[]) => {
+    const handleRefreshDied = async () => {
         setLoadingDied(true);
         let errorCount = 0;
         try {
-            const selectedIds = Array.from(new Set(onlyTradeIds || [])).filter(Boolean);
-            const allDied = await fetchMergedRecords('died');
-            const currentDied = selectedIds.length > 0
-                ? allDied.filter(record => selectedIds.includes(record.tradeId))
-                : allDied;
+            const currentDied = await fetchMergedRecords('died');
             if (currentDied.length === 0) { setLoadingDied(false); return; }
 
             for (const mergedRecord of currentDied) {
@@ -875,7 +776,6 @@ export default function FCNHoldingPage() {
             await loadRecords();
             await fetchLatestFxRates();
             if (activeDbTab === 'sip_holding_fcn_output_died' || activeDbTab === 'sip_trade_fcn_input_died') fetchDbRecords(activeDbTab);
-            if (selectedIds.length > 0) setSelectedDiedTradeIds(prev => prev.filter(id => !selectedIds.includes(id)));
 
             if (errorCount > 0) {
                 alert(`出错纠正！有 ${errorCount} 笔数据重新计算后发现仍在存续/结算中！系统已将其自动修复并转移回 Living 存续库！`);
@@ -971,8 +871,6 @@ export default function FCNHoldingPage() {
 
             return {
                 id: mergedRecord.tradeId,
-                inputId: mergedRecord.inputId,
-                inputData,
                 p, res, factor,
                 statusText: getStatusText(res.status),
                 tradeDate: p.trade_date || '',
@@ -1061,8 +959,6 @@ export default function FCNHoldingPage() {
 
             return {
                 id: mergedRecord.tradeId,
-                inputId: mergedRecord.inputId,
-                inputData,
                 p, res, factor,
                 statusText: getStatusText(res.status),
                 tradeDate: p.trade_date || '',
@@ -1380,15 +1276,14 @@ export default function FCNHoldingPage() {
         if (!editRecordModal) return;
         try {
             const parsedData = JSON.parse(editRecordModal.rawJson);
-            const targetCollection = editRecordModal.targetCollection || activeDbTab;
-            const docId = editRecordModal.targetDocId || parsedData.id || editRecordModal.record.id;
+            const docId = parsedData.id || editRecordModal.record.id;
             delete parsedData.id; 
             parsedData.updatedAt = new Date().toISOString();
-            await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', targetCollection, docId), parsedData);
+            await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab, docId), parsedData);
             alert("数据修改成功！");
             setEditRecordModal(null);
             
-            await loadRecords();
+            // 简单刷新一次对应库的数据
             if (!user) return;
             setLoadingDb(true);
             const querySnapshot = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', activeDbTab));
@@ -1469,36 +1364,6 @@ export default function FCNHoldingPage() {
                     </h2>
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">Living 库总计: {livingRecords.length} 笔</span>
-                        {isEditModeLiving && (
-                            <button
-                                onClick={() => handleRefreshLiving(selectedLivingTradeIds)}
-                                disabled={loadingLiving || selectedLivingTradeIds.length === 0}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-blue-600 text-white border-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
-                            >
-                                {loadingLiving ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                                刷新选中 ({selectedLivingTradeIds.length})
-                            </button>
-                        )}
-                        {isEditModeLiving && (
-                            <button
-                                onClick={() => handleBatchCascadeDelete('living')}
-                                disabled={isDeleting || selectedLivingTradeIds.length === 0}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-red-600 text-white border-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
-                            >
-                                {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                                删除选中 ({selectedLivingTradeIds.length})
-                            </button>
-                        )}
-                        <button
-                            onClick={() => {
-                                if (isEditModeLiving) setSelectedLivingTradeIds([]);
-                                setIsEditModeLiving(!isEditModeLiving);
-                            }}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold transition-colors border ${isEditModeLiving ? 'bg-red-50 text-red-700 border-red-200 shadow-inner' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50 shadow-sm'}`}
-                        >
-                            {isEditModeLiving ? <X size={14}/> : <Edit3 size={14}/>}
-                            {isEditModeLiving ? '退出高级编辑' : '开启高级编辑'}
-                        </button>
                     </div>
                 </div>
                 
@@ -1526,24 +1391,11 @@ export default function FCNHoldingPage() {
                                 <Th label="未实现票息" sortKey="unrealizedCoupon" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
                                 <Th label="预计接货损失" sortKey="impliedLoss" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
                                 <Th label="累计总损益" sortKey="totalPnl" filterKey={null} currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
-                                {isEditModeLiving && (
-                                    <th className="px-5 py-3 text-center bg-red-50 text-red-800 font-bold border-l border-red-100 whitespace-nowrap">
-                                        <label className="flex items-center justify-center gap-2 cursor-pointer select-none">
-                                            <input
-                                                type="checkbox"
-                                                checked={finalLiving.length > 0 && finalLiving.every(item => selectedLivingTradeIds.includes(item.id))}
-                                                onChange={(e) => setSelectedLivingTradeIds(e.target.checked ? finalLiving.map(item => item.id) : [])}
-                                                className="h-3.5 w-3.5 rounded border-red-300 text-red-600 focus:ring-red-500"
-                                            />
-                                            高级编辑
-                                        </label>
-                                    </th>
-                                )}
-                                </tr>
+                            </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                             {finalLiving.length === 0 ? (
-                                <tr><td colSpan={isEditModeLiving ? 21 : 20} className="px-4 py-8 text-center text-gray-400">暂无存续中的持仓数据 或 暂无匹配条件数据</td></tr>
+                                <tr><td colSpan={20} className="px-4 py-8 text-center text-gray-400">暂无存续中的持仓数据 或 暂无匹配条件数据</td></tr>
                             ) : finalLiving.map((item) => (
                                 <tr
                                     key={item.id}
@@ -1619,41 +1471,6 @@ export default function FCNHoldingPage() {
                                     <td className={`px-3 py-2 text-right font-mono font-bold ${item.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                                         {item.totalPnl > 0 ? '+' : ''}{formatMoneyWithUnit(item.totalPnl, item.market, item.fx_rate)}
                                     </td>
-
-                                    {isEditModeLiving && (
-                                        <td className="px-5 py-2 text-center border-l border-red-50 bg-red-50/30 whitespace-nowrap">
-                                            <div className="flex justify-center items-center gap-2">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={selectedLivingTradeIds.includes(item.id)}
-                                                    onChange={() => toggleSelectedTradeId('living', item.id)}
-                                                    className="h-3.5 w-3.5 rounded border-red-300 text-red-600 focus:ring-red-500"
-                                                    title="勾选用于刷新或批量删除"
-                                                />
-                                                <button
-                                                    onClick={() => setEditRecordModal({
-                                                        show: true,
-                                                        record: item.inputData,
-                                                        rawJson: JSON.stringify(item.inputData, null, 4),
-                                                        targetCollection: 'sip_trade_fcn_input_living',
-                                                        targetDocId: item.inputId
-                                                    })}
-                                                    className="p-1.5 bg-white text-purple-600 hover:bg-purple-50 border border-purple-200 rounded shadow-sm transition-colors"
-                                                    title="编辑当前 Input 参数"
-                                                >
-                                                    <Settings size={14}/>
-                                                </button>
-                                                <button
-                                                    onClick={() => handleCascadeDelete(item.id, 'living')}
-                                                    disabled={isDeleting}
-                                                    className="p-1.5 bg-white text-red-600 hover:bg-red-50 border border-red-200 rounded shadow-sm transition-colors disabled:opacity-50"
-                                                    title="级联删除全部关联记录"
-                                                >
-                                                    {isDeleting ? <Loader2 size={14} className="animate-spin"/> : <Trash2 size={14}/>}
-                                                </button>
-                                            </div>
-                                        </td>
-                                    )}
                                 </tr>
                             ))}
                         </tbody>
@@ -1671,15 +1488,13 @@ export default function FCNHoldingPage() {
                                     <td className={`px-3 py-3 text-right font-mono font-bold bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)] ${globalStats.livingSums.unrealizedCoupon > 0 ? 'text-green-600' : 'text-gray-500'}`}>{formatSumWithSign(globalStats.livingSums.unrealizedCoupon)}</td>
                                     <td className={`px-3 py-3 text-right font-mono font-bold bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)] ${globalStats.livingSums.impliedLoss > 0 ? 'text-red-600' : 'text-gray-500'}`}>{globalStats.livingSums.impliedLoss > 0 ? '-' : ''}{formatSum(globalStats.livingSums.impliedLoss)}</td>
                                     <td className={`px-3 py-3 text-right font-mono font-bold bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)] ${globalStats.livingSums.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatSumWithSign(globalStats.livingSums.totalPnl)}</td>
-
-                                    {isEditModeLiving && <td className="bg-red-50 border-l border-red-100"></td>}
                                 </tr>
                             </tfoot>
                         )}
                     </table>
                 </div>
                 <button
-                    onClick={() => handleRefreshLiving()}
+                    onClick={handleRefreshLiving}
                     disabled={loadingLiving}
                     className={`w-full py-3 px-4 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingLiving ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
                 >
@@ -1778,36 +1593,6 @@ export default function FCNHoldingPage() {
                     </h2>
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">Died 库总计: {diedRecords.length} 笔</span>
-                        {isEditModeDied && (
-                            <button
-                                onClick={() => handleRefreshDied(selectedDiedTradeIds)}
-                                disabled={loadingDied || selectedDiedTradeIds.length === 0}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-orange-600 text-white border-orange-600 hover:bg-orange-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
-                            >
-                                {loadingDied ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                                刷新选中 ({selectedDiedTradeIds.length})
-                            </button>
-                        )}
-                        {isEditModeDied && (
-                            <button
-                                onClick={() => handleBatchCascadeDelete('died')}
-                                disabled={isDeleting || selectedDiedTradeIds.length === 0}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-red-600 text-white border-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
-                            >
-                                {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                                删除选中 ({selectedDiedTradeIds.length})
-                            </button>
-                        )}
-                        <button
-                            onClick={() => {
-                                if (isEditModeDied) setSelectedDiedTradeIds([]);
-                                setIsEditModeDied(!isEditModeDied);
-                            }}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold transition-colors border ${isEditModeDied ? 'bg-red-50 text-red-700 border-red-200 shadow-inner' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50 shadow-sm'}`}
-                        >
-                            {isEditModeDied ? <X size={14}/> : <Edit3 size={14}/>}
-                            {isEditModeDied ? '退出高级编辑' : '开启高级编辑'}
-                        </button>
                     </div>
                 </div>
                 
@@ -1825,24 +1610,11 @@ export default function FCNHoldingPage() {
                                 <Th label="敲入/出界限" sortKey="strike" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" className="bg-gray-50" />
                                 <Th label="已实现票息" sortKey="realized" filterKey={null} currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" className="bg-gray-50" />
                                 <Th label="是否有接货" sortKey="hasDeliveryText" filterKey="hasDeliveryText" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="center" className="bg-gray-50" />
-                                {isEditModeDied && (
-                                    <th className="px-5 py-3 text-center bg-red-50 text-red-800 font-bold border-l border-red-100 whitespace-nowrap">
-                                        <label className="flex items-center justify-center gap-2 cursor-pointer select-none">
-                                            <input
-                                                type="checkbox"
-                                                checked={finalDied.length > 0 && finalDied.every(item => selectedDiedTradeIds.includes(item.id))}
-                                                onChange={(e) => setSelectedDiedTradeIds(e.target.checked ? finalDied.map(item => item.id) : [])}
-                                                className="h-3.5 w-3.5 rounded border-red-300 text-red-600 focus:ring-red-500"
-                                            />
-                                            高级编辑
-                                        </label>
-                                    </th>
-                                )}
-                                </tr>
+                            </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                             {finalDied.length === 0 ? (
-                                <tr><td colSpan={isEditModeDied ? 11 : 10} className="px-4 py-8 text-center text-gray-400">暂无历史持仓数据 或 暂无匹配条件数据</td></tr>
+                                <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-400">暂无历史持仓数据 或 暂无匹配条件数据</td></tr>
                             ) : finalDied.map((item) => (
                                 <tr key={item.id} className="hover:bg-orange-50/50 transition-colors">
                                     <td className="px-3 py-2 text-center whitespace-nowrap font-bold text-gray-700">{item.statusText}</td>
@@ -1861,41 +1633,6 @@ export default function FCNHoldingPage() {
                                             <span className="text-gray-400">否</span>
                                         )}
                                     </td>
-
-                                    {isEditModeDied && (
-                                        <td className="px-5 py-2 text-center border-l border-red-50 bg-red-50/30 whitespace-nowrap">
-                                            <div className="flex justify-center items-center gap-2">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={selectedDiedTradeIds.includes(item.id)}
-                                                    onChange={() => toggleSelectedTradeId('died', item.id)}
-                                                    className="h-3.5 w-3.5 rounded border-red-300 text-red-600 focus:ring-red-500"
-                                                    title="勾选用于刷新或批量删除"
-                                                />
-                                                <button
-                                                    onClick={() => setEditRecordModal({
-                                                        show: true,
-                                                        record: item.inputData,
-                                                        rawJson: JSON.stringify(item.inputData, null, 4),
-                                                        targetCollection: 'sip_trade_fcn_input_died',
-                                                        targetDocId: item.inputId
-                                                    })}
-                                                    className="p-1.5 bg-white text-purple-600 hover:bg-purple-50 border border-purple-200 rounded shadow-sm transition-colors"
-                                                    title="编辑当前 Input 参数"
-                                                >
-                                                    <Settings size={14}/>
-                                                </button>
-                                                <button
-                                                    onClick={() => handleCascadeDelete(item.id, 'died')}
-                                                    disabled={isDeleting}
-                                                    className="p-1.5 bg-white text-red-600 hover:bg-red-50 border border-red-200 rounded shadow-sm transition-colors disabled:opacity-50"
-                                                    title="级联删除全部关联记录"
-                                                >
-                                                    {isDeleting ? <Loader2 size={14} className="animate-spin"/> : <Trash2 size={14}/>}
-                                                </button>
-                                            </div>
-                                        </td>
-                                    )}
                                 </tr>
                             ))}
                         </tbody>
@@ -1907,15 +1644,13 @@ export default function FCNHoldingPage() {
                                     <td colSpan={2} className="bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]"></td>
                                     <td className="px-3 py-3 text-right font-mono font-bold text-gray-800 bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]">{formatSum(globalStats.diedSums.realized)}</td>
                                     <td className="bg-gray-100 border-t-2 border-gray-300 shadow-[0_-1px_0_rgba(0,0,0,0.1)]"></td>
-
-                                    {isEditModeDied && <td className="bg-red-50 border-l border-red-100"></td>}
                                 </tr>
                             </tfoot>
                         )}
                     </table>
                 </div>
                 <button
-                    onClick={() => handleRefreshDied()}
+                    onClick={handleRefreshDied}
                     disabled={loadingDied}
                     className={`w-full py-3 px-4 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingDied ? 'bg-orange-400 cursor-not-allowed' : 'bg-orange-600 hover:bg-orange-700'}`}
                 >

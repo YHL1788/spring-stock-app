@@ -3,8 +3,8 @@ import { NextResponse } from 'next/server';
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const symbol = searchParams.get('symbol');
-  const fromDate = searchParams.get('from'); // 格式: YYYY-MM-DD
-  const toDate = searchParams.get('to');     // 格式: YYYY-MM-DD
+  const fromDate = searchParams.get('from') || searchParams.get('start'); // YYYY-MM-DD
+  const toDate = searchParams.get('to') || searchParams.get('end');       // YYYY-MM-DD
 
   if (!symbol) {
     return NextResponse.json({ error: 'Symbol is required' }, { status: 400 });
@@ -50,10 +50,11 @@ export async function GET(request) {
     const timestamps = result.timestamp || [];
     const quote = result.indicators.quote[0];
     const adjClose = result.indicators.adjclose?.[0].adjclose || [];
+    const exchangeTimezone = result.meta?.exchangeTimezoneName || 'UTC';
 
     const formattedData = timestamps.map((ts, index) => {
       return {
-        date: new Date(ts * 1000).toISOString().split('T')[0], // YYYY-MM-DD
+        date: formatMarketDate(ts, exchangeTimezone), // YYYY-MM-DD in the exchange timezone
         timestamp: ts,
         open: quote.open[index],
         high: quote.high[index],
@@ -75,4 +76,22 @@ export async function GET(request) {
     console.error(`Failed to fetch history for ${symbol}:`, error);
     return NextResponse.json({ error: 'Failed to fetch history data' }, { status: 500 });
   }
+}
+function formatMarketDate(timestampSeconds, timeZone) {
+  const date = new Date(timestampSeconds * 1000);
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date);
+    const year = parts.find((part) => part.type === 'year')?.value;
+    const month = parts.find((part) => part.type === 'month')?.value;
+    const day = parts.find((part) => part.type === 'day')?.value;
+    if (year && month && day) return `${year}-${month}-${day}`;
+  } catch (error) {
+    console.warn(`Invalid exchange timezone ${timeZone}, falling back to UTC date.`);
+  }
+  return date.toISOString().split('T')[0];
 }
