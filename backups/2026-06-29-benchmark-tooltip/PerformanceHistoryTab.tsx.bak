@@ -356,12 +356,10 @@ export default function PerformanceHistoryTab() {
         const fieldKey = benchmarkFieldKey(symbol);
         if (tracker.latestClose === null) {
           nextPoint[fieldKey] = null;
-          nextPoint[`${fieldKey}__matchedDate`] = null;
           return;
         }
         if (tracker.baseClose === null) tracker.baseClose = tracker.latestClose;
         nextPoint[fieldKey] = tracker.baseClose !== 0 ? tracker.latestClose / tracker.baseClose - 1 : null;
-        nextPoint[`${fieldKey}__matchedDate`] = series[Math.max(0, tracker.cursor - 1)]?.date || null;
       });
 
       return nextPoint;
@@ -1018,8 +1016,7 @@ function HistoryTooltip({
     const historyValue = point[`${line.key}__history`];
     const initialValue = point[`${line.key}__initial`];
     const value = historyValue ?? initialValue;
-    const matchedDate = point[`${line.key}__matchedDate`];
-    return value === null || value === undefined ? [] : [{ ...line, value: Number(value), matchedDate }];
+    return value === null || value === undefined ? [] : [{ ...line, value: Number(value) }];
   });
   if (values.length === 0) return null;
 
@@ -1028,19 +1025,12 @@ function HistoryTooltip({
       <div className="mb-1.5 text-xs font-black text-slate-700">{point.date || '--'}</div>
       <div className="space-y-1">
         {values.map((item) => (
-          <div key={item.key} className="text-xs">
-            <div className="flex items-center justify-between gap-5">
-              <span className="inline-flex items-center gap-2 font-bold text-slate-500">
-                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
-                {item.label}
-              </span>
-              <span className="font-mono font-black text-slate-800">{formatChartValue(item.value, valueType)}</span>
-            </div>
-            {item.matchedDate && (
-              <div className="mt-0.5 pl-4 text-[11px] font-bold text-slate-400">
-                指数收盘日：{item.matchedDate}
-              </div>
-            )}
+          <div key={item.key} className="flex items-center justify-between gap-5 text-xs">
+            <span className="inline-flex items-center gap-2 font-bold text-slate-500">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
+              {item.label}
+            </span>
+            <span className="font-mono font-black text-slate-800">{formatChartValue(item.value, valueType)}</span>
           </div>
         ))}
       </div>
