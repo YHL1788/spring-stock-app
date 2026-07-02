@@ -1,0 +1,443 @@
+﻿'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { collection, getDocs } from 'firebase/firestore';
+import { signInAnonymously } from 'firebase/auth';
+import { BarChart3, CheckCircle2, Database, Loader2, RefreshCw, TrendingUp } from 'lucide-react';
+import { APP_ID, auth, db } from '@/app/lib/stockService';
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import {
+  computeMarketBreadthSeries,
+  type HistoryPoint,
+  type MarketBreadthResult,
+} from '../lib/marketBreadthEngine';
+
+type IndexConstituent = {
+  id?: string;
+  indexCode: string;
+  indexName?: string;
+  symbol: string;
+  name?: string;
+};
+
+const COLLECTION_NAME = 'sip_index_constituents';
+const CONCURRENCY = 8;
+const SERIES_WINDOW = 250;
+const MA_WINDOW = 200;
+
+export default function BreadthBullBearPanel() {
+  const [records, setRecords] = useState<IndexConstituent[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState('');
+  const [loadingPool, setLoadingPool] = useState(false);
+  const [calculating, setCalculating] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState<MarketBreadthResult | null>(null);
+
+  useEffect(() => {
+    loadPool();
+  }, []);
+
+  const indexOptions = useMemo(() => {
+    const map = new Map<string, { indexCode: string; indexName: string; count: number }>();
+    records.forEach((record) => {
+      const indexCode = normalizeCode(record.indexCode);
+      if (!indexCode) return;
+      const existing = map.get(indexCode) || { indexCode, indexName: record.indexName || '', count: 0 };
+      existing.count += 1;
+      if (!existing.indexName && record.indexName) existing.indexName = record.indexName;
+      map.set(indexCode, existing);
+    });
+    return Array.from(map.values()).sort((a, b) => a.indexCode.localeCompare(b.indexCode));
+  }, [records]);
+
+  const selectedConstituents = useMemo(() => {
+    return records
+      .filter((record) => normalizeCode(record.indexCode) === selectedIndex)
+      .sort((a, b) => normalizeCode(a.symbol).localeCompare(normalizeCode(b.symbol)));
+  }, [records, selectedIndex]);
+
+  const latestPoint = result?.series[result.series.length - 1] || null;
+  const stats = useMemo(() => {
+    const rows = result?.rows || [];
+    return {
+      total: rows.length,
+      failed: rows.filter((row) => row.error).length,
+      aboveRatio: latestPoint?.above200Ratio ?? null,
+      upRatio: latestPoint?.upRatio ?? null,
+      equalWeightReturn: latestPoint?.equalWeightReturn ?? null,
+      indexReturn: latestPoint?.indexReturn ?? null,
+      spreadToIndex: latestPoint?.equalWeightMinusIndex ?? null,
+      aboveCount: latestPoint?.above200Count ?? 0,
+      upCount: latestPoint?.upCount ?? 0,
+      validMa: latestPoint?.validMaCount ?? 0,
+      validReturn: latestPoint?.validReturnCount ?? 0,
+    };
+  }, [latestPoint, result]);
+
+  async function ensureAuth() {
+    if (!auth.currentUser) await signInAnonymously(auth);
+  }
+
+  async function loadPool() {
+    setLoadingPool(true);
+    setError('');
+    try {
+      await ensureAuth();
+      const snap = await getDocs(collection(db, 'artifacts', APP_ID, 'public', 'data', COLLECTION_NAME));
+      const rows = snap.docs.map((item) => ({ id: item.id, ...item.data() } as IndexConstituent));
+      setRecords(rows);
+      const firstIndex = rows.map((row) => normalizeCode(row.indexCode)).filter(Boolean).sort()[0] || '';
+      setSelectedIndex((prev) => prev || firstIndex);
+    } catch (err: any) {
+      setError(err?.message || '指数股票池读取失败。');
+    } finally {
+      setLoadingPool(false);
+    }
+  }
+
+  async function calculateBreadth() {
+    if (!selectedIndex) {
+      setError('请先在开发者选项的指数股票池中维护至少一个指数。');
+      return;
+    }
+    if (!selectedConstituents.length) {
+      setError('当前指数没有成分股记录。');
+      return;
+    }
+
+    setCalculating(true);
+    setError('');
+    try {
+      const fromDate = offsetDate(new Date(), -760);
+      const toDate = formatDate(new Date());
+      const histories: Record<string, HistoryPoint[]> = {};
+
+      const constituentResults = await mapWithConcurrency(selectedConstituents, CONCURRENCY, async (record) => {
+        const symbol = normalizeCode(record.symbol);
+        try {
+          return { symbol, history: await fetchHistory(symbol, fromDate, toDate) };
+        } catch (err) {
+          console.warn(`Breadth history failed: ${symbol}`, err);
+          return { symbol, history: [] as HistoryPoint[] };
+        }
+      });
+      constituentResults.forEach((item) => {
+        histories[item.symbol] = item.history;
+      });
+
+      const indexHistory = await fetchHistory(selectedIndex, fromDate, toDate);
+      const nextResult = computeMarketBreadthSeries({
+        constituents: selectedConstituents.map((record) => ({
+          symbol: normalizeCode(record.symbol),
+          name: record.name || '',
+        })),
+        histories,
+        indexHistory,
+        window: SERIES_WINDOW,
+        maWindow: MA_WINDOW,
+        calculatedAt: new Date().toISOString(),
+      });
+      setResult(nextResult);
+    } catch (err: any) {
+      setError(err?.message || '广度计算失败。');
+    } finally {
+      setCalculating(false);
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="mb-2 flex items-center gap-2 text-xs font-black uppercase tracking-[0.22em] text-teal-700">
+            <BarChart3 size={15} /> Breadth Bull/Bear Model
+          </div>
+          <h2 className="text-2xl font-black text-slate-900">广度牛熊分析</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
+            直接使用指数成分股历史行情回算最近 {SERIES_WINDOW} 个交易日的广度曲线：200 日线上比例、当日上涨家数比例、成分股等权涨幅和指数涨幅。
+          </p>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="text-xs font-black text-slate-500">
+            选择指数
+            <select
+              value={selectedIndex}
+              onChange={(event) => {
+                setSelectedIndex(event.target.value);
+                setResult(null);
+              }}
+              className="mt-1 block min-w-[220px] rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-800 outline-none focus:border-teal-500"
+            >
+              {indexOptions.length === 0 ? (
+                <option value="">暂无指数股票池</option>
+              ) : indexOptions.map((option) => (
+                <option key={option.indexCode} value={option.indexCode}>
+                  {option.indexName || option.indexCode} ({option.count})
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            onClick={loadPool}
+            disabled={loadingPool}
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-slate-600 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+          >
+            {loadingPool ? '读取中...' : '刷新股票池'}
+          </button>
+          <button
+            onClick={calculateBreadth}
+            disabled={calculating || !selectedConstituents.length}
+            className="flex items-center gap-2 rounded-2xl bg-teal-700 px-4 py-2.5 text-sm font-black text-white shadow-sm hover:bg-teal-800 disabled:opacity-50"
+          >
+            {calculating ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            {calculating ? '回算中...' : '刷新广度'}
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">{error}</div>}
+
+      <div className="grid gap-4 md:grid-cols-5">
+        <MetricCard label="200日线上比例" value={formatPercent(stats.aboveRatio)} meta={`${stats.aboveCount}/${stats.validMa}`} tone={ratioTone(stats.aboveRatio)} />
+        <MetricCard label="当日上涨家数比例" value={formatPercent(stats.upRatio)} meta={`${stats.upCount}/${stats.validReturn}`} tone={ratioTone(stats.upRatio)} />
+        <MetricCard label="成分股等权涨幅" value={formatPercent(stats.equalWeightReturn)} meta="有效成分股平均" tone={returnTone(stats.equalWeightReturn)} />
+        <MetricCard label="指数涨幅" value={formatPercent(stats.indexReturn)} meta={latestPoint?.date || '等待计算'} tone={returnTone(stats.indexReturn)} />
+        <MetricCard label="等权-指数" value={formatPercent(stats.spreadToIndex)} meta="内部强弱差" tone={returnTone(stats.spreadToIndex)} />
+      </div>
+
+      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-black text-slate-900">广度历史曲线</h3>
+            <p className="mt-1 text-xs text-slate-500">
+              最近 {SERIES_WINDOW} 个指数交易日即时回算，不需要手动保存快照。200 日线会使用更长的历史窗口预热。
+            </p>
+          </div>
+          <div className="rounded-full bg-teal-50 px-3 py-1.5 text-xs font-black text-teal-700">
+            {result ? `${result.series.length} 个点` : '等待回算'}
+          </div>
+        </div>
+
+        {!result ? (
+          <div className="mt-5 flex h-[360px] items-center justify-center rounded-2xl bg-slate-50 text-sm text-slate-400">
+            选择指数并点击“刷新广度”后生成 250 日历史曲线。
+          </div>
+        ) : (
+          <div className="mt-5 grid gap-4">
+            <div className="rounded-2xl border border-slate-100 bg-slate-50/40 p-3">
+              <div className="mb-2 text-xs font-black text-slate-500">趋势广度比例</div>
+              <div className="h-[260px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={result.series} margin={{ top: 12, right: 24, left: 0, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#64748b' }} minTickGap={28} />
+                    <YAxis tickFormatter={(value) => `${(Number(value) * 100).toFixed(0)}%`} tick={{ fontSize: 11, fill: '#64748b' }} domain={[0, 1]} />
+                    <Tooltip content={<BreadthTooltip />} />
+                    <Line type="monotone" dataKey="above200Ratio" name="200日线上比例" stroke="#0f766e" strokeWidth={2.4} dot={false} connectNulls />
+                    <Line type="monotone" dataKey="upRatio" name="上涨家数比例" stroke="#2563eb" strokeWidth={2.1} dot={false} connectNulls />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-100 bg-slate-50/40 p-3">
+              <div className="mb-2 text-xs font-black text-slate-500">收益扩散对比</div>
+              <div className="h-[260px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={result.series} margin={{ top: 12, right: 24, left: 0, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#64748b' }} minTickGap={28} />
+                    <YAxis tickFormatter={(value) => `${(Number(value) * 100).toFixed(1)}%`} tick={{ fontSize: 11, fill: '#64748b' }} />
+                    <Tooltip content={<BreadthTooltip />} />
+                    <Line type="monotone" dataKey="equalWeightReturn" name="成分股等权涨幅" stroke="#f97316" strokeWidth={2.1} dot={false} connectNulls />
+                    <Line type="monotone" dataKey="indexReturn" name="指数涨幅" stroke="#7c3aed" strokeWidth={2.1} dot={false} connectNulls />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-black text-slate-900">成分股明细</h3>
+            <p className="mt-1 text-xs text-slate-500">
+              股票池 {selectedConstituents.length} 只；成功 {stats.total - stats.failed} 只；失败 {stats.failed} 只。
+              {result?.calculatedAt ? ` 计算时间：${new Date(result.calculatedAt).toLocaleString('zh-CN', { hour12: false })}` : ''}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 rounded-full bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-500">
+            <Database className="h-3.5 w-3.5" /> {COLLECTION_NAME}
+          </div>
+        </div>
+
+        {!result ? (
+          <div className="mt-5 flex h-[260px] items-center justify-center rounded-2xl bg-slate-50 text-sm text-slate-400">
+            选择指数并点击“刷新广度”后显示最新成分股明细。
+          </div>
+        ) : (
+          <div className="mt-5 max-h-[560px] overflow-auto rounded-2xl border border-slate-200">
+            <table className="min-w-full text-left text-xs">
+              <thead className="sticky top-0 bg-slate-100 text-slate-600">
+                <tr>
+                  <th className="px-3 py-3">代码</th>
+                  <th className="px-3 py-3">名称</th>
+                  <th className="px-3 py-3">日期</th>
+                  <th className="px-3 py-3 text-right">现价</th>
+                  <th className="px-3 py-3 text-right">200日线</th>
+                  <th className="px-3 py-3 text-center">高于200日线</th>
+                  <th className="px-3 py-3 text-right">当日涨跌</th>
+                  <th className="px-3 py-3">状态</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {result.rows.map((row) => (
+                  <tr key={row.symbol} className="hover:bg-teal-50/40">
+                    <td className="px-3 py-3 font-mono font-black text-slate-900">{row.symbol}</td>
+                    <td className="px-3 py-3 text-slate-500">{row.name || '-'}</td>
+                    <td className="px-3 py-3 font-mono text-slate-500">{row.latestDate || '-'}</td>
+                    <td className="px-3 py-3 text-right font-mono">{formatNumber(row.latestClose)}</td>
+                    <td className="px-3 py-3 text-right font-mono">{row.ma200 === null ? '-' : formatNumber(row.ma200)}</td>
+                    <td className="px-3 py-3 text-center">
+                      {row.above200 === null ? '-' : row.above200 ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-1 font-bold text-emerald-700"><CheckCircle2 className="h-3 w-3" /> 是</span>
+                      ) : (
+                        <span className="rounded-full bg-rose-50 px-2 py-1 font-bold text-rose-700">否</span>
+                      )}
+                    </td>
+                    <td className={`px-3 py-3 text-right font-mono font-black ${Number(row.dayReturn || 0) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {formatPercent(row.dayReturn)}
+                    </td>
+                    <td className="px-3 py-3 text-slate-500">{row.error || 'OK'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-800">
+        <b>解读：</b>200日线上比例衡量中长期趋势参与度；上涨家数比例衡量当日扩散度；等权涨幅强于指数通常说明上涨更均衡，弱于指数则可能是少数权重股拉动。
+      </div>
+    </div>
+  );
+}
+
+async function fetchHistory(symbol: string, fromDate: string, toDate: string): Promise<HistoryPoint[]> {
+  const response = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&from=${encodeURIComponent(fromDate)}&to=${encodeURIComponent(toDate)}`, {
+    cache: 'no-store',
+  });
+  const payload = await response.json();
+  if (!response.ok || !Array.isArray(payload?.data)) {
+    throw new Error(payload?.error || `${symbol} 历史行情读取失败`);
+  }
+  return payload.data
+    .map((item: any) => ({
+      date: String(item.date).slice(0, 10),
+      close: Number(item.adjClose ?? item.close),
+    }))
+    .filter((item: HistoryPoint) => item.date && Number.isFinite(item.close) && item.close > 0)
+    .sort((a: HistoryPoint, b: HistoryPoint) => a.date.localeCompare(b.date));
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const runners = new Array(Math.min(concurrency, items.length)).fill(null).map(async () => {
+    while (cursor < items.length) {
+      const current = cursor++;
+      results[current] = await worker(items[current]);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+function BreadthTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  const rows = payload.filter((item: any) => item.value !== null && item.value !== undefined);
+  if (!rows.length) return null;
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur">
+      <div className="mb-1.5 text-xs font-black text-slate-700">{label}</div>
+      <div className="space-y-1">
+        {rows.map((item: any) => (
+          <div key={item.dataKey} className="flex items-center justify-between gap-5 text-xs">
+            <span className="inline-flex items-center gap-2 font-bold text-slate-500">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
+              {item.name}
+            </span>
+            <span className="font-mono font-black text-slate-800">{formatPercent(Number(item.value))}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, meta, tone = 'normal' }: { label: string; value: string; meta: string; tone?: 'good' | 'bad' | 'normal' }) {
+  const toneClass = tone === 'good' ? 'text-emerald-600' : tone === 'bad' ? 'text-rose-600' : 'text-slate-900';
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-slate-400">
+        <TrendingUp className="h-4 w-4" /> {label}
+      </div>
+      <div className={`mt-2 text-3xl font-black ${toneClass}`}>{value}</div>
+      <div className="mt-1 text-xs font-bold text-slate-400">{meta}</div>
+    </div>
+  );
+}
+
+function ratioTone(value: number | null): 'good' | 'bad' | 'normal' {
+  if (value === null) return 'normal';
+  if (value >= 0.6) return 'good';
+  if (value < 0.4) return 'bad';
+  return 'normal';
+}
+
+function returnTone(value: number | null): 'good' | 'bad' | 'normal' {
+  if (value === null) return 'normal';
+  if (value > 0) return 'good';
+  if (value < 0) return 'bad';
+  return 'normal';
+}
+
+function normalizeCode(value: string) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function offsetDate(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return formatDate(next);
+}
+
+function formatDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatPercent(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '--';
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${(value * 100).toFixed(2)}%`;
+}
+
+function formatNumber(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '--';
+  return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}

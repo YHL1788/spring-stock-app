@@ -1,0 +1,205 @@
+export type HistoryPoint = {
+  date: string;
+  close: number;
+};
+
+export type MarketBreadthConstituent = {
+  symbol: string;
+  name?: string;
+};
+
+export type MarketBreadthRow = {
+  symbol: string;
+  name: string;
+  latestDate: string;
+  latestClose: number;
+  previousClose: number | null;
+  ma200: number | null;
+  above200: boolean | null;
+  dayReturn: number | null;
+  error?: string;
+};
+
+export type MarketBreadthSeriesPoint = {
+  date: string;
+  above200Ratio: number | null;
+  upRatio: number | null;
+  equalWeightReturn: number | null;
+  indexReturn: number | null;
+  equalWeightMinusIndex: number | null;
+  above200Count: number;
+  upCount: number;
+  validMaCount: number;
+  validReturnCount: number;
+};
+
+export type MarketBreadthResult = {
+  calculatedAt: string;
+  latestDate: string;
+  rows: MarketBreadthRow[];
+  series: MarketBreadthSeriesPoint[];
+};
+
+type PreparedHistory = {
+  symbol: string;
+  name: string;
+  sorted: HistoryPoint[];
+  closeByDate: Map<string, number>;
+  previousCloseByDate: Map<string, number>;
+  maByDate: Map<string, number>;
+  returnByDate: Map<string, number>;
+};
+
+export function computeMarketBreadthSeries(params: {
+  constituents: MarketBreadthConstituent[];
+  histories: Record<string, HistoryPoint[]>;
+  indexHistory: HistoryPoint[];
+  window?: number;
+  maWindow?: number;
+  calculatedAt?: string;
+}): MarketBreadthResult {
+  const window = params.window ?? 250;
+  const maWindow = params.maWindow ?? 200;
+  const indexHistory = normalizeHistory(params.indexHistory);
+  const outputDates = indexHistory.map((point) => point.date).slice(-window);
+  const prepared = params.constituents.map((item) => prepareHistory(
+    item.symbol,
+    item.name || '',
+    params.histories[item.symbol] || [],
+    maWindow,
+  ));
+
+  const indexReturnByDate = buildReturnMap(indexHistory);
+  const series = outputDates.map((date) => {
+    const validMa = prepared
+      .map((item) => {
+        const close = item.closeByDate.get(date);
+        const ma = item.maByDate.get(date);
+        return close !== undefined && ma !== undefined ? close > ma : null;
+      })
+      .filter((value): value is boolean => value !== null);
+
+    const validReturns = prepared
+      .map((item) => item.returnByDate.get(date))
+      .filter((value): value is number => value !== undefined && Number.isFinite(value));
+
+    const above200Count = validMa.filter(Boolean).length;
+    const upCount = validReturns.filter((value) => value > 0).length;
+    const equalWeightReturn = validReturns.length
+      ? validReturns.reduce((sum, value) => sum + value, 0) / validReturns.length
+      : null;
+    const indexReturn = indexReturnByDate.get(date) ?? null;
+
+    return {
+      date,
+      above200Ratio: validMa.length ? above200Count / validMa.length : null,
+      upRatio: validReturns.length ? upCount / validReturns.length : null,
+      equalWeightReturn,
+      indexReturn,
+      equalWeightMinusIndex: equalWeightReturn !== null && indexReturn !== null
+        ? equalWeightReturn - indexReturn
+        : null,
+      above200Count,
+      upCount,
+      validMaCount: validMa.length,
+      validReturnCount: validReturns.length,
+    };
+  });
+
+  const latestDate = outputDates[outputDates.length - 1] || '';
+  const rows = prepared.map((item) => buildLatestRow(item, latestDate));
+
+  return {
+    calculatedAt: params.calculatedAt || new Date().toISOString(),
+    latestDate,
+    rows,
+    series,
+  };
+}
+
+function prepareHistory(symbol: string, name: string, history: HistoryPoint[], maWindow: number): PreparedHistory {
+  const sorted = normalizeHistory(history);
+  const closeByDate = new Map<string, number>();
+  const previousCloseByDate = new Map<string, number>();
+  const maByDate = new Map<string, number>();
+  const returnByDate = new Map<string, number>();
+
+  let rollingSum = 0;
+  sorted.forEach((point, index) => {
+    closeByDate.set(point.date, point.close);
+    if (index > 0) {
+      const previous = sorted[index - 1].close;
+      previousCloseByDate.set(point.date, previous);
+      if (previous > 0) returnByDate.set(point.date, point.close / previous - 1);
+    }
+
+    rollingSum += point.close;
+    if (index >= maWindow) rollingSum -= sorted[index - maWindow].close;
+    if (index >= maWindow - 1) maByDate.set(point.date, rollingSum / maWindow);
+  });
+
+  return { symbol, name, sorted, closeByDate, previousCloseByDate, maByDate, returnByDate };
+}
+
+function buildLatestRow(item: PreparedHistory, latestDate: string): MarketBreadthRow {
+  if (!item.sorted.length) {
+    return emptyRow(item.symbol, item.name, '历史行情为空');
+  }
+
+  const point = findPointOnOrBefore(item.sorted, latestDate) || item.sorted[item.sorted.length - 1];
+  const ma200 = item.maByDate.get(point.date) ?? null;
+  const previousClose = item.previousCloseByDate.get(point.date) ?? null;
+  const dayReturn = item.returnByDate.get(point.date) ?? null;
+
+  return {
+    symbol: item.symbol,
+    name: item.name,
+    latestDate: point.date,
+    latestClose: point.close,
+    previousClose,
+    ma200,
+    above200: ma200 === null ? null : point.close > ma200,
+    dayReturn,
+  };
+}
+
+function emptyRow(symbol: string, name: string, error: string): MarketBreadthRow {
+  return {
+    symbol,
+    name,
+    latestDate: '',
+    latestClose: 0,
+    previousClose: null,
+    ma200: null,
+    above200: null,
+    dayReturn: null,
+    error,
+  };
+}
+
+function buildReturnMap(history: HistoryPoint[]) {
+  const map = new Map<string, number>();
+  history.forEach((point, index) => {
+    if (index === 0) return;
+    const previous = history[index - 1].close;
+    if (previous > 0) map.set(point.date, point.close / previous - 1);
+  });
+  return map;
+}
+
+function normalizeHistory(history: HistoryPoint[]) {
+  return history
+    .map((point) => ({
+      date: String(point.date || '').slice(0, 10),
+      close: Number(point.close),
+    }))
+    .filter((point) => point.date && Number.isFinite(point.close) && point.close > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function findPointOnOrBefore(history: HistoryPoint[], date: string) {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    if (history[index].date <= date) return history[index];
+  }
+  return null;
+}

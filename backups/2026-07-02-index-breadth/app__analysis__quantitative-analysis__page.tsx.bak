@@ -1,15 +1,7 @@
-'use client';
-
-import { useState } from 'react';
-import { Activity, BarChart3, Binary, ShieldCheck, Sigma } from 'lucide-react';
+import { Activity, Binary, ShieldCheck, Sigma } from 'lucide-react';
 import TopRiskPanel from './_components/TopRiskPanel';
-import BreadthBullBearPanel from './_components/BreadthBullBearPanel';
-
-type QuantTab = 'top-risk' | 'breadth';
 
 export default function QuantitativeAnalysisPage() {
-  const [activeTab, setActiveTab] = useState<QuantTab>('top-risk');
-
   return (
     <main className="min-h-screen bg-[#f3efe6] text-slate-900">
       <div className="mx-auto max-w-[1500px] px-4 py-7 sm:px-6 lg:px-8">
@@ -30,63 +22,25 @@ export default function QuantitativeAnalysisPage() {
         </header>
 
         <nav className="mt-6 flex w-full gap-2 overflow-x-auto rounded-2xl border border-slate-900/10 bg-white/70 p-2 shadow-sm backdrop-blur">
-          <QuantNavButton
-            active={activeTab === 'top-risk'}
-            icon={<Activity size={17} />}
-            title="短期拥挤与顶部风险"
-            subtitle="美股 5-20 日风险确认模型"
-            onClick={() => setActiveTab('top-risk')}
-          />
-          <QuantNavButton
-            active={activeTab === 'breadth'}
-            icon={<BarChart3 size={17} />}
-            title="广度牛熊分析"
-            subtitle="200日线 / 上涨家数 / 等权强弱"
-            onClick={() => setActiveTab('breadth')}
-          />
+          <button className="min-w-[260px] rounded-xl bg-[#102a2a] px-4 py-3 text-left text-white shadow-sm">
+            <span className="flex items-center gap-2 text-sm font-bold"><Activity size={17} />短期拥挤与顶部风险</span>
+            <span className="mt-1 block text-[11px] text-slate-300">美股 5–20 日风险确认模型</span>
+          </button>
           <div className="ml-auto hidden items-center gap-2 px-4 text-xs text-slate-500 lg:flex">
             <Binary size={17} className="text-teal-700" />
-            {activeTab === 'top-risk' ? 'JunQuant v2 · 可复现公开数据模型' : 'SIP Breadth · 自定义指数股票池'}
+            JunQuant v2 · 可复现公开数据模型
           </div>
         </nav>
 
         <section className="mt-6 rounded-[28px] border border-slate-900/10 bg-white/45 p-3 shadow-sm sm:p-5 lg:p-6">
-          {activeTab === 'top-risk' ? <TopRiskPanel /> : <BreadthBullBearPanel />}
+          <TopRiskPanel />
         </section>
 
         <div className="mt-5 flex items-start gap-2 rounded-2xl border border-slate-900/10 bg-white/55 px-5 py-4 text-xs leading-5 text-slate-500">
           <ShieldCheck size={16} className="mt-0.5 shrink-0 text-teal-700" />
-          本页模型用于研究和风险提示，不替代独立投资判断。广度分析依赖“开发者选项 / 指数股票池”的成分股定义。
+          本页模型用于研究和风险提示，不替代独立投资判断。上游核心算法依照 MIT License 使用并保留原作者声明。
         </div>
       </div>
     </main>
-  );
-}
-
-function QuantNavButton({
-  active,
-  icon,
-  title,
-  subtitle,
-  onClick,
-}: {
-  active: boolean;
-  icon: React.ReactNode;
-  title: string;
-  subtitle: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`min-w-[260px] rounded-xl px-4 py-3 text-left shadow-sm transition ${
-        active
-          ? 'bg-[#102a2a] text-white'
-          : 'bg-white text-slate-700 hover:bg-slate-50'
-      }`}
-    >
-      <span className="flex items-center gap-2 text-sm font-bold">{icon}{title}</span>
-      <span className={`mt-1 block text-[11px] ${active ? 'text-slate-300' : 'text-slate-400'}`}>{subtitle}</span>
-    </button>
   );
 }
