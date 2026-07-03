@@ -23,7 +23,6 @@ import {
   type CashTradeRecord,
   type InitialPortfolioState,
 } from '@/app/book/SP_wjhh1/lib/portfolioNavEngine';
-import styles from './dashboardDesk.module.css';
 
 const NAV_CONFIG_COLLECTION = 'sip_holding_summary_nav_config';
 const CASH_TRADE_COLLECTION = 'sip_trade_cash';
@@ -404,8 +403,8 @@ export default function SPWjhh1Dashboard() {
   const logsToShow = activityLogs.length ? activityLogs : defaultLogs;
 
   return (
-    <div className={`${styles.desk} p-8 max-w-7xl mx-auto space-y-8 relative`}>
-      <div className={styles.parchmentHero}>
+    <div className="p-8 max-w-7xl mx-auto space-y-8 relative">
+      <div>
         <h1 className="text-3xl font-bold text-gray-900">春天稳健混合1号基金</h1>
         <p className="mt-2 text-gray-600">
           欢迎回来。以下是今日的投资组合概况与系统状态。
@@ -413,7 +412,7 @@ export default function SPWjhh1Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <div className={`${styles.metricCard} ${styles.vaultCard} p-6 rounded-xl flex flex-col`}>
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col">
           <div className="text-sm text-gray-500 font-medium mb-2 flex items-center gap-2">
             <Wallet size={16} className="text-blue-500" />
             总资产规模(AUM)
@@ -424,7 +423,7 @@ export default function SPWjhh1Dashboard() {
           </div>
         </div>
 
-        <div className={`${styles.metricCard} ${styles.gaugeCard} p-6 rounded-xl flex flex-col`}>
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col">
           <div className="text-sm text-gray-500 font-medium mb-2 flex items-center gap-2">
             <Activity size={16} className="text-purple-500" />
             净值盈亏
@@ -437,7 +436,7 @@ export default function SPWjhh1Dashboard() {
           </div>
         </div>
 
-        <div className={`${styles.metricCard} ${styles.dispatchCard} p-6 rounded-xl flex flex-col`}>
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col">
           <div className="text-sm text-gray-500 font-medium mb-2 flex items-center gap-2">
             <BarChart3 size={16} className="text-indigo-500" />
             暴露头寸数
@@ -446,8 +445,7 @@ export default function SPWjhh1Dashboard() {
           <div className="text-xs text-gray-400 mt-2">DQ-AQ / FCN / Option / Spot 去重合并</div>
         </div>
 
-        <div className={`${styles.metricCard} ${styles.warningCard} p-6 rounded-xl flex flex-col`}>
-          <span className={styles.waxSeal} aria-hidden="true" />
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col">
           <div className="text-sm text-gray-500 font-medium mb-2 flex items-center gap-2">
             <AlertTriangle size={16} className="text-red-500" />
             风控警报
@@ -464,13 +462,13 @@ export default function SPWjhh1Dashboard() {
         </div>
       </div>
 
-      <h2 className={`${styles.shelfTitle} text-xl font-bold pt-4`}>快速进入模块</h2>
-      <div className={`${styles.bookShelf} grid grid-cols-1 md:grid-cols-3 gap-8`}>
+      <h2 className="text-xl font-bold text-gray-800 pt-4">快速进入模块</h2>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
         <Link
           href="/book/SP_wjhh1/trade/fcn"
-          className={`${styles.bookCard} ${styles.tradeBook} group relative p-8 rounded-2xl transition-all duration-300`}
+          className="group relative bg-gradient-to-br from-blue-50 to-white p-8 rounded-2xl border border-blue-100 shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-1"
         >
-          <div className={`${styles.bookIcon} absolute top-6 right-6 p-3 rounded-full transition-colors`}>
+          <div className="absolute top-6 right-6 bg-blue-100 p-3 rounded-full text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors">
             <TrendingUp size={24} />
           </div>
           <h3 className="text-xl font-bold text-gray-900 mb-2">交易管理</h3>
@@ -484,9 +482,9 @@ export default function SPWjhh1Dashboard() {
 
         <Link
           href="/book/SP_wjhh1/holdings/summary"
-          className={`${styles.bookCard} ${styles.holdingsBook} group relative p-8 rounded-2xl transition-all duration-300`}
+          className="group relative bg-gradient-to-br from-purple-50 to-white p-8 rounded-2xl border border-purple-100 shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-1"
         >
-          <div className={`${styles.bookIcon} absolute top-6 right-6 p-3 rounded-full transition-colors`}>
+          <div className="absolute top-6 right-6 bg-purple-100 p-3 rounded-full text-purple-600 group-hover:bg-purple-600 group-hover:text-white transition-colors">
             <Briefcase size={24} />
           </div>
           <h3 className="text-xl font-bold text-gray-900 mb-2">持仓分析</h3>
@@ -500,9 +498,9 @@ export default function SPWjhh1Dashboard() {
 
         <Link
           href="/book/SP_wjhh1/risk/exposure-underlying"
-          className={`${styles.bookCard} ${styles.riskBook} group relative p-8 rounded-2xl transition-all duration-300`}
+          className="group relative bg-gradient-to-br from-red-50 to-white p-8 rounded-2xl border border-red-100 shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-1"
         >
-          <div className={`${styles.bookIcon} absolute top-6 right-6 p-3 rounded-full transition-colors`}>
+          <div className="absolute top-6 right-6 bg-red-100 p-3 rounded-full text-red-600 group-hover:bg-red-600 group-hover:text-white transition-colors">
             <ShieldAlert size={24} />
           </div>
           <h3 className="text-xl font-bold text-gray-900 mb-2">风控中心</h3>
@@ -515,7 +513,7 @@ export default function SPWjhh1Dashboard() {
         </Link>
       </div>
 
-      <div className={`${styles.timetable} rounded-xl overflow-hidden`}>
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
           <h3 className="font-semibold text-gray-800">最近活动日志</h3>
         </div>

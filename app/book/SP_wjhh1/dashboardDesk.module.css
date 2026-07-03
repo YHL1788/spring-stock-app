@@ -1,0 +1,227 @@
+.desk {
+  --desk-wood: #2a1b10;
+  --desk-green: #18352f;
+  --desk-paper: #f4ead6;
+  --desk-paper-deep: #dfc79c;
+  --desk-brass: #b98235;
+  --desk-gold: #e0bc76;
+  --desk-ink: #24180d;
+  color: var(--desk-ink);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 13% 8%, rgba(224, 188, 118, 0.2), transparent 18rem),
+    radial-gradient(circle at 86% 16%, rgba(24, 53, 47, 0.18), transparent 20rem),
+    linear-gradient(90deg, rgba(255, 236, 190, 0.04) 0 1px, transparent 1px 34px),
+    linear-gradient(135deg, #3b2413 0%, var(--desk-wood) 42%, #21140b 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 242, 202, 0.08);
+}
+
+.parchmentHero {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(185, 130, 53, 0.42);
+  border-radius: 30px;
+  padding: 30px 34px;
+  background:
+    radial-gradient(circle at 92% 10%, rgba(185, 130, 53, 0.28), transparent 9rem),
+    linear-gradient(135deg, rgba(255, 249, 232, 0.98), rgba(226, 200, 151, 0.94));
+  box-shadow: 0 28px 70px rgba(14, 8, 4, 0.32);
+}
+
+.parchmentHero::before {
+  content: "The Spring Ledger House";
+  position: absolute;
+  right: 28px;
+  top: 24px;
+  color: rgba(74, 44, 17, 0.2);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+.parchmentHero::after {
+  content: "";
+  position: absolute;
+  right: -54px;
+  bottom: -72px;
+  width: 210px;
+  height: 210px;
+  border-radius: 999px;
+  border: 1px solid rgba(88, 52, 18, 0.18);
+  background:
+    radial-gradient(circle, transparent 0 38%, rgba(88, 52, 18, 0.09) 39% 40%, transparent 41%),
+    conic-gradient(from 20deg, transparent 0 14deg, rgba(88, 52, 18, 0.12) 14deg 16deg, transparent 16deg 32deg);
+}
+
+.parchmentHero h1,
+.parchmentHero p {
+  position: relative;
+  z-index: 1;
+}
+
+.metricCard {
+  position: relative;
+  min-height: 156px;
+  overflow: hidden;
+  border: 1px solid rgba(128, 82, 30, 0.28);
+  background: linear-gradient(135deg, rgba(255, 250, 238, 0.98), rgba(230, 203, 154, 0.92));
+  box-shadow: 0 20px 44px rgba(18, 10, 5, 0.18);
+}
+
+.metricCard::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 13px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 35% 35%, #fff2bc, var(--desk-brass) 62%, #6b3d16);
+}
+
+.metricCard::after {
+  content: "";
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  width: 58px;
+  height: 58px;
+  opacity: 0.2;
+  pointer-events: none;
+}
+
+.vaultCard::after {
+  border: 2px double #6b3d16;
+  border-radius: 9px;
+  background:
+    linear-gradient(90deg, transparent 0 43%, #6b3d16 44% 56%, transparent 57%),
+    linear-gradient(180deg, transparent 0 43%, #6b3d16 44% 56%, transparent 57%);
+}
+
+.gaugeCard::after {
+  border-radius: 999px;
+  border: 8px solid rgba(24, 53, 47, 0.72);
+  background:
+    conic-gradient(from 230deg, #0f8a5f 0 70deg, #c47a21 70deg 110deg, #b3312c 110deg 148deg, transparent 148deg),
+    radial-gradient(circle, rgba(255, 250, 238, 0.9) 0 43%, transparent 44%);
+}
+
+.dispatchCard {
+  background:
+    repeating-linear-gradient(180deg, rgba(33, 20, 11, 0.06) 0 8px, transparent 8px 16px),
+    linear-gradient(135deg, rgba(255, 250, 238, 0.98), rgba(230, 203, 154, 0.92));
+}
+
+.dispatchCard::after {
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, #18352f, #21140b),
+    repeating-linear-gradient(90deg, transparent 0 8px, rgba(224, 188, 118, 0.4) 8px 9px);
+  box-shadow: inset 0 0 0 1px rgba(224, 188, 118, 0.5);
+}
+
+.warningCard {
+  border-color: rgba(179, 49, 44, 0.28);
+}
+
+.waxSeal {
+  position: absolute;
+  right: 16px;
+  top: 16px;
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  opacity: 0.18;
+  background:
+    radial-gradient(circle at 35% 28%, rgba(255, 255, 255, 0.28), transparent 28%),
+    radial-gradient(circle, #b3312c, #5d1712);
+  box-shadow: 0 8px 18px rgba(93, 23, 18, 0.28);
+}
+
+.shelfTitle {
+  color: #f4ead6;
+  letter-spacing: 0.03em;
+}
+
+.bookShelf {
+  perspective: 1200px;
+}
+
+.bookCard {
+  min-height: 190px;
+  overflow: hidden;
+  border: 1px solid rgba(224, 188, 118, 0.26);
+  box-shadow:
+    inset 10px 0 0 rgba(16, 9, 4, 0.24),
+    0 22px 48px rgba(14, 8, 4, 0.3);
+  transform-origin: left center;
+}
+
+.bookCard::before {
+  content: "";
+  position: absolute;
+  left: 22px;
+  top: 18px;
+  bottom: 18px;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, transparent, rgba(244, 234, 214, 0.5), transparent);
+}
+
+.bookCard:hover {
+  transform: translateY(-5px) rotateY(-4deg);
+}
+
+.tradeBook {
+  background: linear-gradient(135deg, #6b2f22, #a9652d);
+}
+
+.holdingsBook {
+  background: linear-gradient(135deg, #18352f, #76562a);
+}
+
+.riskBook {
+  background: linear-gradient(135deg, #24394a, #8a3c29);
+}
+
+.bookCard h3,
+.bookCard p,
+.bookCard span {
+  color: #fff1c7;
+}
+
+.bookIcon {
+  color: #fff1c7;
+  background: linear-gradient(135deg, #e0bc76, #8a551e);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 12px 22px rgba(15, 8, 4, 0.25);
+}
+
+.timetable {
+  border: 1px solid rgba(185, 130, 53, 0.34);
+  background:
+    repeating-linear-gradient(180deg, rgba(255, 250, 238, 0) 0 42px, rgba(128, 82, 30, 0.06) 42px 43px),
+    linear-gradient(180deg, rgba(255, 250, 238, 0.98), rgba(230, 203, 154, 0.92));
+  box-shadow: 0 22px 50px rgba(14, 8, 4, 0.22);
+}
+
+.timetable > div:first-child {
+  background: linear-gradient(180deg, #18352f, #21140b);
+  border-color: rgba(224, 188, 118, 0.34);
+}
+
+.timetable h3 {
+  color: #f4ead6;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 768px) {
+  .desk {
+    border-radius: 0;
+  }
+
+  .parchmentHero {
+    padding: 24px;
+  }
+}

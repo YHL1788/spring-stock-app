@@ -9,7 +9,7 @@ import {
   ShieldAlert,
   RefreshCw
 } from 'lucide-react';
-import styles from './ledgerHouseShell.module.css';
+import styles from './spwTheme.module.css';
 
 export default function SPWjhh1Layout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -18,26 +18,34 @@ export default function SPWjhh1Layout({ children }: { children: React.ReactNode 
   const isActive = (path: string) => pathname.startsWith(path);
 
   return (
-    <div className={`${styles.house} flex flex-col h-screen font-sans text-gray-900`}>
+    <div className={`${styles.shell} flex flex-col h-screen font-sans text-gray-900`}>
       {/* 顶部 Header */}
-      <header className={`${styles.signboard} sticky top-0 z-10 flex-shrink-0`}>
+      <header className={styles.topbar}>
         <div className="px-6 h-16 flex items-center justify-between">
           <Link href="/book/SP_wjhh1" className="flex items-center gap-2 group">
-            <div className={`${styles.brandSeal} p-2 rounded-lg shadow-sm`}>
+            <div className={`${styles.brandMark} p-2 rounded-lg`}>
               <LayoutDashboard className="text-white w-5 h-5" />
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-gray-800 group-hover:text-blue-600 transition-colors">SP_wjhh1 管理系统</h1>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight text-[#f6d892] transition-colors group-hover:text-white">SP_wjhh1 管理系统</h1>
+              <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#b88942]">Brass Quant Terminal</div>
+            </div>
           </Link>
+
+          <div className={styles.officePlaque} aria-hidden="true">
+            <span>Spring Ledger House</span>
+            <span>HongKong Desk · 2024</span>
+          </div>
         </div>
 
         {/* 一级导航栏 (Tabs) */}
-        <nav className={`${styles.mainNav} flex px-6 gap-8`}>
+        <nav className={styles.navBar}>
           <Link
             href="/book/SP_wjhh1/trade/fcn"
             className={`pb-3 pt-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
               isActive('/book/SP_wjhh1/trade')
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                ? 'border-[#d6aa5b] text-[#f6d892]'
+                : 'border-transparent text-[#d6c3a2] hover:text-[#f6d892] hover:border-[#9d7040]'
             }`}
           >
             <TrendingUp size={16} />
@@ -48,8 +56,8 @@ export default function SPWjhh1Layout({ children }: { children: React.ReactNode 
             href="/book/SP_wjhh1/holdings/summary"
             className={`pb-3 pt-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
               isActive('/book/SP_wjhh1/holdings')
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                ? 'border-[#d6aa5b] text-[#f6d892]'
+                : 'border-transparent text-[#d6c3a2] hover:text-[#f6d892] hover:border-[#9d7040]'
             }`}
           >
             <Briefcase size={16} />
@@ -60,8 +68,8 @@ export default function SPWjhh1Layout({ children }: { children: React.ReactNode 
             href="/book/SP_wjhh1/risk/exposure-underlying"
             className={`pb-3 pt-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
               isActive('/book/SP_wjhh1/risk')
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                ? 'border-[#d6aa5b] text-[#f6d892]'
+                : 'border-transparent text-[#d6c3a2] hover:text-[#f6d892] hover:border-[#9d7040]'
             }`}
           >
             <ShieldAlert size={16} />
@@ -72,8 +80,8 @@ export default function SPWjhh1Layout({ children }: { children: React.ReactNode 
             href="/book/SP_wjhh1/refresh-center"
             className={`pb-3 pt-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
               isActive('/book/SP_wjhh1/refresh-center')
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                ? 'border-[#d6aa5b] text-[#f6d892]'
+                : 'border-transparent text-[#d6c3a2] hover:text-[#f6d892] hover:border-[#9d7040]'
             }`}
           >
             <RefreshCw size={16} />
@@ -83,7 +91,7 @@ export default function SPWjhh1Layout({ children }: { children: React.ReactNode 
       </header>
 
       {/* 子页面内容渲染区域 */}
-      <main className={`${styles.mainStage} flex-1 overflow-hidden`}>
+      <main className={styles.mainPane}>
         {children}
       </main>
     </div>

@@ -1,0 +1,118 @@
+.station {
+  --station-ink: #24180d;
+  --station-paper: #f4ead6;
+  --station-brass: #b98235;
+  --station-gold: #e0bc76;
+  --station-green: #18352f;
+  min-height: 100%;
+  color: var(--station-ink);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(185, 130, 53, 0.16), transparent 18rem),
+    linear-gradient(135deg, rgba(244, 234, 214, 0.92), rgba(223, 199, 156, 0.72));
+}
+
+.dispatchBoard {
+  position: relative;
+  border-right: 1px solid rgba(185, 130, 53, 0.36);
+  background:
+    linear-gradient(90deg, rgba(14, 8, 4, 0.34) 0 10px, transparent 10px),
+    linear-gradient(180deg, #21140b 0%, #18352f 48%, #2a1b10 100%);
+  box-shadow:
+    inset -1px 0 0 rgba(224, 188, 118, 0.18),
+    18px 0 40px rgba(42, 27, 16, 0.08);
+}
+
+.dispatchBoard::before {
+  content: "DISPATCH";
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: block;
+  margin: 0 0 10px;
+  padding: 12px 16px 10px 28px;
+  border-bottom: 1px solid rgba(224, 188, 118, 0.24);
+  color: rgba(224, 188, 118, 0.7);
+  background: rgba(14, 8, 4, 0.42);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.28em;
+}
+
+.boardTitle {
+  color: var(--station-gold);
+}
+
+.platformTicket {
+  position: relative;
+  margin-bottom: 7px;
+  border: 1px solid transparent;
+  overflow: hidden;
+}
+
+.platformTicket::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.38;
+  transform: translateY(-50%);
+}
+
+.idlePlatform {
+  color: #d8c59b;
+  background:
+    repeating-linear-gradient(90deg, rgba(224, 188, 118, 0.08) 0 1px, transparent 1px 10px),
+    rgba(244, 234, 214, 0.05);
+}
+
+.idlePlatform:hover {
+  color: #fff1c7;
+  border-color: rgba(224, 188, 118, 0.26);
+  background:
+    repeating-linear-gradient(90deg, rgba(224, 188, 118, 0.12) 0 1px, transparent 1px 10px),
+    rgba(224, 188, 118, 0.12);
+}
+
+.activePlatform {
+  color: #fff4cc;
+  border-color: rgba(224, 188, 118, 0.55);
+  background:
+    linear-gradient(90deg, rgba(185, 130, 53, 0.36), rgba(244, 234, 214, 0.12)),
+    rgba(24, 53, 47, 0.58);
+  box-shadow:
+    inset 4px 0 0 var(--station-brass),
+    0 10px 20px rgba(14, 8, 4, 0.18);
+}
+
+.platformContent {
+  position: relative;
+  background:
+    radial-gradient(circle at 94% 7%, rgba(185, 130, 53, 0.14), transparent 14rem),
+    linear-gradient(180deg, rgba(250, 244, 232, 0.95), rgba(238, 224, 196, 0.9));
+}
+
+.platformContent::before {
+  content: "";
+  position: absolute;
+  inset: 18px;
+  border: 1px solid rgba(185, 130, 53, 0.12);
+  border-radius: 24px;
+  pointer-events: none;
+}
+
+@media (max-width: 768px) {
+  .station {
+    flex-direction: column;
+  }
+
+  .dispatchBoard {
+    width: 100%;
+    max-height: 18rem;
+    border-right: 0;
+    border-bottom: 1px solid rgba(185, 130, 53, 0.36);
+  }
+}

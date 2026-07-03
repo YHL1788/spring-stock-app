@@ -1,0 +1,88 @@
+.boilerRoom {
+  background:
+    radial-gradient(circle at 90% 8%, rgba(196, 122, 33, 0.15), transparent 18rem),
+    linear-gradient(180deg, #24180d, #18352f);
+}
+
+.boilerHero {
+  border: 1px solid rgba(224, 188, 118, 0.28);
+  border-radius: 26px;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 88% 12%, rgba(224, 188, 118, 0.16), transparent 12rem),
+    linear-gradient(135deg, rgba(24, 53, 47, 0.96), rgba(42, 27, 16, 0.96));
+  box-shadow: 0 24px 60px rgba(14, 8, 4, 0.32);
+}
+
+.boilerHero h1 {
+  color: #f4ead6;
+}
+
+.boilerHero p {
+  color: #d8c59b;
+}
+
+.pressureBadge {
+  border: 1px solid rgba(224, 188, 118, 0.32);
+  color: #e0bc76;
+  background: rgba(244, 234, 214, 0.07);
+}
+
+.thresholdTag {
+  color: #e0bc76;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.dialCard {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(224, 188, 118, 0.28);
+  background:
+    radial-gradient(circle at 88% 20%, rgba(224, 188, 118, 0.16), transparent 5rem),
+    linear-gradient(135deg, #f4ead6, #dfc79c);
+  box-shadow: 0 18px 42px rgba(14, 8, 4, 0.22);
+}
+
+.dialCard::after {
+  content: "";
+  position: absolute;
+  right: -18px;
+  bottom: -24px;
+  width: 86px;
+  height: 86px;
+  border-radius: 999px;
+  border: 9px solid rgba(24, 53, 47, 0.2);
+}
+
+.goodDial {
+  border-color: rgba(15, 138, 95, 0.28);
+}
+
+.warnDial {
+  border-color: rgba(196, 122, 33, 0.34);
+}
+
+.pipePanel {
+  border: 1px solid rgba(224, 188, 118, 0.24);
+  background: linear-gradient(180deg, rgba(244, 234, 214, 0.98), rgba(223, 199, 156, 0.94));
+  box-shadow: 0 20px 46px rgba(14, 8, 4, 0.2);
+}
+
+.pipeHeader {
+  border-bottom: 1px solid rgba(128, 82, 30, 0.18);
+  background:
+    linear-gradient(90deg, rgba(24, 53, 47, 0.94), rgba(42, 27, 16, 0.9));
+}
+
+.pipeHeader h2 {
+  color: #f4ead6;
+}
+
+.pipeHeader p {
+  color: #d8c59b;
+}
+
+.pipeHeader a {
+  background: linear-gradient(135deg, #b98235, #6b3d16);
+}

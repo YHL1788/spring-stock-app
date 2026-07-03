@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { FileText } from 'lucide-react';
-import styles from './tradeStation.module.css';
 
 // 定义交易孙页面列表
 const tradeItems = [
@@ -21,11 +20,11 @@ export default function TradeLayout({ children }: { children: React.ReactNode })
   const pathname = usePathname();
 
   return (
-    <div className={`${styles.station} flex h-full`}>
+    <div className="flex h-full">
       {/* 左侧侧边栏 */}
-      <aside className={`${styles.dispatchBoard} w-64 overflow-y-auto flex-shrink-0`}>
+      <aside className="w-64 bg-white border-r border-gray-200 overflow-y-auto flex-shrink-0">
         <div className="p-4">
-          <h2 className={`${styles.boardTitle} text-xs font-bold uppercase tracking-wider mb-3 px-2 flex items-center gap-2`}>
+          <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 px-2 flex items-center gap-2">
             <FileText size={12} />
             交易录入类型
           </h2>
@@ -38,10 +37,10 @@ export default function TradeLayout({ children }: { children: React.ReactNode })
                 <Link
                   key={item.path}
                   href={href}
-                  className={`${styles.platformTicket} block w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  className={`block w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                     isActive
-                      ? styles.activePlatform
-                      : styles.idlePlatform
+                      ? 'bg-blue-50 text-blue-700 border border-blue-100'
+                      : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900 border border-transparent'
                   }`}
                 >
                   {item.label}
@@ -53,7 +52,7 @@ export default function TradeLayout({ children }: { children: React.ReactNode })
       </aside>
 
       {/* 右侧内容区域 */}
-      <div className={`${styles.platformContent} flex-1 p-8 overflow-y-auto`}>
+      <div className="flex-1 p-8 bg-gray-50 overflow-y-auto">
         {children}
       </div>
     </div>

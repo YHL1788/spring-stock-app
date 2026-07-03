@@ -1,0 +1,75 @@
+.chartRoom {
+  background:
+    radial-gradient(circle at 86% 12%, rgba(45, 95, 115, 0.16), transparent 18rem),
+    linear-gradient(180deg, #eef1e7, #d9c7a6);
+}
+
+.compassRail {
+  border-right: 1px solid rgba(45, 95, 115, 0.28);
+  background:
+    radial-gradient(circle at 50% 22%, transparent 0 46px, rgba(45, 95, 115, 0.12) 47px 48px, transparent 49px),
+    linear-gradient(180deg, #102923, #203a43 58%, #2a1b10);
+  color: #f4ead6;
+}
+
+.railTitle {
+  color: #e0bc76;
+}
+
+.compassTab {
+  border: 1px solid transparent;
+  position: relative;
+}
+
+.compassTab::after {
+  content: "";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-top: 1px solid currentColor;
+  border-right: 1px solid currentColor;
+  transform: translateY(-50%) rotate(45deg);
+  opacity: 0.45;
+}
+
+.idleTab {
+  color: #d8c59b;
+  background: rgba(244, 234, 214, 0.05);
+}
+
+.idleTab:hover {
+  color: #fff1c7;
+  border-color: rgba(224, 188, 118, 0.24);
+}
+
+.activeTab {
+  color: #fff1c7;
+  border-color: rgba(224, 188, 118, 0.5);
+  background:
+    linear-gradient(90deg, rgba(45, 95, 115, 0.72), rgba(185, 130, 53, 0.28));
+  box-shadow: inset 4px 0 0 #e0bc76;
+}
+
+.chartContent {
+  position: relative;
+  background:
+    linear-gradient(90deg, rgba(45, 95, 115, 0.06) 0 1px, transparent 1px 42px),
+    linear-gradient(180deg, rgba(250, 244, 232, 0.96), rgba(225, 214, 192, 0.94));
+}
+
+.chartContent::before {
+  content: "";
+  position: absolute;
+  right: 26px;
+  bottom: 22px;
+  width: 150px;
+  height: 150px;
+  border-radius: 999px;
+  border: 1px solid rgba(45, 95, 115, 0.14);
+  background:
+    radial-gradient(circle, transparent 0 43%, rgba(45, 95, 115, 0.08) 44% 45%, transparent 46%),
+    conic-gradient(from 15deg, transparent 0 14deg, rgba(45, 95, 115, 0.09) 14deg 16deg, transparent 16deg 32deg);
+  pointer-events: none;
+}

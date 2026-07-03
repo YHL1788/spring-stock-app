@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { PieChart, DollarSign, Layers } from 'lucide-react';
-import styles from './holdingsLedger.module.css';
 
 // 定义持仓孙页面列表
 const holdingsItems = [
@@ -21,10 +20,10 @@ export default function HoldingsLayout({ children }: { children: React.ReactNode
   const pathname = usePathname();
 
   return (
-    <div className={`${styles.ledgerRoom} flex h-full`}>
-      <aside className={`${styles.ledgerShelf} w-64 overflow-y-auto flex-shrink-0`}>
+    <div className="flex h-full">
+      <aside className="w-64 bg-white border-r border-gray-200 overflow-y-auto flex-shrink-0">
         <div className="p-4">
-          <h2 className={`${styles.shelfTitle} text-xs font-bold uppercase tracking-wider mb-3 px-2 flex items-center gap-2`}>
+          <h2 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 px-2 flex items-center gap-2">
             <Layers size={12} />
             资产分布
           </h2>
@@ -37,10 +36,10 @@ export default function HoldingsLayout({ children }: { children: React.ReactNode
                 <Link
                   key={item.path}
                   href={href}
-                  className={`${styles.ledgerBook} flex items-center gap-2 w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  className={`flex items-center gap-2 w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                     isActive
-                      ? styles.activeBook
-                      : styles.idleBook
+                      ? 'bg-blue-50 text-blue-700 border border-blue-100'
+                      : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900 border border-transparent'
                   }`}
                 >
                   {item.icon ? <item.icon size={16} /> : <Layers size={16} />}
@@ -52,7 +51,7 @@ export default function HoldingsLayout({ children }: { children: React.ReactNode
         </div>
       </aside>
 
-      <div className={`${styles.ledgerContent} flex-1 p-8 overflow-y-auto`}>
+      <div className="flex-1 p-8 bg-gray-50 overflow-y-auto">
         {children}
       </div>
     </div>

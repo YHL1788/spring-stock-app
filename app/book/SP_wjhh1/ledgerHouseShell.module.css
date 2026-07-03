@@ -1,0 +1,112 @@
+.house {
+  background:
+    radial-gradient(circle at 8% 0%, rgba(224, 188, 118, 0.14), transparent 20rem),
+    linear-gradient(180deg, #f7efe0 0%, #eadcc3 100%);
+}
+
+.signboard {
+  border-bottom: 1px solid rgba(224, 188, 118, 0.42);
+  background:
+    radial-gradient(circle at 82% 0%, rgba(185, 130, 53, 0.18), transparent 18rem),
+    linear-gradient(90deg, #111f1c, #2a1b10);
+  color: #f4ead6;
+  box-shadow: 0 16px 40px rgba(42, 27, 16, 0.18);
+}
+
+.brandSeal {
+  position: relative;
+  background: linear-gradient(135deg, #e0bc76, #9a6327 58%, #5b3213);
+  border: 1px solid rgba(255, 241, 199, 0.38);
+}
+
+.brandSeal::after {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 241, 199, 0.35);
+}
+
+.signboard h1 {
+  color: #f4ead6;
+}
+
+.houseMark {
+  color: #b98235;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+}
+
+.locationPlaque {
+  display: none;
+  border: 1px solid rgba(224, 188, 118, 0.34);
+  border-radius: 999px;
+  padding: 7px 12px;
+  color: #e0bc76;
+  background: rgba(244, 234, 214, 0.06);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.mainNav {
+  position: relative;
+}
+
+.mainNav a {
+  color: #d7c39b;
+  border-color: transparent;
+}
+
+.mainNav a:hover {
+  color: #fff1c7;
+  border-color: rgba(224, 188, 118, 0.42);
+}
+
+.mainNav a[class*="text-blue-600"] {
+  color: #fff1c7;
+  border-color: #e0bc76;
+}
+
+.mainNav::after {
+  content: "";
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(224, 188, 118, 0.46), transparent);
+}
+
+.navTicket {
+  border-color: transparent;
+}
+
+.navIdle {
+  color: #d7c39b;
+}
+
+.navIdle:hover {
+  color: #fff1c7;
+  border-color: rgba(224, 188, 118, 0.42);
+}
+
+.navActive {
+  color: #fff1c7;
+  border-color: #e0bc76;
+}
+
+.mainStage {
+  background:
+    radial-gradient(circle at 100% 0%, rgba(185, 130, 53, 0.1), transparent 22rem),
+    #f3ead9;
+}
+
+@media (min-width: 768px) {
+  .locationPlaque {
+    display: block;
+  }
+}

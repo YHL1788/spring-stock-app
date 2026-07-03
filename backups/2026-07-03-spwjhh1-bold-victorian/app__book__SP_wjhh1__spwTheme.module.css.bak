@@ -1,0 +1,341 @@
+.shell {
+  --spw-ink: #24180d;
+  --spw-muted: #735f43;
+  --spw-brass: #b98235;
+  --spw-brass-soft: #e0bc76;
+  --spw-green: #17342e;
+  --spw-paper: #f7edd9;
+  --spw-paper-deep: #ead7b6;
+  --spw-line: rgba(122, 83, 36, 0.26);
+  min-height: 100vh;
+  color: var(--spw-ink);
+  background:
+    radial-gradient(circle at 12% 10%, rgba(214, 170, 91, 0.28), transparent 28rem),
+    radial-gradient(circle at 92% 0%, rgba(64, 48, 27, 0.42), transparent 24rem),
+    linear-gradient(135deg, rgba(108, 74, 34, 0.12) 0 1px, transparent 1px 22px),
+    linear-gradient(180deg, #f5eddf 0%, #e9ddc8 48%, #d7c6aa 100%);
+}
+
+.shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.22;
+  background:
+    radial-gradient(circle at 88% 16%, transparent 0 3.2rem, rgba(84, 59, 31, 0.2) 3.25rem 3.32rem, transparent 3.38rem),
+    radial-gradient(circle at 88% 16%, transparent 0 5.1rem, rgba(84, 59, 31, 0.15) 5.15rem 5.25rem, transparent 5.3rem),
+    radial-gradient(circle at 7% 86%, transparent 0 4rem, rgba(84, 59, 31, 0.14) 4.05rem 4.16rem, transparent 4.22rem);
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(218, 177, 100, 0.42);
+  background:
+    linear-gradient(90deg, rgba(18, 28, 24, 0.98), rgba(36, 26, 15, 0.96)),
+    radial-gradient(circle at 75% 0%, rgba(185, 130, 53, 0.24), transparent 20rem);
+  box-shadow: 0 16px 36px rgba(48, 34, 17, 0.18);
+}
+
+.brandMark {
+  background: linear-gradient(135deg, #efcf8a, #a76923 58%, #56300f);
+  border: 1px solid rgba(255, 230, 175, 0.45);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.4), 0 10px 24px rgba(0,0,0,0.25);
+}
+
+.navBar {
+  display: flex;
+  gap: 1.75rem;
+  padding: 0 1.5rem;
+  position: relative;
+}
+
+.navBar::after {
+  content: "";
+  position: absolute;
+  left: 1.5rem;
+  right: 1.5rem;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(214, 170, 91, 0.42), transparent);
+}
+
+.mainPane {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  overflow: hidden;
+}
+
+.sideShell {
+  width: 16rem;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid rgba(129, 91, 43, 0.28);
+  background:
+    linear-gradient(180deg, rgba(255, 249, 235, 0.92), rgba(226, 206, 168, 0.82)),
+    linear-gradient(90deg, rgba(185, 130, 53, 0.1), transparent);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.45);
+}
+
+.contentPane {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2rem;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(185, 130, 53, 0.15), transparent 18rem),
+    transparent;
+}
+
+.subnavTitle {
+  color: #7b5b2f;
+  letter-spacing: 0.18em;
+}
+
+.shell :global(.bg-white) {
+  background-color: rgba(255, 250, 238, 0.92);
+}
+
+.shell :global(.bg-gray-50) {
+  background-color: rgba(246, 235, 214, 0.82);
+}
+
+.shell :global(.border-gray-200),
+.shell :global(.border-gray-300) {
+  border-color: rgba(129, 91, 43, 0.28);
+}
+
+.shell :global(.shadow),
+.shell :global(.shadow-sm) {
+  box-shadow: 0 14px 34px rgba(76, 50, 22, 0.09);
+}
+
+.shell :global(.rounded-xl),
+.shell :global(.rounded-lg),
+.shell :global(.rounded-2xl),
+.shell :global(.rounded-3xl) {
+  border-color: rgba(129, 91, 43, 0.26);
+}
+
+.shell :global(table thead) {
+  background: linear-gradient(180deg, rgba(52, 40, 22, 0.96), rgba(29, 47, 40, 0.96));
+  color: #f6d892;
+}
+
+.shell :global(table thead .bg-gray-50),
+.shell :global(table thead .bg-red-50) {
+  background: transparent;
+}
+
+.shell :global(table tbody tr:hover) {
+  background-color: rgba(234, 189, 103, 0.16);
+}
+
+.shell :global(tfoot) {
+  background: linear-gradient(180deg, rgba(235, 218, 184, 0.96), rgba(221, 194, 143, 0.96));
+}
+
+.shell :global(button) {
+  transition: transform 160ms ease, box-shadow 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.shell :global(button:hover:not(:disabled)) {
+  transform: translateY(-1px);
+}
+
+.shell :global(input),
+.shell :global(select),
+.shell :global(textarea) {
+  border-color: rgba(126, 88, 38, 0.28);
+  background-color: rgba(255, 252, 244, 0.96);
+}
+
+.shell :global(.text-blue-600),
+.shell :global(.text-blue-700) {
+  color: #9b6224;
+}
+
+.shell :global(.border-blue-600),
+.shell :global(.border-blue-100),
+.shell :global(.border-blue-200) {
+  border-color: rgba(185, 130, 53, 0.55);
+}
+
+.shell :global(.bg-blue-50) {
+  background-color: rgba(232, 200, 138, 0.28);
+}
+
+.shell :global(.bg-blue-600) {
+  background: linear-gradient(135deg, #bd8234, #7e4818);
+}
+
+.heroDesk {
+  position: relative;
+  overflow: hidden;
+  border-radius: 2.1rem;
+  border: 1px solid rgba(214, 170, 91, 0.42);
+  background:
+    radial-gradient(circle at 82% 18%, rgba(224, 188, 118, 0.22), transparent 11rem),
+    linear-gradient(135deg, rgba(21, 33, 29, 0.98), rgba(61, 39, 19, 0.96));
+  box-shadow: 0 26px 60px rgba(55, 35, 13, 0.22);
+}
+
+.heroDesk::before {
+  content: "";
+  position: absolute;
+  right: -3.5rem;
+  top: -4rem;
+  width: 18rem;
+  height: 18rem;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, transparent 0 34%, rgba(214, 170, 91, 0.18) 35% 36%, transparent 37% 53%, rgba(214, 170, 91, 0.14) 54% 55%, transparent 56%),
+    conic-gradient(from 10deg, transparent 0 8deg, rgba(214, 170, 91, 0.2) 8deg 11deg, transparent 11deg 26deg);
+}
+
+.heroDesk::after {
+  content: "";
+  position: absolute;
+  inset: auto 2rem 1.2rem 2rem;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(246, 216, 146, 0.72), transparent);
+}
+
+.ledgerStamp {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(214, 170, 91, 0.38);
+  border-radius: 999px;
+  background: rgba(214, 170, 91, 0.1);
+  padding: 0.25rem 0.75rem;
+  color: #f6d892;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+}
+
+.ticketCard {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(145, 93, 35, 0.28);
+  background:
+    linear-gradient(90deg, rgba(126, 82, 32, 0.08) 0 1px, transparent 1px 100%),
+    linear-gradient(180deg, rgba(255, 250, 238, 0.98), rgba(238, 219, 183, 0.92));
+  box-shadow: 0 18px 42px rgba(77, 50, 20, 0.1);
+}
+
+.ticketCard::before,
+.ticketCard::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+  background: #e9ddc8;
+  border: 1px solid rgba(145, 93, 35, 0.22);
+  transform: translateY(-50%);
+}
+
+.ticketCard::before {
+  left: -0.58rem;
+}
+
+.ticketCard::after {
+  right: -0.58rem;
+}
+
+.waxSeal {
+  position: absolute;
+  right: 1rem;
+  top: 1rem;
+  width: 2.45rem;
+  height: 2.45rem;
+  border-radius: 999px;
+  opacity: 0.14;
+  background:
+    radial-gradient(circle at 35% 30%, rgba(255,255,255,0.28), transparent 28%),
+    radial-gradient(circle, #9a2f25, #5d1712);
+  box-shadow: 0 6px 18px rgba(70, 20, 10, 0.32);
+}
+
+.quickBooks {
+  perspective: 1200px;
+}
+
+.moduleBook {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1.35rem;
+  border: 1px solid rgba(115, 76, 30, 0.3);
+  background:
+    linear-gradient(90deg, rgba(65, 42, 19, 0.2) 0 0.7rem, transparent 0.7rem),
+    linear-gradient(135deg, rgba(255, 250, 238, 0.98), rgba(231, 204, 151, 0.88));
+  box-shadow:
+    inset 9px 0 0 rgba(77, 50, 20, 0.18),
+    0 18px 36px rgba(71, 45, 17, 0.12);
+  transform-origin: left center;
+}
+
+.moduleBook::before {
+  content: "";
+  position: absolute;
+  inset: 0.75rem auto 0.75rem 1rem;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, transparent, rgba(126, 82, 32, 0.5), transparent);
+}
+
+.moduleBook::after {
+  content: "";
+  position: absolute;
+  right: -2.5rem;
+  top: -2.5rem;
+  width: 8rem;
+  height: 8rem;
+  border-radius: 999px;
+  border: 1px solid rgba(126, 82, 32, 0.16);
+}
+
+.moduleBook:hover {
+  transform: translateY(-4px) rotateY(-3deg);
+}
+
+.bookIcon {
+  background: linear-gradient(135deg, #ead19c, #8b551d);
+  color: #fff6d8;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.35), 0 10px 22px rgba(92, 58, 20, 0.18);
+}
+
+.activityLedger {
+  border: 1px solid rgba(145, 93, 35, 0.28);
+  background:
+    repeating-linear-gradient(180deg, rgba(255,255,255,0) 0 2.35rem, rgba(126, 82, 32, 0.055) 2.35rem 2.42rem),
+    linear-gradient(180deg, rgba(255, 250, 238, 0.97), rgba(239, 222, 188, 0.92));
+  box-shadow: 0 18px 42px rgba(77, 50, 20, 0.1);
+}
+
+.bookSpine {
+  position: relative;
+  border-radius: 0.35rem 0.75rem 0.75rem 0.35rem;
+}
+
+.bookSpine::before {
+  content: "";
+  position: absolute;
+  left: 0.35rem;
+  top: 0.45rem;
+  bottom: 0.45rem;
+  width: 2px;
+  border-radius: 999px;
+  background: rgba(126, 82, 32, 0.22);
+}
+
+.bookSpine:hover {
+  transform: translateX(3px);
+}
