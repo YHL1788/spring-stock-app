@@ -200,7 +200,6 @@ export default function FCNHoldingPage() {
     const [riskFilters, setRiskFilters] = useState<Record<string, string>>({});
     const [diedSort, setDiedSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: '', dir: null});
     const [diedFilters, setDiedFilters] = useState<Record<string, string>>({});
-    const [expandedTable, setExpandedTable] = useState<'living' | 'risk' | 'died' | null>(null);
 
     // --- 保存状态与时间 ---
     const [isSavingMktVal, setIsSavingMktVal] = useState(false);
@@ -232,30 +231,6 @@ export default function FCNHoldingPage() {
     const updateRiskFilter = handleFilter(setRiskFilters);
     const toggleDiedSort = toggleSort(setDiedSort);
     const updateDiedFilter = handleFilter(setDiedFilters);
-
-    const getTableContainerClass = (key: 'living' | 'risk' | 'died', normalClass: string) => {
-        if (expandedTable !== key) return normalClass;
-        return 'fixed inset-4 z-50 overflow-auto rounded-2xl border border-gray-200 bg-white p-4 shadow-2xl';
-    };
-
-    const renderExpandedTableHeader = (key: 'living' | 'risk' | 'died', title: string, subtitle: string) => {
-        if (expandedTable !== key) return null;
-        return (
-            <div className="sticky top-0 z-[70] mb-4 flex items-center justify-between rounded-xl border border-gray-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur">
-                <div>
-                    <div className="text-base font-bold text-gray-900">{title}</div>
-                    <div className="text-xs text-gray-500">{subtitle}</div>
-                </div>
-                <button
-                    onClick={() => setExpandedTable(null)}
-                    className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-bold text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
-                >
-                    <X size={14} />
-                    关闭弹窗
-                </button>
-            </div>
-        );
-    };
 
     // --- 初始化 Auth ---
     useEffect(() => {
@@ -1496,12 +1471,6 @@ export default function FCNHoldingPage() {
 
     return (
         <div className="space-y-8 pb-10">
-            {expandedTable && (
-                <div
-                    className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
-                    onClick={() => setExpandedTable(null)}
-                />
-            )}
             {/* === 全局 Header === */}
             <div className="border-b border-gray-200 pb-4 flex justify-between items-center">
                 <div>
@@ -1528,13 +1497,6 @@ export default function FCNHoldingPage() {
                     </h2>
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">Living 库总计: {livingRecords.length} 笔</span>
-                        <button
-                            onClick={() => setExpandedTable('living')}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-white text-blue-700 border-blue-200 hover:bg-blue-50 shadow-sm transition-colors"
-                        >
-                            <FileJson size={14} />
-                            弹窗查看全部
-                        </button>
                         {isEditModeLiving && (
                             <button
                                 onClick={() => handleRefreshLiving(selectedLivingTradeIds)}
@@ -1568,8 +1530,7 @@ export default function FCNHoldingPage() {
                     </div>
                 </div>
                 
-                <div className={getTableContainerClass('living', 'overflow-auto border rounded-lg mb-4 shadow-sm max-h-[450px]')}>
-                    {renderExpandedTableHeader('living', '【FCN 持仓板块（存续中）】', `当前显示 ${finalLiving.length} 条，原页面筛选与排序同步生效。`)}
+                <div className="overflow-auto border rounded-lg mb-4 shadow-sm max-h-[450px]">
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200 border-collapse">
                         <thead className="bg-gray-50 text-gray-600 font-medium sticky top-0 z-30 shadow-sm">
                             <tr>
@@ -1764,17 +1725,9 @@ export default function FCNHoldingPage() {
                     </h2>
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">高风险标的: {finalRisk.length} 项</span>
-                        <button
-                            onClick={() => setExpandedTable('risk')}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-white text-red-700 border-red-200 hover:bg-red-50 shadow-sm transition-colors"
-                        >
-                            <FileJson size={14} />
-                            弹窗查看全部
-                        </button>
                     </div>
                 </div>
-                <div className={getTableContainerClass('risk', 'overflow-auto border rounded-lg shadow-sm max-h-[450px]')}>
-                    {renderExpandedTableHeader('risk', '【FCN 风控板块】', `当前显示 ${finalRisk.length} 条高风险/接货暴露明细。`)}
+                <div className="overflow-auto border rounded-lg shadow-sm max-h-[450px]">
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200 border-collapse">
                         <thead className="bg-red-50 text-red-800 font-medium sticky top-0 z-30 shadow-sm">
                             <tr>
@@ -1853,13 +1806,6 @@ export default function FCNHoldingPage() {
                     </h2>
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">Died 库总计: {diedRecords.length} 笔</span>
-                        <button
-                            onClick={() => setExpandedTable('died')}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-white text-orange-700 border-orange-200 hover:bg-orange-50 shadow-sm transition-colors"
-                        >
-                            <FileJson size={14} />
-                            弹窗查看全部
-                        </button>
                         {isEditModeDied && (
                             <button
                                 onClick={() => handleRefreshDied(selectedDiedTradeIds)}
@@ -1893,8 +1839,7 @@ export default function FCNHoldingPage() {
                     </div>
                 </div>
                 
-                <div className={getTableContainerClass('died', 'overflow-auto border rounded-lg mb-4 shadow-sm max-h-[450px]')}>
-                    {renderExpandedTableHeader('died', '【FCN 持仓板块（历史）】', `当前显示 ${finalDied.length} 条，原页面筛选与排序同步生效。`)}
+                <div className="overflow-auto border rounded-lg mb-4 shadow-sm max-h-[450px]">
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200 border-collapse">
                         <thead className="bg-gray-50 text-gray-600 font-medium sticky top-0 z-30 shadow-sm">
                             <tr>

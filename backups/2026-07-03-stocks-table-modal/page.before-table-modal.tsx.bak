@@ -204,7 +204,6 @@ export default function SpotHoldingsPage() {
   const [holdingFilters, setHoldingFilters] = useState<Record<string, string>>({});
   const [pnlSort, setPnlSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: 'totalPnl', dir: 'desc'});
   const [pnlFilters, setPnlFilters] = useState<Record<string, string>>({});
-  const [expandedTable, setExpandedTable] = useState<'holdings' | 'pnl' | 'trades' | null>(null);
 
   const toggleSort = (setSort: any) => (key: string) => {
       setSort((prev: any) => {
@@ -226,30 +225,6 @@ export default function SpotHoldingsPage() {
   const updateHoldingFilter = handleFilter(setHoldingFilters);
   const togglePnlSort = toggleSort(setPnlSort);
   const updatePnlFilter = handleFilter(setPnlFilters);
-
-  const getTableContainerClass = (key: 'holdings' | 'pnl' | 'trades', normalClass: string) => {
-      if (expandedTable !== key) return normalClass;
-      return 'fixed inset-4 z-50 overflow-auto rounded-2xl border border-gray-200 bg-white p-4 shadow-2xl';
-  };
-
-  const renderExpandedTableHeader = (key: 'holdings' | 'pnl' | 'trades', title: string, subtitle: string) => {
-      if (expandedTable !== key) return null;
-      return (
-          <div className="sticky top-0 z-[70] mb-4 flex items-center justify-between rounded-xl border border-gray-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur">
-              <div>
-                  <div className="text-base font-bold text-gray-900">{title}</div>
-                  <div className="text-xs text-gray-500">{subtitle}</div>
-              </div>
-              <button
-                  onClick={() => setExpandedTable(null)}
-                  className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-bold text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
-              >
-                  <X size={14} />
-                  关闭弹窗
-              </button>
-          </div>
-      );
-  };
 
   // --- 【新增】安全锁：判定是否有生效的模糊筛选 ---
   const hasActiveFilters = useMemo(() => {
@@ -1132,12 +1107,6 @@ export default function SpotHoldingsPage() {
 
   return (
     <div className="space-y-8 pb-10 max-w-[1500px] mx-auto px-4">
-        {expandedTable && (
-            <div
-                className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm"
-                onClick={() => setExpandedTable(null)}
-            />
-        )}
         {/* === Header === */}
         <div className="border-b border-gray-200 pb-4 pt-4 flex justify-between items-end">
             <div>
@@ -1214,20 +1183,10 @@ export default function SpotHoldingsPage() {
                         </span>
                     )}
                 </div>
-                <div className="flex items-center gap-2">
-                    <button
-                        onClick={() => setExpandedTable('holdings')}
-                        className="flex items-center gap-1.5 rounded border border-indigo-200 bg-white px-3 py-1.5 text-xs font-bold text-indigo-700 shadow-sm transition-colors hover:bg-indigo-50"
-                    >
-                        <FileJson size={14} />
-                        弹窗查看全部
-                    </button>
-                    <span className="text-xs text-gray-500 bg-white px-2 py-1 border rounded shadow-sm">数值统一为 <b>HKD</b> 且按平均转移成本法结算</span>
-                </div>
+                <span className="text-xs text-gray-500 bg-white px-2 py-1 border rounded shadow-sm">数值统一为 <b>HKD</b> 且按平均转移成本法结算</span>
             </div>
             
-            <div className={getTableContainerClass('holdings', 'overflow-x-auto overflow-y-auto max-h-[500px] relative scrollbar-thin')}>
-                {renderExpandedTableHeader('holdings', '当前持仓统计表', `当前显示 ${displayHoldings.length} 只标的，原页面筛选与排序同步生效。`)}
+            <div className="overflow-x-auto overflow-y-auto max-h-[500px] relative scrollbar-thin">
                 <table className="min-w-full text-xs text-left">
                     <thead className="text-gray-500 font-medium bg-gray-50 sticky top-0 z-20 shadow-sm">
                         <tr>
@@ -1444,33 +1403,23 @@ export default function SpotHoldingsPage() {
                     <BarChartIcon size={18} className="text-rose-500" />
                     盈亏分析明细与图表 (未实现 vs 已实现)
                 </h2>
-                <div className="flex items-center gap-2">
-                    <button
-                        onClick={() => setExpandedTable('pnl')}
-                        className="flex items-center gap-1.5 rounded border border-rose-200 bg-white px-3 py-1.5 text-xs font-bold text-rose-700 shadow-sm transition-colors hover:bg-rose-50"
+                <div className="flex bg-white rounded border border-gray-300 p-0.5 shadow-sm">
+                    <button 
+                        onClick={() => setChartType('BEST')}
+                        className={`px-3 py-1 text-xs font-bold rounded-sm transition-colors ${chartType === 'BEST' ? 'bg-red-500 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
                     >
-                        <FileJson size={14} />
-                        弹窗查看全部
+                        Top 10 最好
                     </button>
-                    <div className="flex bg-white rounded border border-gray-300 p-0.5 shadow-sm">
-                        <button 
-                            onClick={() => setChartType('BEST')}
-                            className={`px-3 py-1 text-xs font-bold rounded-sm transition-colors ${chartType === 'BEST' ? 'bg-red-500 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
-                        >
-                            Top 10 最好
-                        </button>
-                        <button 
-                            onClick={() => setChartType('WORST')}
-                            className={`px-3 py-1 text-xs font-bold rounded-sm transition-colors ${chartType === 'WORST' ? 'bg-green-500 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
-                        >
-                            Top 10 最差
-                        </button>
-                    </div>
+                    <button 
+                        onClick={() => setChartType('WORST')}
+                        className={`px-3 py-1 text-xs font-bold rounded-sm transition-colors ${chartType === 'WORST' ? 'bg-green-500 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+                    >
+                        Top 10 最差
+                    </button>
                 </div>
             </div>
-            <div className={getTableContainerClass('pnl', 'grid grid-cols-1 lg:grid-cols-5 divide-y lg:divide-y-0 lg:divide-x divide-gray-200')}>
-                {renderExpandedTableHeader('pnl', '盈亏分析明细与图表', `当前显示 ${chartData.length} 只标的，图表模式与原页面同步。`)}
-                <div className={expandedTable === 'pnl' ? 'overflow-visible' : 'lg:col-span-3 overflow-y-auto max-h-[500px]'}>
+            <div className="grid grid-cols-1 lg:grid-cols-5 divide-y lg:divide-y-0 lg:divide-x divide-gray-200">
+                <div className="lg:col-span-3 overflow-y-auto max-h-[500px]">
                     <table className="w-full text-xs text-left">
                         <thead className="text-gray-500 font-medium bg-white sticky top-0 shadow-sm z-10">
                             <tr>
@@ -1643,17 +1592,9 @@ export default function SpotHoldingsPage() {
                         </span>
                     )}
                 </div>
-                <button
-                    onClick={() => setExpandedTable('trades')}
-                    className="flex items-center gap-1.5 rounded border border-blue-200 bg-white px-3 py-1.5 text-xs font-bold text-blue-700 shadow-sm transition-colors hover:bg-blue-50"
-                >
-                    <FileJson size={14} />
-                    弹窗查看全部
-                </button>
             </div>
             
-            <div className={getTableContainerClass('trades', 'max-h-[800px] overflow-y-auto relative scrollbar-thin')}>
-                {renderExpandedTableHeader('trades', '交易记录流水表', `当前显示 ${displayTrades.length} 笔流水，原页面筛选与排序同步生效。`)}
+            <div className="max-h-[800px] overflow-y-auto relative scrollbar-thin">
                 <table className="min-w-full text-xs text-left">
                     <thead className="text-gray-500 font-medium bg-gray-50">
                         <tr>
