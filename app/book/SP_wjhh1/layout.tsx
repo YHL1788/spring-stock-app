@@ -28,6 +28,7 @@ export default function SPWjhh1Layout({ children }: { children: React.ReactNode 
             </div>
             <h1 className="text-xl font-bold tracking-tight text-gray-800 group-hover:text-blue-600 transition-colors">SP_wjhh1 管理系统</h1>
           </Link>
+          <div className={styles.locationPlaque}>HongKong Desk · 2024</div>
         </div>
 
         {/* 一级导航栏 (Tabs) */}

@@ -1,10 +1,39 @@
 .boilerRoom {
+  position: relative;
   background:
     radial-gradient(circle at 90% 8%, rgba(196, 122, 33, 0.15), transparent 18rem),
     linear-gradient(180deg, #24180d, #18352f);
 }
 
+.boilerRoom::before {
+  content: "";
+  position: fixed;
+  left: 270px;
+  right: 36px;
+  top: 110px;
+  height: 16px;
+  opacity: 0.13;
+  background:
+    linear-gradient(90deg, transparent 0 3%, #e0bc76 3% 97%, transparent 97%),
+    repeating-linear-gradient(90deg, transparent 0 44px, #e0bc76 44px 46px);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.boilerRoom::after {
+  content: "BOILER SAFETY VALVE";
+  position: fixed;
+  right: 40px;
+  bottom: 28px;
+  color: rgba(224, 188, 118, 0.2);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.24em;
+  pointer-events: none;
+}
+
 .boilerHero {
+  position: relative;
   border: 1px solid rgba(224, 188, 118, 0.28);
   border-radius: 26px;
   padding: 24px;
@@ -12,6 +41,21 @@
     radial-gradient(circle at 88% 12%, rgba(224, 188, 118, 0.16), transparent 12rem),
     linear-gradient(135deg, rgba(24, 53, 47, 0.96), rgba(42, 27, 16, 0.96));
   box-shadow: 0 24px 60px rgba(14, 8, 4, 0.32);
+}
+
+.boilerHero::after {
+  content: "";
+  position: absolute;
+  right: 26px;
+  top: 26px;
+  width: 84px;
+  height: 84px;
+  border-radius: 999px;
+  border: 8px solid rgba(224, 188, 118, 0.16);
+  background:
+    conic-gradient(from 230deg, #0f8a5f 0 66deg, #c47a21 66deg 112deg, #b3312c 112deg 148deg, transparent 148deg),
+    radial-gradient(circle, rgba(24, 53, 47, 0.9) 0 45%, transparent 46%);
+  pointer-events: none;
 }
 
 .boilerHero h1 {
@@ -64,9 +108,20 @@
 }
 
 .pipePanel {
+  position: relative;
   border: 1px solid rgba(224, 188, 118, 0.24);
   background: linear-gradient(180deg, rgba(244, 234, 214, 0.98), rgba(223, 199, 156, 0.94));
   box-shadow: 0 20px 46px rgba(14, 8, 4, 0.2);
+}
+
+.pipePanel::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  background: linear-gradient(180deg, #b98235, #6b3d16);
 }
 
 .pipeHeader {
@@ -85,4 +140,60 @@
 
 .pipeHeader a {
   background: linear-gradient(135deg, #b98235, #6b3d16);
+}
+
+@keyframes steamLine {
+  0% { opacity: 0.08; transform: translateY(0); }
+  50% { opacity: 0.22; transform: translateY(-4px); }
+  100% { opacity: 0.08; transform: translateY(0); }
+}
+
+@keyframes pressureNeedle {
+  0%, 100% { transform: rotate(-10deg); }
+  50% { transform: rotate(11deg); }
+}
+
+@keyframes valveBlink {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.18); }
+}
+
+.boilerRoom::before {
+  animation: steamLine 5s ease-in-out infinite;
+}
+
+.boilerHero::after {
+  animation: pressureNeedle 5.5s ease-in-out infinite;
+}
+
+.dialCard {
+  transition: transform 170ms ease, box-shadow 170ms ease;
+}
+
+.dialCard:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 24px 58px rgba(14, 8, 4, 0.28);
+}
+
+.goodDial,
+.warnDial {
+  animation: valveBlink 4s ease-in-out infinite;
+}
+
+.pipePanel {
+  transition: transform 170ms ease, box-shadow 170ms ease;
+}
+
+.pipePanel:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 26px 58px rgba(14, 8, 4, 0.26);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boilerRoom::before,
+  .boilerHero::after,
+  .goodDial,
+  .warnDial {
+    animation: none;
+  }
 }

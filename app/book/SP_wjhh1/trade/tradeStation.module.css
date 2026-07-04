@@ -7,6 +7,7 @@
   min-height: 100%;
   color: var(--station-ink);
   background:
+    linear-gradient(90deg, rgba(42, 27, 16, 0.05) 0 2px, transparent 2px 52px),
     radial-gradient(circle at 100% 0%, rgba(185, 130, 53, 0.16), transparent 18rem),
     linear-gradient(135deg, rgba(244, 234, 214, 0.92), rgba(223, 199, 156, 0.72));
 }
@@ -23,7 +24,7 @@
 }
 
 .dispatchBoard::before {
-  content: "DISPATCH";
+  content: "PLATFORM DISPATCH";
   position: sticky;
   top: 0;
   z-index: 1;
@@ -36,6 +37,21 @@
   font-size: 10px;
   font-weight: 900;
   letter-spacing: 0.28em;
+}
+
+.dispatchBoard::after {
+  content: "";
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 18px;
+  height: 78px;
+  opacity: 0.18;
+  background:
+    linear-gradient(90deg, transparent 0 12%, #e0bc76 12% 14%, transparent 14% 42%, #e0bc76 42% 44%, transparent 44%),
+    radial-gradient(circle at 18% 72%, transparent 0 12px, #e0bc76 13px 14px, transparent 15px),
+    radial-gradient(circle at 78% 72%, transparent 0 12px, #e0bc76 13px 14px, transparent 15px);
+  pointer-events: none;
 }
 
 .boardTitle {
@@ -95,6 +111,22 @@
     linear-gradient(180deg, rgba(250, 244, 232, 0.95), rgba(238, 224, 196, 0.9));
 }
 
+.platformContent::after {
+  content: "ORDER TICKET WINDOW";
+  position: absolute;
+  right: 30px;
+  top: 24px;
+  border: 1px solid rgba(185, 130, 53, 0.28);
+  border-radius: 999px;
+  padding: 6px 11px;
+  color: rgba(128, 82, 30, 0.52);
+  background: rgba(244, 234, 214, 0.4);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  pointer-events: none;
+}
+
 .platformContent::before {
   content: "";
   position: absolute;
@@ -114,5 +146,53 @@
     max-height: 18rem;
     border-right: 0;
     border-bottom: 1px solid rgba(185, 130, 53, 0.36);
+  }
+}
+
+@keyframes timetableFlicker {
+  0%, 100% { opacity: 0.95; }
+  49% { opacity: 0.82; }
+  50% { opacity: 1; }
+}
+
+@keyframes steamDrift {
+  from { transform: translateX(-18px); opacity: 0.08; }
+  to { transform: translateX(22px); opacity: 0.2; }
+}
+
+.dispatchBoard::before {
+  animation: timetableFlicker 5s steps(2, end) infinite;
+}
+
+.dispatchBoard::after {
+  animation: steamDrift 6s ease-in-out infinite alternate;
+}
+
+.platformTicket {
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.platformTicket:hover {
+  transform: translateX(4px);
+}
+
+.activePlatform {
+  transform: translateX(6px);
+}
+
+.platformContent {
+  box-shadow: inset 18px 0 46px rgba(42, 27, 16, 0.06);
+}
+
+.platformContent::before {
+  background:
+    linear-gradient(90deg, transparent 0 48%, rgba(185, 130, 53, 0.08) 49% 51%, transparent 52%),
+    linear-gradient(180deg, transparent 0 48%, rgba(185, 130, 53, 0.08) 49% 51%, transparent 52%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dispatchBoard::before,
+  .dispatchBoard::after {
+    animation: none;
   }
 }

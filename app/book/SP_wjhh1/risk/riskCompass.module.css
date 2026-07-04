@@ -1,15 +1,44 @@
 .chartRoom {
+  position: relative;
   background:
     radial-gradient(circle at 86% 12%, rgba(45, 95, 115, 0.16), transparent 18rem),
     linear-gradient(180deg, #eef1e7, #d9c7a6);
 }
 
+.chartRoom::before {
+  content: "NAVIGATION ROOM · RISK BAROMETER";
+  position: absolute;
+  right: 34px;
+  top: 24px;
+  color: rgba(45, 95, 115, 0.18);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.22em;
+  pointer-events: none;
+}
+
 .compassRail {
+  position: relative;
   border-right: 1px solid rgba(45, 95, 115, 0.28);
   background:
     radial-gradient(circle at 50% 22%, transparent 0 46px, rgba(45, 95, 115, 0.12) 47px 48px, transparent 49px),
     linear-gradient(180deg, #102923, #203a43 58%, #2a1b10);
   color: #f4ead6;
+}
+
+.compassRail::after {
+  content: "";
+  position: absolute;
+  left: 42px;
+  right: 42px;
+  bottom: 28px;
+  aspect-ratio: 1;
+  border-radius: 999px;
+  opacity: 0.2;
+  background:
+    radial-gradient(circle, transparent 0 38%, #e0bc76 39% 40%, transparent 41%),
+    conic-gradient(from 0deg, transparent 0 42deg, #e0bc76 43deg 45deg, transparent 46deg 87deg, #e0bc76 88deg 90deg, transparent 91deg);
+  pointer-events: none;
 }
 
 .railTitle {
@@ -72,4 +101,54 @@
     radial-gradient(circle, transparent 0 43%, rgba(45, 95, 115, 0.08) 44% 45%, transparent 46%),
     conic-gradient(from 15deg, transparent 0 14deg, rgba(45, 95, 115, 0.09) 14deg 16deg, transparent 16deg 32deg);
   pointer-events: none;
+}
+
+.chartContent::after {
+  content: "N";
+  position: absolute;
+  right: 87px;
+  bottom: 160px;
+  color: rgba(45, 95, 115, 0.24);
+  font-size: 18px;
+  font-weight: 900;
+  pointer-events: none;
+}
+
+@keyframes compassSweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes warningLantern {
+  0%, 100% { box-shadow: inset 4px 0 0 #e0bc76; }
+  50% { box-shadow: inset 4px 0 0 #e0bc76, 0 0 24px rgba(224, 188, 118, 0.22); }
+}
+
+.compassRail::after,
+.chartContent::before {
+  animation: compassSweep 36s linear infinite;
+}
+
+.compassTab {
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.compassTab:hover {
+  transform: translateX(4px);
+}
+
+.activeTab {
+  animation: warningLantern 3.8s ease-in-out infinite;
+}
+
+.chartContent {
+  box-shadow: inset 18px 0 44px rgba(45, 95, 115, 0.06);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compassRail::after,
+  .chartContent::before,
+  .activeTab {
+    animation: none;
+  }
 }

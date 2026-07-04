@@ -16,6 +16,33 @@
   box-shadow: inset 0 1px 0 rgba(255, 242, 202, 0.08);
 }
 
+.desk::before {
+  content: "";
+  position: absolute;
+  left: 18px;
+  top: 18px;
+  width: 180px;
+  height: 180px;
+  border-radius: 999px;
+  opacity: 0.2;
+  background:
+    radial-gradient(circle, transparent 0 41%, #e0bc76 42% 43%, transparent 44%),
+    conic-gradient(from 8deg, transparent 0 10deg, #e0bc76 10deg 12deg, transparent 12deg 24deg);
+  pointer-events: none;
+}
+
+.desk::after {
+  content: "PRIVATE FUND OFFICE · HONGKONG DESK";
+  position: absolute;
+  right: 34px;
+  top: 18px;
+  color: rgba(244, 234, 214, 0.24);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.24em;
+  pointer-events: none;
+}
+
 .parchmentHero {
   position: relative;
   overflow: hidden;
@@ -60,6 +87,20 @@
   z-index: 1;
 }
 
+.parchmentHero h1::after {
+  content: "CONFIDENTIAL";
+  display: inline-flex;
+  margin-left: 14px;
+  transform: rotate(-5deg);
+  border: 2px solid rgba(179, 49, 44, 0.42);
+  border-radius: 6px;
+  padding: 3px 8px;
+  color: rgba(179, 49, 44, 0.62);
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  vertical-align: middle;
+}
+
 .metricCard {
   position: relative;
   min-height: 156px;
@@ -89,6 +130,33 @@
   height: 58px;
   opacity: 0.2;
   pointer-events: none;
+}
+
+.vaultCard > div:first-child::after {
+  content: "VAULT PLATE";
+  margin-left: auto;
+  color: rgba(107, 61, 22, 0.42);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+}
+
+.gaugeCard > div:first-child::after {
+  content: "PRESSURE";
+  margin-left: auto;
+  color: rgba(24, 53, 47, 0.42);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+}
+
+.dispatchCard > div:first-child::after {
+  content: "BOARD";
+  margin-left: auto;
+  color: rgba(107, 61, 22, 0.42);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
 }
 
 .vaultCard::after {
@@ -146,6 +214,19 @@
 
 .bookShelf {
   perspective: 1200px;
+  position: relative;
+}
+
+.bookShelf::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  right: -12px;
+  bottom: -18px;
+  height: 24px;
+  border-radius: 999px;
+  background: radial-gradient(ellipse, rgba(14, 8, 4, 0.34), transparent 70%);
+  pointer-events: none;
 }
 
 .bookCard {
@@ -198,11 +279,24 @@
 }
 
 .timetable {
+  position: relative;
   border: 1px solid rgba(185, 130, 53, 0.34);
   background:
     repeating-linear-gradient(180deg, rgba(255, 250, 238, 0) 0 42px, rgba(128, 82, 30, 0.06) 42px 43px),
     linear-gradient(180deg, rgba(255, 250, 238, 0.98), rgba(230, 203, 154, 0.92));
   box-shadow: 0 22px 50px rgba(14, 8, 4, 0.22);
+}
+
+.timetable::before {
+  content: "ARRIVALS · ORDERS · CASH MOVEMENTS";
+  position: absolute;
+  right: 18px;
+  top: 16px;
+  color: rgba(244, 234, 214, 0.5);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.2em;
+  z-index: 1;
 }
 
 .timetable > div:first-child {
@@ -223,5 +317,104 @@
 
   .parchmentHero {
     padding: 24px;
+  }
+}
+
+@keyframes parchmentReveal {
+  from { opacity: 0; transform: translateY(14px) rotateX(3deg); }
+  to { opacity: 1; transform: translateY(0) rotateX(0); }
+}
+
+@keyframes gaugeNeedle {
+  0%, 100% { transform: rotate(-18deg); }
+  50% { transform: rotate(7deg); }
+}
+
+@keyframes waxPulse {
+  0%, 100% { transform: scale(1); opacity: 0.18; }
+  50% { transform: scale(1.07); opacity: 0.28; }
+}
+
+.parchmentHero,
+.metricCard,
+.bookCard,
+.timetable {
+  animation: parchmentReveal 520ms ease both;
+}
+
+.metricCard:nth-child(2) { animation-delay: 70ms; }
+.metricCard:nth-child(3) { animation-delay: 120ms; }
+.metricCard:nth-child(4) { animation-delay: 170ms; }
+
+.metricCard {
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.metricCard:hover {
+  transform: translateY(-4px);
+  border-color: rgba(224, 188, 118, 0.52);
+  box-shadow: 0 26px 60px rgba(18, 10, 5, 0.24);
+}
+
+.gaugeCard::before {
+  content: "";
+  position: absolute;
+  right: 43px;
+  bottom: 44px;
+  z-index: 1;
+  width: 34px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(36, 24, 13, 0.46);
+  transform-origin: right center;
+  animation: gaugeNeedle 5.5s ease-in-out infinite;
+}
+
+.waxSeal {
+  animation: waxPulse 3.8s ease-in-out infinite;
+}
+
+.bookCard {
+  transform-style: preserve-3d;
+}
+
+.bookCard::after {
+  content: "";
+  position: absolute;
+  inset: 14px 14px auto 34px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(255, 241, 199, 0.5), transparent);
+}
+
+.bookIcon {
+  transition: transform 180ms ease;
+}
+
+.bookCard:hover .bookIcon {
+  transform: rotate(-8deg) scale(1.04);
+}
+
+.timetable > div:not(:first-child) {
+  position: relative;
+}
+
+.timetable > div:not(:first-child)::before {
+  content: "";
+  position: absolute;
+  left: 20px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(128, 82, 30, 0.12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .parchmentHero,
+  .metricCard,
+  .bookCard,
+  .timetable,
+  .gaugeCard::before,
+  .waxSeal {
+    animation: none;
   }
 }
