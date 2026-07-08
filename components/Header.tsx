@@ -57,6 +57,7 @@ const navigation = [
     children: [
       { name: '春天稳健混合1号基金', href: '/book/SP_wjhh1' },
       { name: '春天汇盈策略基金', href: '/book/SP_hy_strategy' },
+      { name: 'FX临时看盘', href: 'https://ct67q6.csb.app/' },
       { name: '我的账簿', href: '/book/my_book' },
     ],
   },
