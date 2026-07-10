@@ -99,14 +99,6 @@ const formatTime = (val: number) => {
     return new Date(val).toLocaleString('zh-CN', { hour12: false });
 };
 
-const STOCK_MARKET_CACHE_KEY = `sip:${APP_ID}:holdings:stocks:market-cache:v1`;
-
-type StockMarketCache = {
-    savedAt?: string;
-    fxRates?: Record<string, number>;
-    quotes?: Record<string, { price: number; changePercent: number }>;
-};
-
 // --- 可排序筛选表头组件 ---
 const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onFilter, align='left', width }: any) => {
     const justifyClass = align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start';
@@ -180,7 +172,6 @@ export default function SpotHoldingsPage() {
   const [realTimeQuotes, setRealTimeQuotes] = useState<Record<string, { price: number, changePercent: number }>>({});
   const [isFetchingRealTime, setIsFetchingRealTime] = useState(false);
   const [quoteRefreshAttempted, setQuoteRefreshAttempted] = useState(false);
-  const [cachedMarketDataTime, setCachedMarketDataTime] = useState<string>('');
   const quoteRequestIdRef = useRef(0);
   const [showFxModal, setShowFxModal] = useState(false);
   
@@ -266,27 +257,6 @@ export default function SpotHoldingsPage() {
       const tradeFiltered = Object.values(tradeFilters).some(val => val && String(val).trim() !== '');
       return holdingFiltered || tradeFiltered;
   }, [holdingFilters, tradeFilters]);
-
-  useEffect(() => {
-      if (typeof window === 'undefined') return;
-      try {
-          const raw = window.localStorage.getItem(STOCK_MARKET_CACHE_KEY);
-          if (!raw) return;
-          const cache = JSON.parse(raw) as StockMarketCache;
-          if (cache.fxRates && Object.keys(cache.fxRates).length > 0) {
-              setGlobalFxRates(cache.fxRates);
-          }
-          if (cache.quotes && Object.keys(cache.quotes).length > 0) {
-              setRealTimeQuotes(cache.quotes);
-              setQuoteRefreshAttempted(true);
-          }
-          if (cache.savedAt) {
-              setCachedMarketDataTime(new Date(cache.savedAt).toLocaleString('zh-CN', { hour12: false }));
-          }
-      } catch (error) {
-          console.warn('Failed to load cached stock market data.', error);
-      }
-  }, []);
 
   // --- 鉴权与数据抓取 (5个库：4个流水 + 1个期初底座) ---
   useEffect(() => {
@@ -544,15 +514,6 @@ export default function SpotHoldingsPage() {
       }
       if (requestId !== quoteRequestIdRef.current) return;
       setRealTimeQuotes(newQuotes);
-      const savedAt = new Date().toISOString();
-      setCachedMarketDataTime(new Date(savedAt).toLocaleString('zh-CN', { hour12: false }));
-      if (typeof window !== 'undefined') {
-          window.localStorage.setItem(STOCK_MARKET_CACHE_KEY, JSON.stringify({
-              savedAt,
-              fxRates: newRates,
-              quotes: newQuotes,
-          } satisfies StockMarketCache));
-      }
     } catch (e) {
         console.error("Market data fetch error", e);
     } finally {
@@ -1201,12 +1162,6 @@ export default function SpotHoldingsPage() {
                 </button>
             </div>
         </div>
-
-        {cachedMarketDataTime && !isFetchingRealTime && (
-            <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-700">
-                已加载上一次手动刷新缓存：{cachedMarketDataTime}。如需最新价格，请点击“更新行情”。
-            </div>
-        )}
 
         {error && (
             <div className="bg-red-50 p-4 rounded text-red-700 flex items-center gap-2">
