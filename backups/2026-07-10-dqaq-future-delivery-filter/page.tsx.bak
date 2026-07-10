@@ -23,24 +23,6 @@ const formatTime = (val: any) => {
     return new Date(val).toLocaleString();
 };
 
-const getLocalDateString = (date = new Date()) => {
-    try {
-        const parts = new Intl.DateTimeFormat('en-CA', {
-            timeZone: 'Asia/Shanghai',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-        }).formatToParts(date);
-        const year = parts.find((part) => part.type === 'year')?.value;
-        const month = parts.find((part) => part.type === 'month')?.value;
-        const day = parts.find((part) => part.type === 'day')?.value;
-        if (year && month && day) return `${year}-${month}-${day}`;
-    } catch (error) {
-        console.warn('Failed to format local date, falling back to UTC date.', error);
-    }
-    return date.toISOString().split('T')[0];
-};
-
 // ==========================================
 // 终极修复：纯净版数值与颜色格式化工具
 // ==========================================
@@ -497,12 +479,9 @@ export default function DQAQHoldingPage() {
         delete cleanOutput.history_records;
         delete cleanOutput.plot_data;
         let newDeliveries: any[] = [];
-        const todayStr = getLocalDateString(exactNow);
         if (res.history_records) {
             res.history_records.forEach((rec: any, idx: number) => {
                 if (rec.status === 'Settled' || rec.status === 'Knocked Out') {
-                    const settleDate = String(rec.settle_date || '');
-                    if (!settleDate || settleDate > todayStr) return;
                     const direction = basic.contract_type === 'AQ' ? "Buy" : "Sell";
                     let qty = Math.abs(rec.shares);
                     if (direction.toUpperCase() === 'SELL') qty = -Math.abs(qty);
