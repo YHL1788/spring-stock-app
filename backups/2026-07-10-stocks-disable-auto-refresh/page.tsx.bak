@@ -524,6 +524,12 @@ export default function SpotHoldingsPage() {
     }
   };
 
+  useEffect(() => {
+    if (activeTrades.length > 0 || initialHoldings.length > 0) {
+        fetchMarketData();
+    }
+  }, [activeTrades, initialHoldings]);
+
   // --- 核心计算 (期初底座 + 平均转移成本增量) ---
   const calculatedHoldings = useMemo(() => {
       return calculateAverageCostHoldings({
@@ -1319,7 +1325,7 @@ export default function SpotHoldingsPage() {
                 <div className="flex items-center gap-4 text-xs text-gray-500">
                     <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 现货风控暴露最后入库时间: <span className="font-mono font-medium text-gray-700">{lastExposureSavedTime}</span></span>
                     <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                        {(isHKDView || hasActiveFilters) ? '※风控手动入库已在折算或筛选视图下暂停，保护数据纯净' : '※点击手动刷新后更新，点击按钮才入库'}
+                        {(isHKDView || hasActiveFilters) ? '※风控手动入库已在折算或筛选视图下暂停，保护数据纯净' : '※打开页面自动刷新，点击按钮才入库'}
                     </span>
                 </div>
                 <div className="flex items-center gap-3">
@@ -1414,7 +1420,7 @@ export default function SpotHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-indigo-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastMktValSavedTime}</span></span>
                         <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※点击手动刷新后更新，点击按钮才入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※打开页面自动刷新，点击按钮才入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1606,7 +1612,7 @@ export default function SpotHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-rose-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastPlSavedTime}</span></span>
                         <span className="text-[10px] bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※点击手动刷新后更新，点击按钮才入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※打开页面自动刷新，点击按钮才入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -1781,7 +1787,7 @@ export default function SpotHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-blue-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastCashSavedTime}</span></span>
                         <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded border border-blue-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※点击手动刷新后更新，点击按钮才入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停' : '※打开页面自动刷新，点击按钮才入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
@@ -2018,7 +2024,7 @@ export default function SpotHoldingsPage() {
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="flex items-center gap-1.5"><Clock size={14} className="text-purple-500" /> 最后入库时间: <span className="font-mono font-medium text-gray-700">{lastInitialSavedTime}</span></span>
                         <span className="text-[10px] bg-purple-50 text-purple-600 px-2 py-0.5 rounded border border-purple-100">
-                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停，保护原始数据' : '※点击手动刷新后更新，点击按钮才入库'}
+                            {(isHKDView || hasActiveFilters) ? '※手动入库已在折算或筛选视图下暂停，保护原始数据' : '※打开页面自动刷新，点击按钮才入库'}
                         </span>
                     </div>
                     <div className="flex items-center gap-3">
