@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getAdminDb, getServerAppId } from '@/app/lib/firebaseAdmin';
-import { calculateStocksDisplayCache } from '@/app/book/SP_wjhh1/lib/displayCacheEngines/stocksDisplayEngine';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -88,7 +87,6 @@ async function handleRefresh(request: NextRequest) {
   const startedAt = new Date();
   const runRef = getDataDoc(RUNS_COLLECTION, runId);
   const infrastructureModuleRef = getDataDoc(MODULES_COLLECTION, `${runId}__infrastructure`);
-  const stocksModuleRef = getDataDoc(MODULES_COLLECTION, `${runId}__stocks`);
   const latestRef = getDataDoc(LATEST_COLLECTION, LATEST_ID);
 
   try {
@@ -119,60 +117,29 @@ async function handleRefresh(request: NextRequest) {
       source: 'backend-display-cache',
     });
 
-    const stocksResult = await calculateStocksDisplayCache();
-    await stocksModuleRef.set({
-      runId,
-      module: 'stocks',
-      status: stocksResult.status,
-      calculatedAt: FieldValue.serverTimestamp(),
-      data: stocksResult.data,
-      warnings: stocksResult.warnings,
-      errors: stocksResult.errors,
-      source: 'backend-display-cache',
-      formalBookDataTouched: false,
-    });
-
     const finishedAt = new Date();
-    const runStatus = stocksResult.status === 'success' ? 'success' : 'partial_success';
-    const runWarnings = [
-      ...(secretResult.warning ? [secretResult.warning] : []),
-      ...stocksResult.warnings,
-    ];
     await runRef.set({
-      status: runStatus,
+      status: 'success',
       finishedAt: Timestamp.fromDate(finishedAt),
       modules: {
         infrastructure: 'success',
-        stocks: stocksResult.status,
       },
-      warnings: runWarnings,
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
 
     await latestRef.set({
       runId,
-      status: runStatus,
+      status: 'success',
       completedAt: Timestamp.fromDate(finishedAt),
       modules: {
         infrastructure: 'success',
-        stocks: stocksResult.status,
       },
-      warnings: runWarnings,
       source: 'backend-display-cache',
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
 
     await releaseLock(runId, 'success');
-    return NextResponse.json({
-      ok: true,
-      runId,
-      status: runStatus,
-      modules: {
-        infrastructure: 'success',
-        stocks: stocksResult.status,
-      },
-      warnings: runWarnings,
-    }, { headers: { 'Cache-Control': 'no-store' } });
+    return NextResponse.json({ ok: true, runId, status: 'success' }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await runRef.set({
