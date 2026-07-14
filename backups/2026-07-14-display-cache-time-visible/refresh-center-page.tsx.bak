@@ -32,15 +32,6 @@ type SummaryStatus = {
 
 type SummaryTarget = Omit<SummaryStatus, 'key' | 'exists' | 'updatedAt' | 'count' | 'error'>;
 
-type DisplayCacheLatest = {
-  runId?: string;
-  status?: string;
-  completedAt?: any;
-  updatedAt?: any;
-  modules?: Record<string, string>;
-  warnings?: string[];
-};
-
 const SUMMARY_TARGETS: SummaryTarget[] = [
   { module: 'Cash Holding', label: '当前现金二维统计表', collection: 'sip_holding_cash_mktvalue', docId: 'latest_summary', targetType: 'doc', pageHref: '/book/SP_wjhh1/holdings/cash' },
   { module: 'Cash Holding', label: '当前收益统计表', collection: 'sip_holding_cash_pl', docId: 'latest_summary', targetType: 'doc', pageHref: '/book/SP_wjhh1/holdings/cash' },
@@ -142,7 +133,6 @@ const buildInitialStatuses = () => {
 export default function RefreshCenterPage() {
   const [loading, setLoading] = useState(true);
   const [statuses, setStatuses] = useState<Record<string, SummaryStatus>>(() => buildInitialStatuses());
-  const [displayCacheLatest, setDisplayCacheLatest] = useState<DisplayCacheLatest | null>(null);
 
   useEffect(() => {
     let unsubs: Array<() => void> = [];
@@ -215,14 +205,6 @@ export default function RefreshCenterPage() {
             unsubs.push(unsub);
           });
 
-          const latestRefreshUnsub = onSnapshot(
-            doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_display_cache_latest', 'current'),
-            (docSnap) => {
-              setDisplayCacheLatest(docSnap.exists() ? docSnap.data() as DisplayCacheLatest : null);
-            },
-          );
-          unsubs.push(latestRefreshUnsub);
-
           setStatuses((prev) => ({ ...buildInitialStatuses(), ...prev }));
           setLoading(false);
         });
@@ -269,16 +251,6 @@ export default function RefreshCenterPage() {
     return { missing, stale, healthy, total: rows.length };
   }, [rows]);
 
-  const latestRefreshAt = useMemo(
-    () => toMillis(displayCacheLatest?.completedAt || displayCacheLatest?.updatedAt),
-    [displayCacheLatest]
-  );
-
-  const latestModuleCount = useMemo(
-    () => Object.keys(displayCacheLatest?.modules || {}).length,
-    [displayCacheLatest]
-  );
-
   const getStatusMeta = (row: SummaryStatus) => {
     if (row.error) return { label: '读取失败', className: 'bg-red-50 text-red-700 border-red-100', icon: AlertCircle };
     if (!row.exists) return { label: '暂无快照', className: 'bg-gray-50 text-gray-500 border-gray-100', icon: AlertCircle };
@@ -324,35 +296,6 @@ export default function RefreshCenterPage() {
         <div className={`${styles.dialCard} rounded-2xl p-5`}>
           <div className="text-xs font-bold text-gray-400">暂无快照</div>
           <div className="mt-2 text-3xl font-black text-gray-700">{summary.missing}</div>
-        </div>
-      </div>
-
-      <div className={`${styles.pipePanel} rounded-2xl px-5 py-4`}>
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="text-xs font-black uppercase tracking-[0.2em] text-amber-700">Backend Display Cache</div>
-            <div className="mt-1 text-lg font-black text-gray-950">
-              上一次自动刷新：<span className="font-mono">{formatTime(latestRefreshAt)}</span>
-            </div>
-            <div className="mt-1 text-xs text-gray-500">
-              {latestRefreshAt ? `${formatAge(latestRefreshAt)}完成` : '尚未读取到后端缓存完成记录'}
-              {displayCacheLatest?.runId ? <span className="ml-3 font-mono">Run: {displayCacheLatest.runId}</span> : null}
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
-            <div className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2">
-              <div className="font-bold text-amber-700">状态</div>
-              <div className="mt-1 font-mono text-gray-800">{displayCacheLatest?.status || '--'}</div>
-            </div>
-            <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
-              <div className="font-bold text-emerald-700">模块</div>
-              <div className="mt-1 font-mono text-gray-800">{latestModuleCount || '--'}</div>
-            </div>
-            <div className="rounded-xl border border-rose-100 bg-rose-50 px-3 py-2">
-              <div className="font-bold text-rose-700">提醒</div>
-              <div className="mt-1 font-mono text-gray-800">{displayCacheLatest?.warnings?.length || 0}</div>
-            </div>
-          </div>
         </div>
       </div>
 
