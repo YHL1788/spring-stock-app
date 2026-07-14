@@ -26,7 +26,6 @@ import {
   onSnapshot, 
   query, 
   getDocs,
-  getDoc,
   updateDoc
 } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
@@ -73,27 +72,6 @@ interface SummaryMatrix {
   rawMatrix: Record<string, Record<string, number>>;
 }
 
-interface CashDisplayCacheData {
-  currentCashStats?: SummaryMatrix;
-  currentPlStats?: {
-    markets: string[];
-    rawMatrix: Record<string, { realized: number; unrealized: number; total: number }>;
-  };
-  cashBreakdownStats?: {
-    currencies: string[];
-    breakdowns: Record<string, { DIVIDEND: number; FEE: number; INTEREST: number; FX: number; TOTAL: number }>;
-  };
-  initialCashStats?: SummaryMatrix;
-  fxRates?: Record<string, number>;
-  baseFxRates?: Record<string, number>;
-}
-
-type CashDisplayCachePayload = {
-  calculatedAt?: any;
-  data?: CashDisplayCacheData;
-  warnings?: string[];
-};
-
 const CURRENCIES = ['USD', 'CNY', 'HKD', 'JPY'];
 
 export default function CashHoldingsPage() {
@@ -116,9 +94,6 @@ export default function CashHoldingsPage() {
   const [baseFxRates, setBaseFxRates] = useState<Record<string, number>>({});
   const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
   const [isFetchingFx, setIsFetchingFx] = useState(false);
-  const [displayCacheData, setDisplayCacheData] = useState<CashDisplayCacheData | null>(null);
-  const [displayCacheTime, setDisplayCacheTime] = useState<string>('');
-  const [displayCacheWarnings, setDisplayCacheWarnings] = useState<string[]>([]);
   const [showBaseFxModal, setShowBaseFxModal] = useState(false);
   const [draftBaseFx, setDraftBaseFx] = useState<Record<string, string>>({});
   const [showFxModal, setShowFxModal] = useState(false);
@@ -258,40 +233,6 @@ export default function CashHoldingsPage() {
   useEffect(() => {
       if (user) { fetchDbRecords(activeDbTab); }
   }, [activeDbTab, user]);
-
-  useEffect(() => {
-      if (!user) return;
-      let cancelled = false;
-      const loadBackendDisplayCache = async () => {
-          try {
-              const cacheRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_display_cache_current', 'cash');
-              const snapshot = await getDoc(cacheRef);
-              if (!snapshot.exists() || cancelled) return;
-              const cache = snapshot.data() as CashDisplayCachePayload;
-              const data = cache.data || null;
-              setDisplayCacheData(data);
-              if (data?.fxRates && Object.keys(data.fxRates).length > 0) {
-                  setGlobalFxRates(prev => ({ ...prev, ...data.fxRates }));
-              }
-              if (data?.baseFxRates && Object.keys(data.baseFxRates).length > 0) {
-                  setBaseFxRates(prev => ({ ...prev, ...data.baseFxRates }));
-              }
-              const calculatedAtValue = cache.calculatedAt?.toDate?.()
-                  || (cache.calculatedAt?.seconds ? new Date(cache.calculatedAt.seconds * 1000) : null);
-              if (calculatedAtValue) {
-                  setDisplayCacheTime(calculatedAtValue.toLocaleString('zh-CN', { hour12: false }));
-              }
-              setDisplayCacheWarnings(Array.isArray(cache.warnings) ? cache.warnings.slice(0, 3) : []);
-          } catch (error) {
-              console.warn('Failed to load backend Cash display cache.', error);
-          }
-      };
-
-      loadBackendDisplayCache();
-      return () => {
-          cancelled = true;
-      };
-  }, [user]);
 
   const handleDeleteRecord = async (id: string) => {
       if (!confirm("确定要永久删除这条记录吗？不可恢复。")) return;
@@ -492,21 +433,17 @@ export default function CashHoldingsPage() {
       initialCashList.forEach(i => { rawMatrix[i.currency][i.account] += i.amount; });
       return { accounts, markets, rawMatrix };
   }, [initialCashList]);
-  const effectiveCurrentCashStats = displayCacheData?.currentCashStats || currentCashStats;
-  const effectiveCurrentPlStats = displayCacheData?.currentPlStats || currentPlStats;
-  const effectiveCashBreakdownStats = displayCacheData?.cashBreakdownStats || cashBreakdownStats;
-  const effectiveInitialCashStats = displayCacheData?.initialCashStats || initialCashStats;
 
   // --- 入库逻辑 ---
   const handleSaveMktValStats = async () => {
-      // 移除 effectiveCurrentCashStats.accounts.length === 0 判断，允许空矩阵入库
+      // 移除 currentCashStats.accounts.length === 0 判断，允许空矩阵入库
       if (!user) return;
       setIsSavingMktVal(true);
       try {
           const payload = {
-              accounts: effectiveCurrentCashStats.accounts,
-              markets: effectiveCurrentCashStats.markets,
-              rawMatrix: effectiveCurrentCashStats.rawMatrix,
+              accounts: currentCashStats.accounts,
+              markets: currentCashStats.markets,
+              rawMatrix: currentCashStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_mktvalue', payload, refreshGroup: 'holdings-cash', sourcePage: '/book/SP_wjhh1/holdings/cash' });
@@ -519,13 +456,13 @@ export default function CashHoldingsPage() {
   };
 
   const handleSavePlStats = async () => {
-      // 移除 effectiveCurrentPlStats.markets.length === 0 判断，允许空矩阵入库
+      // 移除 currentPlStats.markets.length === 0 判断，允许空矩阵入库
       if (!user) return;
       setIsSavingPl(true);
       try {
           const payload = {
-              markets: effectiveCurrentPlStats.markets,
-              rawMatrix: effectiveCurrentPlStats.rawMatrix,
+              markets: currentPlStats.markets,
+              rawMatrix: currentPlStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_pl', payload, refreshGroup: 'holdings-cash', sourcePage: '/book/SP_wjhh1/holdings/cash' });
@@ -611,14 +548,6 @@ export default function CashHoldingsPage() {
         )}
 
         {/* === 模块 1：当前现金市值 2D 统计表 === */}
-        {displayCacheTime && (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 shadow-sm">
-                <div className="font-semibold">Backend display cache loaded: {displayCacheTime}. The page is showing cached cash statistics first; formal publishing still requires manual save.</div>
-                {displayCacheWarnings.length > 0 && (
-                    <div className="mt-1 leading-relaxed">Cache notes: {displayCacheWarnings.join('; ')}</div>
-                )}
-            </div>
-        )}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="bg-emerald-50 border-b border-emerald-100 p-5">
                 <div className="flex justify-between items-center mb-3">
@@ -642,21 +571,21 @@ export default function CashHoldingsPage() {
                         <thead className="bg-emerald-100/50 text-emerald-900 font-medium">
                             <tr>
                                 <th className="px-3 py-3 text-center border-b border-r border-emerald-100 bg-emerald-50/50">币种 \ 账户</th>
-                                {effectiveCurrentCashStats.accounts.map(acc => (
+                                {currentCashStats.accounts.map(acc => (
                                     <th key={acc} className="px-3 py-3 border-b border-emerald-100">{acc}</th>
                                 ))}
                                 <th className="px-3 py-3 border-b border-l border-emerald-100 bg-emerald-50/50">SUM {isHKDView ? '(HKD)' : '(原币种)'}</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-emerald-50">
-                            {effectiveCurrentCashStats.markets.map(mkt => {
+                            {currentCashStats.markets.map(mkt => {
                                 const rate = isHKDView ? (globalFxRates[mkt] || 1) : 1;
                                 let rowSum = 0;
                                 return (
                                     <tr key={mkt} className="hover:bg-emerald-50/30">
                                         <td className="px-3 py-3 text-center font-bold text-gray-700 border-r border-emerald-50 bg-emerald-50/20">{mkt}</td>
-                                        {effectiveCurrentCashStats.accounts.map(acc => {
-                                            const rawVal = effectiveCurrentCashStats.rawMatrix[mkt][acc] || 0;
+                                        {currentCashStats.accounts.map(acc => {
+                                            const rawVal = currentCashStats.rawMatrix[mkt][acc] || 0;
                                             const displayVal = rawVal * rate;
                                             rowSum += displayVal;
                                             return (
@@ -671,22 +600,22 @@ export default function CashHoldingsPage() {
                                     </tr>
                                 );
                             })}
-                            {effectiveCurrentCashStats.markets.length === 0 && (
-                                <tr><td colSpan={effectiveCurrentCashStats.accounts.length + 2} className="px-3 py-6 text-center text-gray-400">暂无数据</td></tr>
+                            {currentCashStats.markets.length === 0 && (
+                                <tr><td colSpan={currentCashStats.accounts.length + 2} className="px-3 py-6 text-center text-gray-400">暂无数据</td></tr>
                             )}
                         </tbody>
-                        {effectiveCurrentCashStats.markets.length > 0 && (
+                        {currentCashStats.markets.length > 0 && (
                             <tfoot className="bg-emerald-100 text-emerald-900 border-t-2 border-emerald-200 shadow-inner">
                                 <tr>
                                     <td className="px-3 py-4 text-center font-bold border-r border-emerald-200">
                                         {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
                                     </td>
-                                    {effectiveCurrentCashStats.accounts.map(acc => {
+                                    {currentCashStats.accounts.map(acc => {
                                         if (!isHKDView) return <td key={acc} className="px-3 py-4 text-center font-mono text-gray-400">-</td>;
                                         
                                         let colSumHKD = 0;
-                                        effectiveCurrentCashStats.markets.forEach(mkt => {
-                                            const rawVal = effectiveCurrentCashStats.rawMatrix[mkt][acc] || 0;
+                                        currentCashStats.markets.forEach(mkt => {
+                                            const rawVal = currentCashStats.rawMatrix[mkt][acc] || 0;
                                             colSumHKD += rawVal * (globalFxRates[mkt] || 1);
                                         });
                                         return (
@@ -698,9 +627,9 @@ export default function CashHoldingsPage() {
                                     <td className="px-3 py-4 font-mono font-bold text-sm border-l border-emerald-200 bg-emerald-200/50 text-emerald-900">
                                         {!isHKDView ? <span className="text-gray-400">-</span> : (
                                             formatMoney(
-                                                effectiveCurrentCashStats.markets.reduce((sum, mkt) => {
+                                                currentCashStats.markets.reduce((sum, mkt) => {
                                                     let rSum = 0;
-                                                    effectiveCurrentCashStats.accounts.forEach(a => rSum += effectiveCurrentCashStats.rawMatrix[mkt][a] || 0);
+                                                    currentCashStats.accounts.forEach(a => rSum += currentCashStats.rawMatrix[mkt][a] || 0);
                                                     return sum + rSum * (globalFxRates[mkt] || 1);
                                                 }, 0)
                                             ) + ' HKD'
@@ -766,9 +695,9 @@ export default function CashHoldingsPage() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-rose-50">
-                                {effectiveCurrentPlStats.markets.map(mkt => {
+                                {currentPlStats.markets.map(mkt => {
                                     const rate = isHKDView ? (globalFxRates[mkt] || 1) : 1;
-                                    const data = effectiveCurrentPlStats.rawMatrix[mkt];
+                                    const data = currentPlStats.rawMatrix[mkt];
                                     const displayRealized = data.realized * rate;
                                     const displayTotal = data.total * rate;
                                     return (
@@ -784,11 +713,11 @@ export default function CashHoldingsPage() {
                                         </tr>
                                     );
                                 })}
-                                {effectiveCurrentPlStats.markets.length === 0 && (
+                                {currentPlStats.markets.length === 0 && (
                                     <tr><td colSpan={4} className="px-3 py-6 text-center text-gray-400">暂无收益数据</td></tr>
                                 )}
                             </tbody>
-                            {effectiveCurrentPlStats.markets.length > 0 && (
+                            {currentPlStats.markets.length > 0 && (
                                 <tfoot className="bg-rose-100 text-rose-900 border-t-2 border-rose-200 shadow-inner">
                                     <tr>
                                         <td className="px-3 py-4 text-center font-bold border-r border-rose-200">
@@ -796,14 +725,14 @@ export default function CashHoldingsPage() {
                                         </td>
                                         <td className={`px-3 py-4 font-mono font-bold ${!isHKDView ? 'text-gray-400' : 'text-indigo-900'}`}>
                                             {!isHKDView ? '-' : formatMoneyWithSign(
-                                                effectiveCurrentPlStats.markets.reduce((s, m) => s + (effectiveCurrentPlStats.rawMatrix[m].realized * (globalFxRates[m]||1)), 0)
+                                                currentPlStats.markets.reduce((s, m) => s + (currentPlStats.rawMatrix[m].realized * (globalFxRates[m]||1)), 0)
                                             )}
                                         </td>
                                         <td className="px-3 py-4 font-mono font-bold text-gray-400">-</td>
                                         <td className="px-3 py-4 font-mono font-bold text-sm border-l border-rose-200 bg-rose-200/50 text-rose-900">
                                             {!isHKDView ? <span className="text-gray-400">-</span> : (
                                                 formatMoneyWithSign(
-                                                    effectiveCurrentPlStats.markets.reduce((s, m) => s + (effectiveCurrentPlStats.rawMatrix[m].total * (globalFxRates[m]||1)), 0)
+                                                    currentPlStats.markets.reduce((s, m) => s + (currentPlStats.rawMatrix[m].total * (globalFxRates[m]||1)), 0)
                                                 ) + ' HKD'
                                             )}
                                         </td>
@@ -857,9 +786,9 @@ export default function CashHoldingsPage() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-amber-50">
-                                {effectiveCashBreakdownStats.currencies.map(mkt => {
+                                {cashBreakdownStats.currencies.map(mkt => {
                                     const rate = isHKDView ? (globalFxRates[mkt] || 1) : 1;
-                                    const bd = effectiveCashBreakdownStats.breakdowns[mkt];
+                                    const bd = cashBreakdownStats.breakdowns[mkt];
                                     return (
                                         <tr key={mkt} className="hover:bg-amber-50/30">
                                             <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-amber-50 bg-amber-50/20">{mkt}</td>
@@ -878,7 +807,7 @@ export default function CashHoldingsPage() {
                                         </tr>
                                     );
                                 })}
-                                {effectiveCashBreakdownStats.currencies.length === 0 && (
+                                {cashBreakdownStats.currencies.length === 0 && (
                                     <tr><td colSpan={5} className="px-3 py-6 text-center text-gray-400">暂无收益明细</td></tr>
                                 )}
                             </tbody>
@@ -982,21 +911,21 @@ export default function CashHoldingsPage() {
                         <thead className="bg-purple-100/50 text-purple-900 font-medium">
                             <tr>
                                 <th className="px-3 py-3 text-center border-b border-r border-purple-100 bg-purple-50/50">币种 \ 账户</th>
-                                {effectiveInitialCashStats.accounts.map(acc => (
+                                {initialCashStats.accounts.map(acc => (
                                     <th key={acc} className="px-3 py-3 border-b border-purple-100">{acc}</th>
                                 ))}
                                 <th className="px-3 py-3 border-b border-l border-purple-100 bg-purple-50/50">SUM {isHKDView ? '(HKD)' : '(原币种)'}</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-purple-50">
-                            {effectiveInitialCashStats.markets.map(mkt => {
+                            {initialCashStats.markets.map(mkt => {
                                 const rate = isHKDView ? (baseFxRates[mkt] || globalFxRates[mkt] || 1) : 1;
                                 let rowSum = 0;
                                 return (
                                     <tr key={mkt} className="hover:bg-purple-50/30">
                                         <td className="px-3 py-3 text-center font-bold text-gray-700 border-r border-purple-50 bg-purple-50/20">{mkt}</td>
-                                        {effectiveInitialCashStats.accounts.map(acc => {
-                                            const rawVal = effectiveInitialCashStats.rawMatrix[mkt][acc] || 0;
+                                        {initialCashStats.accounts.map(acc => {
+                                            const rawVal = initialCashStats.rawMatrix[mkt][acc] || 0;
                                             const displayVal = rawVal * rate;
                                             rowSum += displayVal;
                                             return (
@@ -1011,22 +940,22 @@ export default function CashHoldingsPage() {
                                     </tr>
                                 );
                             })}
-                            {effectiveInitialCashStats.markets.length === 0 && (
-                                <tr><td colSpan={effectiveInitialCashStats.accounts.length + 2} className="px-3 py-6 text-center text-gray-400">暂无期初数据</td></tr>
+                            {initialCashStats.markets.length === 0 && (
+                                <tr><td colSpan={initialCashStats.accounts.length + 2} className="px-3 py-6 text-center text-gray-400">暂无期初数据</td></tr>
                             )}
                         </tbody>
-                        {effectiveInitialCashStats.markets.length > 0 && (
+                        {initialCashStats.markets.length > 0 && (
                             <tfoot className="bg-purple-100 text-purple-900 border-t-2 border-purple-200 shadow-inner">
                                 <tr>
                                     <td className="px-3 py-4 text-center font-bold border-r border-purple-200">
                                         {isHKDView ? 'SUM (HKD)' : 'SUM (无效)'}
                                     </td>
-                                    {effectiveInitialCashStats.accounts.map(acc => {
+                                    {initialCashStats.accounts.map(acc => {
                                         if (!isHKDView) return <td key={acc} className="px-3 py-4 text-center font-mono text-gray-400">-</td>;
 
                                         let colSumHKD = 0;
-                                        effectiveInitialCashStats.markets.forEach(mkt => {
-                                            const rawVal = effectiveInitialCashStats.rawMatrix[mkt][acc] || 0;
+                                        initialCashStats.markets.forEach(mkt => {
+                                            const rawVal = initialCashStats.rawMatrix[mkt][acc] || 0;
                                             colSumHKD += rawVal * (baseFxRates[mkt] || globalFxRates[mkt] || 1);
                                         });
                                         return (
@@ -1038,9 +967,9 @@ export default function CashHoldingsPage() {
                                     <td className="px-3 py-4 font-mono font-bold text-sm border-l border-purple-200 bg-purple-200/50 text-purple-900">
                                         {!isHKDView ? <span className="text-gray-400">-</span> : (
                                             formatMoney(
-                                                effectiveInitialCashStats.markets.reduce((sum, mkt) => {
+                                                initialCashStats.markets.reduce((sum, mkt) => {
                                                     let rSum = 0;
-                                                    effectiveInitialCashStats.accounts.forEach(a => rSum += effectiveInitialCashStats.rawMatrix[mkt][a] || 0);
+                                                    initialCashStats.accounts.forEach(a => rSum += initialCashStats.rawMatrix[mkt][a] || 0);
                                                     return sum + rSum * (baseFxRates[mkt] || globalFxRates[mkt] || 1);
                                                 }, 0)
                                             ) + ' HKD'

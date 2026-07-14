@@ -18,7 +18,7 @@ import {
   Settings,
   Edit3
 } from 'lucide-react';
-import { collection, getDocs, getDoc, doc, updateDoc, deleteDoc, setDoc, addDoc, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, deleteDoc, setDoc, addDoc, onSnapshot, query, where } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
@@ -148,14 +148,6 @@ interface MergedRecord {
     createdAt: any;
 }
 
-type OptionDisplayCachePayload = {
-    calculatedAt?: any;
-    data?: {
-        fxRates?: Record<string, number>;
-    };
-    warnings?: string[];
-};
-
 // ==========================================
 // 主页面组件
 // ==========================================
@@ -182,8 +174,6 @@ export default function OptionHoldingPage() {
     const [isHKDView, setIsHKDView] = useState(false);
     const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
     const [isFetchingFx, setIsFetchingFx] = useState(false);
-    const [displayCacheTime, setDisplayCacheTime] = useState<string>('');
-    const [displayCacheWarnings, setDisplayCacheWarnings] = useState<string[]>([]);
     const hasFetchedInitialFxRates = useRef(false);
 
     // --- 数据库管理模块的状态 ---
@@ -376,36 +366,6 @@ export default function OptionHoldingPage() {
 
     useEffect(() => { if (user) fetchDbRecords(activeDbTab); }, [activeDbTab, user]);
     useEffect(() => { if (user) { loadRecords(); fetchDbRecords(activeDbTab); } }, [user]);
-
-    useEffect(() => {
-        if (!user) return;
-        let cancelled = false;
-        const loadBackendDisplayCache = async () => {
-            try {
-                const cacheRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_display_cache_current', 'option');
-                const snapshot = await getDoc(cacheRef);
-                if (!snapshot.exists() || cancelled) return;
-                const cache = snapshot.data() as OptionDisplayCachePayload;
-                const fxRates = cache.data?.fxRates || {};
-                if (Object.keys(fxRates).length > 0) {
-                    setGlobalFxRates(prev => ({ ...prev, ...fxRates }));
-                }
-                const calculatedAtValue = cache.calculatedAt?.toDate?.()
-                    || (cache.calculatedAt?.seconds ? new Date(cache.calculatedAt.seconds * 1000) : null);
-                if (calculatedAtValue) {
-                    setDisplayCacheTime(calculatedAtValue.toLocaleString('zh-CN', { hour12: false }));
-                }
-                setDisplayCacheWarnings(Array.isArray(cache.warnings) ? cache.warnings.slice(0, 3) : []);
-            } catch (error) {
-                console.warn('Failed to load backend Option display cache.', error);
-            }
-        };
-
-        loadBackendDisplayCache();
-        return () => {
-            cancelled = true;
-        };
-    }, [user]);
 
     const deleteCascadeRecords = async (tradeId: string, lifecycle: 'living' | 'died') => {
         const collectionsToDelete = [
@@ -1372,16 +1332,6 @@ export default function OptionHoldingPage() {
             </div>
 
             {/* --- モジュール 1：Option 持倉板块（存续中） --- */}
-            {displayCacheTime && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 shadow-sm">
-                    <div className="font-semibold">Backend display cache loaded: {displayCacheTime}. Cached FX is used first; formal publishing still requires manual save.</div>
-                    {displayCacheWarnings.length > 0 && (
-                        <div className="mt-1 leading-relaxed">
-                            Cache notes: {displayCacheWarnings.join('; ')}
-                        </div>
-                    )}
-                </div>
-            )}
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">

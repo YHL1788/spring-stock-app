@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/book/spwjhh1/refresh-display-cache",
+      "schedule": "0,30 0-8,23 * * *"
+    }
+  ]
+}

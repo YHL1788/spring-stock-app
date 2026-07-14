@@ -4,9 +4,6 @@ import { getAdminDb, getServerAppId } from '@/app/lib/firebaseAdmin';
 import { calculateStocksDisplayCache } from '@/app/book/SP_wjhh1/lib/displayCacheEngines/stocksDisplayEngine';
 import { calculateFCNDisplayCache } from '@/app/book/SP_wjhh1/lib/displayCacheEngines/fcnDisplayEngine';
 import { calculateDQAQDisplayCache } from '@/app/book/SP_wjhh1/lib/displayCacheEngines/dqaqDisplayEngine';
-import { calculateOptionDisplayCache } from '@/app/book/SP_wjhh1/lib/displayCacheEngines/optionDisplayEngine';
-import { calculateCashDisplayCache } from '@/app/book/SP_wjhh1/lib/displayCacheEngines/cashDisplayEngine';
-import { calculateSummaryDisplayCache } from '@/app/book/SP_wjhh1/lib/displayCacheEngines/summaryDisplayEngine';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -41,33 +38,14 @@ const getDataDoc = (collectionName: string, docId: string) => {
 };
 
 const validateSecret = (request: NextRequest) => {
-  const expectedSecrets = [process.env.DISPLAY_REFRESH_SECRET, process.env.CRON_SECRET]
-    .filter((value): value is string => Boolean(value));
-  if (expectedSecrets.length === 0) {
-    return { ok: true, warning: 'DISPLAY_REFRESH_SECRET/CRON_SECRET is not configured; request accepted without secret.' };
+  const expected = process.env.DISPLAY_REFRESH_SECRET || process.env.CRON_SECRET;
+  if (!expected) {
+    return { ok: true, warning: 'DISPLAY_REFRESH_SECRET is not configured; request accepted without secret.' };
   }
   const provided = request.nextUrl.searchParams.get('secret')
     || request.headers.get('x-display-refresh-secret')
     || request.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
-  return { ok: Boolean(provided && expectedSecrets.includes(provided)), warning: '' };
-};
-
-const isVercelCronRequest = (request: NextRequest) => Boolean(request.headers.get('x-vercel-cron'));
-
-const getBeijingClock = (date = new Date()) => {
-  const utcMs = date.getTime() + date.getTimezoneOffset() * 60 * 1000;
-  const beijing = new Date(utcMs + 8 * 60 * 60 * 1000);
-  return {
-    hour: beijing.getHours(),
-    minute: beijing.getMinutes(),
-    isoDate: beijing.toISOString().slice(0, 10),
-  };
-};
-
-const isWithinBeijingAutoRefreshWindow = (date = new Date()) => {
-  const { hour, minute } = getBeijingClock(date);
-  const minutesOfDay = hour * 60 + minute;
-  return minutesOfDay >= 7 * 60 && minutesOfDay <= 16 * 60 + 30;
+  return { ok: provided === expected, warning: '' };
 };
 
 const acquireLock = async (runId: string) => {
@@ -165,57 +143,10 @@ const buildDQAQReport = (dqaqResult: Awaited<ReturnType<typeof calculateDQAQDisp
   };
 };
 
-const buildOptionReport = (optionResult: Awaited<ReturnType<typeof calculateOptionDisplayCache>>) => {
-  const { data } = optionResult;
-  return {
-    status: optionResult.status,
-    currentMarkets: data.currentMktStats.markets.length,
-    currentAccounts: data.currentMktStats.accounts.length,
-    riskUnderlyings: data.riskExposureSummary.length,
-    missingQuoteCount: data.quoteStatus.missingQuoteCodes.length,
-    requestedSymbols: data.quoteStatus.requestedSymbols.length,
-    rawCounts: data.rawCounts,
-  };
-};
-
-const buildCashReport = (cashResult: Awaited<ReturnType<typeof calculateCashDisplayCache>>) => {
-  const { data } = cashResult;
-  return {
-    status: cashResult.status,
-    currentMarkets: data.currentCashStats.markets.length,
-    currentAccounts: data.currentCashStats.accounts.length,
-    plMarkets: data.currentPlStats.markets?.length || 0,
-    rawCounts: data.rawCounts,
-  };
-};
-
-const buildSummaryReport = (summaryResult: Awaited<ReturnType<typeof calculateSummaryDisplayCache>>) => {
-  const { snapshot, rawCounts } = summaryResult.data;
-  return {
-    status: summaryResult.status,
-    totalMarketValueHKD: snapshot.totalMarketValueHKD,
-    totalPnlHKD: snapshot.totalPnlHKD,
-    displayCacheInputs: rawCounts.displayCacheInputs.length,
-    formalSummaryInputs: rawCounts.formalSummaryInputs.length,
-    missingInputs: rawCounts.missingInputs,
-  };
-};
-
 async function handleRefresh(request: NextRequest) {
   const secretResult = validateSecret(request);
   if (!secretResult.ok) {
     return NextResponse.json({ ok: false, error: 'Unauthorized display refresh request.' }, { status: 401 });
-  }
-
-  if (isVercelCronRequest(request) && !isWithinBeijingAutoRefreshWindow()) {
-    const beijingClock = getBeijingClock();
-    return NextResponse.json({
-      ok: true,
-      status: 'skipped_outside_window',
-      message: 'Cron display refresh skipped outside Beijing auto-refresh window.',
-      beijingTime: `${beijingClock.isoDate} ${String(beijingClock.hour).padStart(2, '0')}:${String(beijingClock.minute).padStart(2, '0')}`,
-      allowedWindow: '07:00-16:30 Asia/Shanghai',
-    }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
   const runId = createRunId();
@@ -225,9 +156,6 @@ async function handleRefresh(request: NextRequest) {
   const stocksCurrentRef = getDataDoc(CURRENT_COLLECTION, 'stocks');
   const fcnCurrentRef = getDataDoc(CURRENT_COLLECTION, 'fcn');
   const dqaqCurrentRef = getDataDoc(CURRENT_COLLECTION, 'dqaq');
-  const optionCurrentRef = getDataDoc(CURRENT_COLLECTION, 'option');
-  const cashCurrentRef = getDataDoc(CURRENT_COLLECTION, 'cash');
-  const summaryCurrentRef = getDataDoc(CURRENT_COLLECTION, 'summary');
   const latestRef = getDataDoc(LATEST_COLLECTION, LATEST_ID);
 
   try {
@@ -298,55 +226,13 @@ async function handleRefresh(request: NextRequest) {
       formalBookDataTouched: false,
     });
 
-    const optionResult = await calculateOptionDisplayCache();
-    await optionCurrentRef.set({
-      runId,
-      module: 'option',
-      status: optionResult.status,
-      calculatedAt: FieldValue.serverTimestamp(),
-      data: optionResult.data,
-      warnings: optionResult.warnings,
-      errors: optionResult.errors,
-      source: 'backend-display-cache',
-      formalBookDataTouched: false,
-    });
-
-    const cashResult = await calculateCashDisplayCache();
-    await cashCurrentRef.set({
-      runId,
-      module: 'cash',
-      status: cashResult.status,
-      calculatedAt: FieldValue.serverTimestamp(),
-      data: cashResult.data,
-      warnings: cashResult.warnings,
-      errors: cashResult.errors,
-      source: 'backend-display-cache',
-      formalBookDataTouched: false,
-    });
-
-    const summaryResult = await calculateSummaryDisplayCache();
-    await summaryCurrentRef.set({
-      runId,
-      module: 'summary',
-      status: summaryResult.status,
-      calculatedAt: FieldValue.serverTimestamp(),
-      data: summaryResult.data,
-      warnings: summaryResult.warnings,
-      errors: summaryResult.errors,
-      source: 'backend-display-cache',
-      formalBookDataTouched: false,
-    });
-
     const finishedAt = new Date();
-    const runStatus = stocksResult.status === 'success' && fcnResult.status === 'success' && dqaqResult.status === 'success' && optionResult.status === 'success' && cashResult.status === 'success' && summaryResult.status === 'success' ? 'success' : 'partial_success';
+    const runStatus = stocksResult.status === 'success' && fcnResult.status === 'success' && dqaqResult.status === 'success' ? 'success' : 'partial_success';
     const runWarnings = [
       ...(secretResult.warning ? [secretResult.warning] : []),
       ...stocksResult.warnings,
       ...fcnResult.warnings,
       ...dqaqResult.warnings,
-      ...optionResult.warnings,
-      ...cashResult.warnings,
-      ...summaryResult.warnings,
     ];
     const moduleReports = {
       infrastructure: {
@@ -356,9 +242,6 @@ async function handleRefresh(request: NextRequest) {
       stocks: buildStocksReport(stocksResult),
       fcn: buildFCNReport(fcnResult),
       dqaq: buildDQAQReport(dqaqResult),
-      option: buildOptionReport(optionResult),
-      cash: buildCashReport(cashResult),
-      summary: buildSummaryReport(summaryResult),
     };
     await runRef.set({
       status: runStatus,
@@ -368,9 +251,6 @@ async function handleRefresh(request: NextRequest) {
         stocks: stocksResult.status,
         fcn: fcnResult.status,
         dqaq: dqaqResult.status,
-        option: optionResult.status,
-        cash: cashResult.status,
-        summary: summaryResult.status,
       },
       moduleReports,
       warnings: runWarnings,
@@ -379,9 +259,6 @@ async function handleRefresh(request: NextRequest) {
         stocks: `${CURRENT_COLLECTION}/stocks`,
         fcn: `${CURRENT_COLLECTION}/fcn`,
         dqaq: `${CURRENT_COLLECTION}/dqaq`,
-        option: `${CURRENT_COLLECTION}/option`,
-        cash: `${CURRENT_COLLECTION}/cash`,
-        summary: `${CURRENT_COLLECTION}/summary`,
       },
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
@@ -395,18 +272,12 @@ async function handleRefresh(request: NextRequest) {
         stocks: stocksResult.status,
         fcn: fcnResult.status,
         dqaq: dqaqResult.status,
-        option: optionResult.status,
-        cash: cashResult.status,
-        summary: summaryResult.status,
       },
       currentDocs: {
         infrastructure: `${CURRENT_COLLECTION}/infrastructure`,
         stocks: `${CURRENT_COLLECTION}/stocks`,
         fcn: `${CURRENT_COLLECTION}/fcn`,
         dqaq: `${CURRENT_COLLECTION}/dqaq`,
-        option: `${CURRENT_COLLECTION}/option`,
-        cash: `${CURRENT_COLLECTION}/cash`,
-        summary: `${CURRENT_COLLECTION}/summary`,
       },
       moduleReports,
       warnings: runWarnings,
@@ -425,18 +296,12 @@ async function handleRefresh(request: NextRequest) {
         stocks: `${CURRENT_COLLECTION}/stocks`,
         fcn: `${CURRENT_COLLECTION}/fcn`,
         dqaq: `${CURRENT_COLLECTION}/dqaq`,
-        option: `${CURRENT_COLLECTION}/option`,
-        cash: `${CURRENT_COLLECTION}/cash`,
-        summary: `${CURRENT_COLLECTION}/summary`,
       },
       modules: {
         infrastructure: 'success',
         stocks: stocksResult.status,
         fcn: fcnResult.status,
         dqaq: dqaqResult.status,
-        option: optionResult.status,
-        cash: cashResult.status,
-        summary: summaryResult.status,
       },
       moduleReports,
       warnings: runWarnings,

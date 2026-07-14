@@ -5,7 +5,7 @@ import {
   RefreshCw, Database, FileJson, Trash2, X, Save, Loader2, 
   AlertCircle, TrendingUp, LineChart, PieChart, Clock, BarChart, Edit3, Settings
 } from 'lucide-react';
-import { collection, getDocs, getDoc, doc, updateDoc, addDoc, deleteDoc, setDoc, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, addDoc, deleteDoc, setDoc, onSnapshot, query, where } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
@@ -126,14 +126,6 @@ interface FCNChartData {
     ko: number;
 }
 
-type FCNDisplayCachePayload = {
-    calculatedAt?: any;
-    data?: {
-        fxRates?: Record<string, number>;
-    };
-    warnings?: string[];
-};
-
 // --- 可排序筛选表头组件 ---
 const Th = ({ label, sortKey, filterKey, currentSort, onSort, currentFilter, onFilter, align='left', className='' }: any) => {
     const justifyClass = align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start';
@@ -190,8 +182,6 @@ export default function FCNHoldingPage() {
     const [isHKDView, setIsHKDView] = useState(false);
     const [globalFxRates, setGlobalFxRates] = useState<Record<string, number>>({});
     const [isFetchingFx, setIsFetchingFx] = useState(false);
-    const [displayCacheTime, setDisplayCacheTime] = useState<string>('');
-    const [displayCacheWarnings, setDisplayCacheWarnings] = useState<string[]>([]);
     const hasFetchedInitialFxRates = useRef(false);
 
     // --- DB管理模块状态 ---
@@ -433,36 +423,6 @@ export default function FCNHoldingPage() {
             loadRecords();
             loadCorporateActions();
         }
-    }, [user]);
-
-    useEffect(() => {
-        if (!user) return;
-        let cancelled = false;
-        const loadBackendDisplayCache = async () => {
-            try {
-                const cacheRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_display_cache_current', 'fcn');
-                const snapshot = await getDoc(cacheRef);
-                if (!snapshot.exists() || cancelled) return;
-                const cache = snapshot.data() as FCNDisplayCachePayload;
-                const fxRates = cache.data?.fxRates || {};
-                if (Object.keys(fxRates).length > 0) {
-                    setGlobalFxRates(prev => ({ ...prev, ...fxRates }));
-                }
-                const calculatedAtValue = cache.calculatedAt?.toDate?.()
-                    || (cache.calculatedAt?.seconds ? new Date(cache.calculatedAt.seconds * 1000) : null);
-                if (calculatedAtValue) {
-                    setDisplayCacheTime(calculatedAtValue.toLocaleString('zh-CN', { hour12: false }));
-                }
-                setDisplayCacheWarnings(Array.isArray(cache.warnings) ? cache.warnings.slice(0, 3) : []);
-            } catch (error) {
-                console.warn('Failed to load backend FCN display cache.', error);
-            }
-        };
-
-        loadBackendDisplayCache();
-        return () => {
-            cancelled = true;
-        };
     }, [user]);
 
     const getDataCollectionRef = (collectionName: string) => (
@@ -1560,17 +1520,6 @@ export default function FCNHoldingPage() {
             </div>
 
             {/* === 模块 1：FCN 持仓板块（存续中） === */}
-            {displayCacheTime && (
-                <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-700">
-                    <div className="font-semibold">已加载后端自动刷新缓存：{displayCacheTime}。当前阶段已优先使用缓存汇率，正式入库仍需手动点击保存。</div>
-                    {displayCacheWarnings.length > 0 && (
-                        <div className="mt-1 text-blue-600">
-                            缓存提示：{displayCacheWarnings.join('；')}
-                        </div>
-                    )}
-                </div>
-            )}
-
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
