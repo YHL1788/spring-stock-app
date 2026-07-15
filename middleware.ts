@@ -1,19 +1,27 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+﻿import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-// 1. 定义受保护的路由模式
-// 使用 (.*) 匹配该路径下的所有子路由
+// 1. 瀹氫箟鍙椾繚鎶ょ殑璺敱妯″紡
+// 浣跨敤 (.*) 鍖归厤璇ヨ矾寰勪笅鐨勬墍鏈夊瓙璺敱
 const isProtectedRoute = createRouteMatcher([
-  '/market(.*)',       // 市场行情
-  '/analysis(.*)',     // 分析工具
-  '/strategies(.*)',   // 策略
-  '/book(.*)',         // 账簿
-  '/notes(.*)',        // 投资笔记
-  '/api(.*)',          // API 接口 (可选，取决于您的 API 是否需要公开)
+  '/market(.*)',       // 甯傚満琛屾儏
+  '/analysis(.*)',     // 鍒嗘瀽宸ュ叿
+  '/strategies(.*)',   // 绛栫暐
+  '/book(.*)',         // 璐︾翱
+  '/notes(.*)',        // 鎶曡祫绗旇
+  '/api(.*)',          // API 鎺ュ彛 (鍙€夛紝鍙栧喅浜庢偍鐨?API 鏄惁闇€瑕佸叕寮€)
 ]);
 
-// 2. 在中间件中进行拦截
+const isPublicCronRoute = createRouteMatcher([
+  '/api/book/spwjhh1/refresh-display-cache(.*)',
+]);
+
+// 2. 鍦ㄤ腑闂翠欢涓繘琛屾嫤鎴?
 export default clerkMiddleware(async (auth, req) => {
-  // 如果请求的是受保护路由，则强制要求认证
+  if (isPublicCronRoute(req)) {
+    return;
+  }
+
+  // 濡傛灉璇锋眰鐨勬槸鍙椾繚鎶よ矾鐢憋紝鍒欏己鍒惰姹傝璇?
   if (isProtectedRoute(req)) {
     await auth.protect();
   }
@@ -21,9 +29,9 @@ export default clerkMiddleware(async (auth, req) => {
 
 export const config = {
   matcher: [
-    // 排除静态资源和 Next.js 内部路由
+    // 鎺掗櫎闈欐€佽祫婧愬拰 Next.js 鍐呴儴璺敱
     '/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)',
-    // 始终运行 API 路由
+    // 濮嬬粓杩愯 API 璺敱
     '/(api|trpc)(.*)',
   ],
 };
