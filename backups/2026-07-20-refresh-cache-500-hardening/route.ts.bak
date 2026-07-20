@@ -10,7 +10,6 @@ import { calculateSummaryDisplayCache } from '@/app/book/SP_wjhh1/lib/displayCac
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 300;
 
 const LOCK_COLLECTION = 'sip_display_cache_locks';
 const RUNS_COLLECTION = 'sip_display_cache_runs';
@@ -202,47 +201,6 @@ const buildSummaryReport = (summaryResult: Awaited<ReturnType<typeof calculateSu
   };
 };
 
-type ModuleStatus = 'success' | 'partial_success' | 'failed';
-
-type ModuleExecution = {
-  status: ModuleStatus;
-  report: Record<string, any>;
-  warnings: string[];
-  errors: string[];
-};
-
-const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
-
-const runCacheModule = async (
-  moduleName: string,
-  action: () => Promise<ModuleExecution>,
-): Promise<ModuleExecution> => {
-  const startedAt = Date.now();
-  try {
-    const result = await action();
-    return {
-      ...result,
-      report: {
-        ...result.report,
-        durationMs: Date.now() - startedAt,
-      },
-    };
-  } catch (error) {
-    const message = getErrorMessage(error);
-    console.error(`[display-cache] ${moduleName} failed`, error);
-    return {
-      status: 'failed',
-      report: {
-        status: 'failed',
-        errorMessage: message,
-        durationMs: Date.now() - startedAt,
-      },
-      warnings: [`${moduleName} display cache failed: ${message}`],
-      errors: [message],
-    };
-  }
-};
-
 async function handleRefresh(request: NextRequest) {
   const secretResult = validateSecret(request);
   if (!secretResult.ok) {
@@ -301,140 +259,121 @@ async function handleRefresh(request: NextRequest) {
       formalBookDataTouched: false,
     });
 
-    const stocksRun = await runCacheModule('stocks', async () => {
-      const result = await calculateStocksDisplayCache();
-      await stocksCurrentRef.set({
-        runId,
-        module: 'stocks',
-        status: result.status,
-        calculatedAt: FieldValue.serverTimestamp(),
-        data: result.data,
-        warnings: result.warnings,
-        errors: result.errors,
-        source: 'backend-display-cache',
-        formalBookDataTouched: false,
-      });
-      return { status: result.status, report: buildStocksReport(result), warnings: result.warnings, errors: result.errors };
+    const stocksResult = await calculateStocksDisplayCache();
+    await stocksCurrentRef.set({
+      runId,
+      module: 'stocks',
+      status: stocksResult.status,
+      calculatedAt: FieldValue.serverTimestamp(),
+      data: stocksResult.data,
+      warnings: stocksResult.warnings,
+      errors: stocksResult.errors,
+      source: 'backend-display-cache',
+      formalBookDataTouched: false,
     });
 
-    const fcnRun = await runCacheModule('fcn', async () => {
-      const result = await calculateFCNDisplayCache();
-      await fcnCurrentRef.set({
-        runId,
-        module: 'fcn',
-        status: result.status,
-        calculatedAt: FieldValue.serverTimestamp(),
-        data: result.data,
-        warnings: result.warnings,
-        errors: result.errors,
-        source: 'backend-display-cache',
-        formalBookDataTouched: false,
-      });
-      return { status: result.status, report: buildFCNReport(result), warnings: result.warnings, errors: result.errors };
+    const fcnResult = await calculateFCNDisplayCache();
+    await fcnCurrentRef.set({
+      runId,
+      module: 'fcn',
+      status: fcnResult.status,
+      calculatedAt: FieldValue.serverTimestamp(),
+      data: fcnResult.data,
+      warnings: fcnResult.warnings,
+      errors: fcnResult.errors,
+      source: 'backend-display-cache',
+      formalBookDataTouched: false,
     });
 
-    const dqaqRun = await runCacheModule('dqaq', async () => {
-      const result = await calculateDQAQDisplayCache();
-      await dqaqCurrentRef.set({
-        runId,
-        module: 'dqaq',
-        status: result.status,
-        calculatedAt: FieldValue.serverTimestamp(),
-        data: result.data,
-        warnings: result.warnings,
-        errors: result.errors,
-        source: 'backend-display-cache',
-        formalBookDataTouched: false,
-      });
-      return { status: result.status, report: buildDQAQReport(result), warnings: result.warnings, errors: result.errors };
+    const dqaqResult = await calculateDQAQDisplayCache();
+    await dqaqCurrentRef.set({
+      runId,
+      module: 'dqaq',
+      status: dqaqResult.status,
+      calculatedAt: FieldValue.serverTimestamp(),
+      data: dqaqResult.data,
+      warnings: dqaqResult.warnings,
+      errors: dqaqResult.errors,
+      source: 'backend-display-cache',
+      formalBookDataTouched: false,
     });
 
-    const optionRun = await runCacheModule('option', async () => {
-      const result = await calculateOptionDisplayCache();
-      await optionCurrentRef.set({
-        runId,
-        module: 'option',
-        status: result.status,
-        calculatedAt: FieldValue.serverTimestamp(),
-        data: result.data,
-        warnings: result.warnings,
-        errors: result.errors,
-        source: 'backend-display-cache',
-        formalBookDataTouched: false,
-      });
-      return { status: result.status, report: buildOptionReport(result), warnings: result.warnings, errors: result.errors };
+    const optionResult = await calculateOptionDisplayCache();
+    await optionCurrentRef.set({
+      runId,
+      module: 'option',
+      status: optionResult.status,
+      calculatedAt: FieldValue.serverTimestamp(),
+      data: optionResult.data,
+      warnings: optionResult.warnings,
+      errors: optionResult.errors,
+      source: 'backend-display-cache',
+      formalBookDataTouched: false,
     });
 
-    const cashRun = await runCacheModule('cash', async () => {
-      const result = await calculateCashDisplayCache();
-      await cashCurrentRef.set({
-        runId,
-        module: 'cash',
-        status: result.status,
-        calculatedAt: FieldValue.serverTimestamp(),
-        data: result.data,
-        warnings: result.warnings,
-        errors: result.errors,
-        source: 'backend-display-cache',
-        formalBookDataTouched: false,
-      });
-      return { status: result.status, report: buildCashReport(result), warnings: result.warnings, errors: result.errors };
+    const cashResult = await calculateCashDisplayCache();
+    await cashCurrentRef.set({
+      runId,
+      module: 'cash',
+      status: cashResult.status,
+      calculatedAt: FieldValue.serverTimestamp(),
+      data: cashResult.data,
+      warnings: cashResult.warnings,
+      errors: cashResult.errors,
+      source: 'backend-display-cache',
+      formalBookDataTouched: false,
     });
 
-    const summaryRun = await runCacheModule('summary', async () => {
-      const result = await calculateSummaryDisplayCache();
-      await summaryCurrentRef.set({
-        runId,
-        module: 'summary',
-        status: result.status,
-        calculatedAt: FieldValue.serverTimestamp(),
-        data: result.data,
-        warnings: result.warnings,
-        errors: result.errors,
-        source: 'backend-display-cache',
-        formalBookDataTouched: false,
-      });
-      return { status: result.status, report: buildSummaryReport(result), warnings: result.warnings, errors: result.errors };
+    const summaryResult = await calculateSummaryDisplayCache();
+    await summaryCurrentRef.set({
+      runId,
+      module: 'summary',
+      status: summaryResult.status,
+      calculatedAt: FieldValue.serverTimestamp(),
+      data: summaryResult.data,
+      warnings: summaryResult.warnings,
+      errors: summaryResult.errors,
+      source: 'backend-display-cache',
+      formalBookDataTouched: false,
     });
 
     const finishedAt = new Date();
-    const moduleStatuses = {
-      infrastructure: 'success' as ModuleStatus,
-      stocks: stocksRun.status,
-      fcn: fcnRun.status,
-      dqaq: dqaqRun.status,
-      option: optionRun.status,
-      cash: cashRun.status,
-      summary: summaryRun.status,
-    };
-    const moduleRuns = [stocksRun, fcnRun, dqaqRun, optionRun, cashRun, summaryRun];
-    const runStatus = Object.values(moduleStatuses).every((status) => status === 'success') ? 'success' : 'partial_success';
+    const runStatus = stocksResult.status === 'success' && fcnResult.status === 'success' && dqaqResult.status === 'success' && optionResult.status === 'success' && cashResult.status === 'success' && summaryResult.status === 'success' ? 'success' : 'partial_success';
     const runWarnings = [
       ...(secretResult.warning ? [secretResult.warning] : []),
-      ...moduleRuns.flatMap((item) => item.warnings),
-    ];
-    const runErrors = [
-      ...moduleRuns.flatMap((item) => item.errors),
+      ...stocksResult.warnings,
+      ...fcnResult.warnings,
+      ...dqaqResult.warnings,
+      ...optionResult.warnings,
+      ...cashResult.warnings,
+      ...summaryResult.warnings,
     ];
     const moduleReports = {
       infrastructure: {
         status: 'success',
         message: 'Display cache backend infrastructure is reachable.',
       },
-      stocks: stocksRun.report,
-      fcn: fcnRun.report,
-      dqaq: dqaqRun.report,
-      option: optionRun.report,
-      cash: cashRun.report,
-      summary: summaryRun.report,
+      stocks: buildStocksReport(stocksResult),
+      fcn: buildFCNReport(fcnResult),
+      dqaq: buildDQAQReport(dqaqResult),
+      option: buildOptionReport(optionResult),
+      cash: buildCashReport(cashResult),
+      summary: buildSummaryReport(summaryResult),
     };
     await runRef.set({
       status: runStatus,
       finishedAt: Timestamp.fromDate(finishedAt),
-      modules: moduleStatuses,
+      modules: {
+        infrastructure: 'success',
+        stocks: stocksResult.status,
+        fcn: fcnResult.status,
+        dqaq: dqaqResult.status,
+        option: optionResult.status,
+        cash: cashResult.status,
+        summary: summaryResult.status,
+      },
       moduleReports,
       warnings: runWarnings,
-      errors: runErrors,
       currentDocs: {
         infrastructure: `${CURRENT_COLLECTION}/infrastructure`,
         stocks: `${CURRENT_COLLECTION}/stocks`,
@@ -451,7 +390,15 @@ async function handleRefresh(request: NextRequest) {
       runId,
       status: runStatus,
       completedAt: Timestamp.fromDate(finishedAt),
-      modules: moduleStatuses,
+      modules: {
+        infrastructure: 'success',
+        stocks: stocksResult.status,
+        fcn: fcnResult.status,
+        dqaq: dqaqResult.status,
+        option: optionResult.status,
+        cash: cashResult.status,
+        summary: summaryResult.status,
+      },
       currentDocs: {
         infrastructure: `${CURRENT_COLLECTION}/infrastructure`,
         stocks: `${CURRENT_COLLECTION}/stocks`,
@@ -463,7 +410,6 @@ async function handleRefresh(request: NextRequest) {
       },
       moduleReports,
       warnings: runWarnings,
-      errors: runErrors,
       source: 'backend-display-cache',
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
@@ -483,15 +429,21 @@ async function handleRefresh(request: NextRequest) {
         cash: `${CURRENT_COLLECTION}/cash`,
         summary: `${CURRENT_COLLECTION}/summary`,
       },
-      modules: moduleStatuses,
+      modules: {
+        infrastructure: 'success',
+        stocks: stocksResult.status,
+        fcn: fcnResult.status,
+        dqaq: dqaqResult.status,
+        option: optionResult.status,
+        cash: cashResult.status,
+        summary: summaryResult.status,
+      },
       moduleReports,
       warnings: runWarnings,
-      errors: runErrors,
       prunedRunReports,
     }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error('[display-cache] refresh failed', error);
     await runRef.set({
       runId,
       status: 'failed',
