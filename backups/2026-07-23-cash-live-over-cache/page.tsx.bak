@@ -49,21 +49,6 @@ const formatTime = (val: any) => {
     return new Date(val).toLocaleString();
 };
 
-const getLatestSnapshotTime = (snapshot: any) => {
-    const times: number[] = [];
-    snapshot.forEach((docSnap: any) => {
-        const data = docSnap.data();
-        times.push(
-            getTime(data.updatedAt)
-            || getTime(data.createdAt)
-            || getTime(data.date)
-            || getTime(data.tradeDate)
-            || 0
-        );
-    });
-    return times.length ? Math.max(...times) : 0;
-};
-
 // --- 类型定义 ---
 interface InitialCash {
   id: string;
@@ -86,8 +71,6 @@ interface SummaryMatrix {
   accounts: string[];
   markets: string[];
   rawMatrix: Record<string, Record<string, number>>;
-  updatedAt?: any;
-  createdAt?: any;
 }
 
 interface CashDisplayCacheData {
@@ -112,15 +95,6 @@ type CashDisplayCachePayload = {
 };
 
 const CURRENCIES = ['USD', 'CNY', 'HKD', 'JPY'];
-const LIVE_CASH_INPUT_KEYS = [
-  'initialCash',
-  'cashTrades',
-  'stockSummary',
-  'peSummary',
-  'cbbcSummary',
-  'optionSummary',
-  'fcnSummary',
-];
 
 export default function CashHoldingsPage() {
   const [user, setUser] = useState<any>(null);
@@ -144,10 +118,7 @@ export default function CashHoldingsPage() {
   const [isFetchingFx, setIsFetchingFx] = useState(false);
   const [displayCacheData, setDisplayCacheData] = useState<CashDisplayCacheData | null>(null);
   const [displayCacheTime, setDisplayCacheTime] = useState<string>('');
-  const [displayCacheMillis, setDisplayCacheMillis] = useState(0);
   const [displayCacheWarnings, setDisplayCacheWarnings] = useState<string[]>([]);
-  const [liveInputLoaded, setLiveInputLoaded] = useState<Record<string, boolean>>({});
-  const [liveInputUpdatedAt, setLiveInputUpdatedAt] = useState<Record<string, number>>({});
   const [showBaseFxModal, setShowBaseFxModal] = useState(false);
   const [draftBaseFx, setDraftBaseFx] = useState<Record<string, string>>({});
   const [showFxModal, setShowFxModal] = useState(false);
@@ -169,10 +140,6 @@ export default function CashHoldingsPage() {
   const [dbRecords, setDbRecords] = useState<any[]>([]);
   const [loadingDb, setLoadingDb] = useState(false);
   const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
-  const markLiveInputLoaded = (key: string, updatedAt = 0) => {
-      setLiveInputLoaded(prev => prev[key] ? prev : { ...prev, [key]: true });
-      setLiveInputUpdatedAt(prev => ({ ...prev, [key]: Math.max(prev[key] || 0, updatedAt) }));
-  };
 
   // --- 数据订阅 (实时同步) ---
   useEffect(() => {
@@ -209,7 +176,6 @@ export default function CashHoldingsPage() {
                 setBaseDate(bDate);
                 setBaseFxRates(bFx);
                 setInitialCashList(starts);
-                markLiveInputLoaded('initialCash', getLatestSnapshotTime(snapshot));
             }));
 
             // 2. 资金流水数据库
@@ -219,28 +185,21 @@ export default function CashHoldingsPage() {
                     trades.push({ id: docSnap.id, ...docSnap.data() } as CashTrade);
                 });
                 setCashTrades(trades);
-                markLiveInputLoaded('cashTrades', getLatestSnapshotTime(snapshot));
             }));
 
             // 3-7. 各业务线的最新净买入总结
             const summaries = [
-                { path: 'sip_holding_cash_stock', setter: setSpotSummary, key: 'stockSummary' }, 
-                { path: 'sip_holding_cash_pe', setter: setPeSummary, key: 'peSummary' },
-                { path: 'sip_holding_cash_cbbc', setter: setCbbcSummary, key: 'cbbcSummary' },
-                { path: 'sip_holding_cash_option', setter: setOptionSummary, key: 'optionSummary' },
-                { path: 'sip_holding_cash_fcn', setter: setFcnSummary, key: 'fcnSummary' },
+                { path: 'sip_holding_cash_stock', setter: setSpotSummary }, 
+                { path: 'sip_holding_cash_pe', setter: setPeSummary },
+                { path: 'sip_holding_cash_cbbc', setter: setCbbcSummary },
+                { path: 'sip_holding_cash_option', setter: setOptionSummary },
+                { path: 'sip_holding_cash_fcn', setter: setFcnSummary },
             ];
 
-            summaries.forEach(({ path, setter, key }) => {
+            summaries.forEach(({ path, setter }) => {
                 unsubs.push(onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', path, 'latest_summary'), (docSnap) => {
-                    if (docSnap.exists()) {
-                        const data = docSnap.data() as SummaryMatrix;
-                        setter(data);
-                        markLiveInputLoaded(key, getTime(data.updatedAt) || getTime(data.createdAt));
-                    } else {
-                        setter(null);
-                        markLiveInputLoaded(key, 0);
-                    }
+                    if (docSnap.exists()) setter(docSnap.data() as SummaryMatrix);
+                    else setter(null);
                 }));
             });
 
@@ -320,7 +279,6 @@ export default function CashHoldingsPage() {
               const calculatedAtValue = cache.calculatedAt?.toDate?.()
                   || (cache.calculatedAt?.seconds ? new Date(cache.calculatedAt.seconds * 1000) : null);
               if (calculatedAtValue) {
-                  setDisplayCacheMillis(calculatedAtValue.getTime());
                   setDisplayCacheTime(calculatedAtValue.toLocaleString('zh-CN', { hour12: false }));
               }
               setDisplayCacheWarnings(Array.isArray(cache.warnings) ? cache.warnings.slice(0, 3) : []);
@@ -534,16 +492,10 @@ export default function CashHoldingsPage() {
       initialCashList.forEach(i => { rawMatrix[i.currency][i.account] += i.amount; });
       return { accounts, markets, rawMatrix };
   }, [initialCashList]);
-  const liveCashInputsReady = LIVE_CASH_INPUT_KEYS.every(key => liveInputLoaded[key]);
-  const liveInputLatestMillis = useMemo(() => (
-      Math.max(0, ...LIVE_CASH_INPUT_KEYS.map(key => liveInputUpdatedAt[key] || 0))
-  ), [liveInputUpdatedAt]);
-  const cacheIsNewerOrEqual = Boolean(displayCacheData) && displayCacheMillis > 0 && displayCacheMillis >= liveInputLatestMillis;
-  const usingBackendCacheFallback = Boolean(displayCacheData) && (!liveCashInputsReady || cacheIsNewerOrEqual);
-  const effectiveCurrentCashStats = usingBackendCacheFallback && displayCacheData?.currentCashStats ? displayCacheData.currentCashStats : currentCashStats;
-  const effectiveCurrentPlStats = usingBackendCacheFallback && displayCacheData?.currentPlStats ? displayCacheData.currentPlStats : currentPlStats;
-  const effectiveCashBreakdownStats = usingBackendCacheFallback && displayCacheData?.cashBreakdownStats ? displayCacheData.cashBreakdownStats : cashBreakdownStats;
-  const effectiveInitialCashStats = usingBackendCacheFallback && displayCacheData?.initialCashStats ? displayCacheData.initialCashStats : initialCashStats;
+  const effectiveCurrentCashStats = displayCacheData?.currentCashStats || currentCashStats;
+  const effectiveCurrentPlStats = displayCacheData?.currentPlStats || currentPlStats;
+  const effectiveCashBreakdownStats = displayCacheData?.cashBreakdownStats || cashBreakdownStats;
+  const effectiveInitialCashStats = displayCacheData?.initialCashStats || initialCashStats;
 
   // --- 入库逻辑 ---
   const handleSaveMktValStats = async () => {
@@ -661,12 +613,7 @@ export default function CashHoldingsPage() {
         {/* === 模块 1：当前现金市值 2D 统计表 === */}
         {displayCacheTime && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 shadow-sm">
-                <div className="font-semibold">
-                    Backend display cache loaded: {displayCacheTime}. {usingBackendCacheFallback ? 'The page is using backend cache because it is newer or live inputs are still loading.' : 'Live published inputs are newer, so the page is using freshly recomputed cash statistics.'} Formal publishing still requires manual save.
-                </div>
-                <div className="mt-1 font-mono text-[11px]">
-                    cache={displayCacheMillis ? new Date(displayCacheMillis).toLocaleString('zh-CN', { hour12: false }) : '--'} | live={liveInputLatestMillis ? new Date(liveInputLatestMillis).toLocaleString('zh-CN', { hour12: false }) : '--'}
-                </div>
+                <div className="font-semibold">Backend display cache loaded: {displayCacheTime}. The page is showing cached cash statistics first; formal publishing still requires manual save.</div>
                 {displayCacheWarnings.length > 0 && (
                     <div className="mt-1 leading-relaxed">Cache notes: {displayCacheWarnings.join('; ')}</div>
                 )}

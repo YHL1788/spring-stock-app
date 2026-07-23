@@ -49,21 +49,6 @@ const formatTime = (val: any) => {
     return new Date(val).toLocaleString();
 };
 
-const getLatestSnapshotTime = (snapshot: any) => {
-    const times: number[] = [];
-    snapshot.forEach((docSnap: any) => {
-        const data = docSnap.data();
-        times.push(
-            getTime(data.updatedAt)
-            || getTime(data.createdAt)
-            || getTime(data.date)
-            || getTime(data.tradeDate)
-            || 0
-        );
-    });
-    return times.length ? Math.max(...times) : 0;
-};
-
 // --- 类型定义 ---
 interface InitialCash {
   id: string;
@@ -86,8 +71,6 @@ interface SummaryMatrix {
   accounts: string[];
   markets: string[];
   rawMatrix: Record<string, Record<string, number>>;
-  updatedAt?: any;
-  createdAt?: any;
 }
 
 interface CashDisplayCacheData {
@@ -144,10 +127,8 @@ export default function CashHoldingsPage() {
   const [isFetchingFx, setIsFetchingFx] = useState(false);
   const [displayCacheData, setDisplayCacheData] = useState<CashDisplayCacheData | null>(null);
   const [displayCacheTime, setDisplayCacheTime] = useState<string>('');
-  const [displayCacheMillis, setDisplayCacheMillis] = useState(0);
   const [displayCacheWarnings, setDisplayCacheWarnings] = useState<string[]>([]);
   const [liveInputLoaded, setLiveInputLoaded] = useState<Record<string, boolean>>({});
-  const [liveInputUpdatedAt, setLiveInputUpdatedAt] = useState<Record<string, number>>({});
   const [showBaseFxModal, setShowBaseFxModal] = useState(false);
   const [draftBaseFx, setDraftBaseFx] = useState<Record<string, string>>({});
   const [showFxModal, setShowFxModal] = useState(false);
@@ -169,9 +150,8 @@ export default function CashHoldingsPage() {
   const [dbRecords, setDbRecords] = useState<any[]>([]);
   const [loadingDb, setLoadingDb] = useState(false);
   const [editRecordModal, setEditRecordModal] = useState<{show: boolean, record: any, rawJson: string} | null>(null);
-  const markLiveInputLoaded = (key: string, updatedAt = 0) => {
+  const markLiveInputLoaded = (key: string) => {
       setLiveInputLoaded(prev => prev[key] ? prev : { ...prev, [key]: true });
-      setLiveInputUpdatedAt(prev => ({ ...prev, [key]: Math.max(prev[key] || 0, updatedAt) }));
   };
 
   // --- 数据订阅 (实时同步) ---
@@ -209,7 +189,7 @@ export default function CashHoldingsPage() {
                 setBaseDate(bDate);
                 setBaseFxRates(bFx);
                 setInitialCashList(starts);
-                markLiveInputLoaded('initialCash', getLatestSnapshotTime(snapshot));
+                markLiveInputLoaded('initialCash');
             }));
 
             // 2. 资金流水数据库
@@ -219,7 +199,7 @@ export default function CashHoldingsPage() {
                     trades.push({ id: docSnap.id, ...docSnap.data() } as CashTrade);
                 });
                 setCashTrades(trades);
-                markLiveInputLoaded('cashTrades', getLatestSnapshotTime(snapshot));
+                markLiveInputLoaded('cashTrades');
             }));
 
             // 3-7. 各业务线的最新净买入总结
@@ -233,14 +213,9 @@ export default function CashHoldingsPage() {
 
             summaries.forEach(({ path, setter, key }) => {
                 unsubs.push(onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', path, 'latest_summary'), (docSnap) => {
-                    if (docSnap.exists()) {
-                        const data = docSnap.data() as SummaryMatrix;
-                        setter(data);
-                        markLiveInputLoaded(key, getTime(data.updatedAt) || getTime(data.createdAt));
-                    } else {
-                        setter(null);
-                        markLiveInputLoaded(key, 0);
-                    }
+                    if (docSnap.exists()) setter(docSnap.data() as SummaryMatrix);
+                    else setter(null);
+                    markLiveInputLoaded(key);
                 }));
             });
 
@@ -320,7 +295,6 @@ export default function CashHoldingsPage() {
               const calculatedAtValue = cache.calculatedAt?.toDate?.()
                   || (cache.calculatedAt?.seconds ? new Date(cache.calculatedAt.seconds * 1000) : null);
               if (calculatedAtValue) {
-                  setDisplayCacheMillis(calculatedAtValue.getTime());
                   setDisplayCacheTime(calculatedAtValue.toLocaleString('zh-CN', { hour12: false }));
               }
               setDisplayCacheWarnings(Array.isArray(cache.warnings) ? cache.warnings.slice(0, 3) : []);
@@ -535,11 +509,7 @@ export default function CashHoldingsPage() {
       return { accounts, markets, rawMatrix };
   }, [initialCashList]);
   const liveCashInputsReady = LIVE_CASH_INPUT_KEYS.every(key => liveInputLoaded[key]);
-  const liveInputLatestMillis = useMemo(() => (
-      Math.max(0, ...LIVE_CASH_INPUT_KEYS.map(key => liveInputUpdatedAt[key] || 0))
-  ), [liveInputUpdatedAt]);
-  const cacheIsNewerOrEqual = Boolean(displayCacheData) && displayCacheMillis > 0 && displayCacheMillis >= liveInputLatestMillis;
-  const usingBackendCacheFallback = Boolean(displayCacheData) && (!liveCashInputsReady || cacheIsNewerOrEqual);
+  const usingBackendCacheFallback = Boolean(displayCacheData) && !liveCashInputsReady;
   const effectiveCurrentCashStats = usingBackendCacheFallback && displayCacheData?.currentCashStats ? displayCacheData.currentCashStats : currentCashStats;
   const effectiveCurrentPlStats = usingBackendCacheFallback && displayCacheData?.currentPlStats ? displayCacheData.currentPlStats : currentPlStats;
   const effectiveCashBreakdownStats = usingBackendCacheFallback && displayCacheData?.cashBreakdownStats ? displayCacheData.cashBreakdownStats : cashBreakdownStats;
@@ -662,10 +632,7 @@ export default function CashHoldingsPage() {
         {displayCacheTime && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 shadow-sm">
                 <div className="font-semibold">
-                    Backend display cache loaded: {displayCacheTime}. {usingBackendCacheFallback ? 'The page is using backend cache because it is newer or live inputs are still loading.' : 'Live published inputs are newer, so the page is using freshly recomputed cash statistics.'} Formal publishing still requires manual save.
-                </div>
-                <div className="mt-1 font-mono text-[11px]">
-                    cache={displayCacheMillis ? new Date(displayCacheMillis).toLocaleString('zh-CN', { hour12: false }) : '--'} | live={liveInputLatestMillis ? new Date(liveInputLatestMillis).toLocaleString('zh-CN', { hour12: false }) : '--'}
+                    Backend display cache loaded: {displayCacheTime}. {usingBackendCacheFallback ? 'Live inputs are still loading, so cached cash statistics are shown temporarily.' : 'Live inputs are loaded, so the page is using freshly recomputed cash statistics.'} Formal publishing still requires manual save.
                 </div>
                 {displayCacheWarnings.length > 0 && (
                     <div className="mt-1 leading-relaxed">Cache notes: {displayCacheWarnings.join('; ')}</div>

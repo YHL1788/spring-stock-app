@@ -44,19 +44,6 @@ const getDataCollection = (collectionName: string) => {
 
 const getDataDoc = (collectionName: string, docId: string) => getDataCollection(collectionName).doc(docId);
 
-const toMillis = (value: any): number => {
-  if (!value) return 0;
-  if (typeof value?.toMillis === 'function') return value.toMillis();
-  if (typeof value?.toDate === 'function') return value.toDate().getTime();
-  if (typeof value?.seconds === 'number') return value.seconds * 1000;
-  if (typeof value === 'number') return value < 10000000000 ? value * 1000 : value;
-  if (typeof value === 'string') {
-    const time = new Date(value).getTime();
-    return Number.isNaN(time) ? 0 : time;
-  }
-  return 0;
-};
-
 const timestampToIso = (value: any) => {
   if (!value) return new Date().toISOString();
   if (value.toDate && typeof value.toDate === 'function') return value.toDate().toISOString();
@@ -69,72 +56,20 @@ const fetchDisplayCacheData = async (moduleName: string) => {
   const snapshot = await getDataDoc('sip_display_cache_current', moduleName).get();
   if (!snapshot.exists) return null;
   const docData = snapshot.data();
-  const updatedAt = toMillis(docData?.calculatedAt) || toMillis(docData?.updatedAt);
   return {
     data: docData?.data || {},
-    updatedAt,
-    updatedAtIso: updatedAt ? new Date(updatedAt).toISOString() : timestampToIso(docData?.calculatedAt),
+    updatedAt: timestampToIso(docData?.calculatedAt),
   };
 };
 
-type SummaryCandidate = {
-  source: 'display_cache' | 'formal_summary';
-  label: string;
-  matrix: SummaryMatrixData;
-  updatedAt: number;
-  updatedAtIso: string;
-};
-
-const fetchFormalSummary = async (collectionName: string): Promise<SummaryCandidate | null> => {
+const fetchFormalSummary = async (collectionName: string): Promise<SummaryMatrixData | null> => {
   const snapshot = await getDataDoc(collectionName, 'latest_summary').get();
-  if (!snapshot.exists) return null;
-  const matrix = snapshot.data() as SummaryMatrixData;
-  const updatedAt = toMillis((matrix as any).updatedAt) || toMillis((matrix as any).createdAt);
-  return {
-    source: 'formal_summary',
-    label: `${collectionName}/latest_summary`,
-    matrix,
-    updatedAt,
-    updatedAtIso: updatedAt ? new Date(updatedAt).toISOString() : timestampToIso((matrix as any).updatedAt),
-  };
+  return snapshot.exists ? snapshot.data() as SummaryMatrixData : null;
 };
 
 const withUpdatedAt = (matrix: SummaryMatrixData | null | undefined, updatedAt: string): SummaryMatrixData | null => {
   if (!matrix || !Array.isArray(matrix.markets) || !matrix.rawMatrix) return null;
   return { ...matrix, updatedAt };
-};
-
-const buildDisplayCandidate = (
-  label: string,
-  matrix: SummaryMatrixData | null | undefined,
-  updatedAt: number,
-  updatedAtIso: string,
-): SummaryCandidate | null => {
-  const normalized = withUpdatedAt(matrix, updatedAtIso);
-  if (!normalized) return null;
-  return {
-    source: 'display_cache',
-    label,
-    matrix: normalized,
-    updatedAt,
-    updatedAtIso,
-  };
-};
-
-const chooseNewestSummary = (...candidates: Array<SummaryCandidate | null>) => {
-  const available = candidates.filter(Boolean) as SummaryCandidate[];
-  if (available.length === 0) return null;
-  return available.sort((a, b) => b.updatedAt - a.updatedAt)[0];
-};
-
-const trackChosenSummary = (
-  chosen: SummaryCandidate | null,
-  displayCacheInputs: string[],
-  formalSummaryInputs: string[],
-) => {
-  if (!chosen) return;
-  if (chosen.source === 'display_cache') displayCacheInputs.push(chosen.label);
-  else formalSummaryInputs.push(chosen.label);
 };
 
 const mergeFxRates = (target: Record<string, number>, source?: Record<string, number>) => {
@@ -156,40 +91,28 @@ export const calculateSummaryDisplayCache = async (): Promise<SummaryDisplayCach
   const fxRates: Record<string, number> = { ...FALLBACK_FX_RATES };
 
   await Promise.all(DISPLAY_ASSETS.map(async (assetId) => {
-    const [cached, formalMkt, formalPl] = await Promise.all([
-      fetchDisplayCacheData(assetId),
-      fetchFormalSummary(`sip_holding_${assetId}_mktvalue`),
-      fetchFormalSummary(`sip_holding_${assetId}_pl`),
-    ]);
-    if (!cached && !formalMkt && !formalPl) {
-      missingInputs.push(`${assetId} display/formal summaries`);
+    const cached = await fetchDisplayCacheData(assetId);
+    if (!cached) {
+      missingInputs.push(`${assetId} display cache`);
+      return;
+    }
+    displayCacheInputs.push(`${assetId} display cache`);
+    if (assetId === 'cash') {
+      const mkt = withUpdatedAt(cached.data.currentCashStats, cached.updatedAt);
+      const pl = withUpdatedAt(cached.data.currentPlStats, cached.updatedAt);
+      if (mkt) mktDataMap[assetId] = mkt;
+      if (pl) plDataMap[assetId] = pl;
+      mergeFxRates(fxRates, cached.data.fxRates);
       return;
     }
 
-    let cacheMkt: SummaryCandidate | null = null;
-    let cachePl: SummaryCandidate | null = null;
-    if (assetId === 'cash') {
-      cacheMkt = buildDisplayCandidate(`${assetId}.currentCashStats`, cached?.data?.currentCashStats, cached?.updatedAt || 0, cached?.updatedAtIso || new Date().toISOString());
-      cachePl = buildDisplayCandidate(`${assetId}.currentPlStats`, cached?.data?.currentPlStats, cached?.updatedAt || 0, cached?.updatedAtIso || new Date().toISOString());
-    } else {
-      cacheMkt = buildDisplayCandidate(`${assetId}.currentMktStats`, cached?.data?.currentMktStats, cached?.updatedAt || 0, cached?.updatedAtIso || new Date().toISOString());
-      cachePl = buildDisplayCandidate(`${assetId}.currentPlStats`, cached?.data?.currentPlStats, cached?.updatedAt || 0, cached?.updatedAtIso || new Date().toISOString());
-    }
-
-    const mkt = chooseNewestSummary(cacheMkt, formalMkt);
-    const pl = chooseNewestSummary(cachePl, formalPl);
-
-    if (mkt) {
-      mktDataMap[assetId] = mkt.matrix;
-      trackChosenSummary(mkt, displayCacheInputs, formalSummaryInputs);
-    }
+    const mkt = withUpdatedAt(cached.data.currentMktStats, cached.updatedAt);
+    const pl = withUpdatedAt(cached.data.currentPlStats, cached.updatedAt);
+    if (mkt) mktDataMap[assetId] = mkt;
     else missingInputs.push(`${assetId} currentMktStats`);
-    if (pl) {
-      plDataMap[assetId] = pl.matrix;
-      trackChosenSummary(pl, displayCacheInputs, formalSummaryInputs);
-    }
+    if (pl) plDataMap[assetId] = pl;
     else missingInputs.push(`${assetId} currentPlStats`);
-    if (cached) mergeFxRates(fxRates, cached.data.fxRates || cached.data.quoteStatus?.fxRates);
+    mergeFxRates(fxRates, cached.data.fxRates || cached.data.quoteStatus?.fxRates);
   }));
 
   await Promise.all(FORMAL_ONLY_ASSETS.map(async (assetId) => {
@@ -198,14 +121,14 @@ export const calculateSummaryDisplayCache = async (): Promise<SummaryDisplayCach
       fetchFormalSummary(`sip_holding_${assetId}_pl`),
     ]);
     if (mkt) {
-      mktDataMap[assetId] = mkt.matrix;
-      formalSummaryInputs.push(mkt.label);
+      mktDataMap[assetId] = mkt;
+      formalSummaryInputs.push(`sip_holding_${assetId}_mktvalue/latest_summary`);
     } else {
       missingInputs.push(`${assetId} formal mktvalue summary`);
     }
     if (pl) {
-      plDataMap[assetId] = pl.matrix;
-      formalSummaryInputs.push(pl.label);
+      plDataMap[assetId] = pl;
+      formalSummaryInputs.push(`sip_holding_${assetId}_pl/latest_summary`);
     } else {
       missingInputs.push(`${assetId} formal pl summary`);
     }

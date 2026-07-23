@@ -4,8 +4,6 @@ type SummaryMatrix = {
   accounts?: string[];
   markets?: string[];
   rawMatrix?: Record<string, Record<string, number>>;
-  updatedAt?: any;
-  createdAt?: any;
 };
 
 type PlSummaryMatrix = {
@@ -82,19 +80,6 @@ const FALLBACK_FX_RATES: Record<string, number> = {
 const toNumber = (value: unknown, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
-};
-
-const toMillis = (value: any): number => {
-  if (!value) return 0;
-  if (typeof value?.toMillis === 'function') return value.toMillis();
-  if (typeof value?.toDate === 'function') return value.toDate().getTime();
-  if (typeof value?.seconds === 'number') return value.seconds * 1000;
-  if (typeof value === 'number') return value < 10000000000 ? value * 1000 : value;
-  if (typeof value === 'string') {
-    const time = new Date(value).getTime();
-    return Number.isNaN(time) ? 0 : time;
-  }
-  return 0;
 };
 
 const dataCollection = (collectionName: string) => {
@@ -184,56 +169,26 @@ const fetchCashTrades = async (): Promise<CashTrade[]> => {
   }));
 };
 
-type SummaryCandidate = {
-  source: 'display_cache' | 'formal_summary';
-  label: string;
-  summary: SummaryMatrix;
-  updatedAt: number;
-};
-
-const fetchFormalSummary = async (collectionName: string): Promise<SummaryCandidate | null> => {
+const fetchFormalSummary = async (collectionName: string): Promise<SummaryMatrix | null> => {
   const snapshot = await dataDoc(collectionName, 'latest_summary').get();
-  if (!snapshot.exists) return null;
-  const data = snapshot.data() as SummaryMatrix;
-  return {
-    source: 'formal_summary',
-    label: `${collectionName}/latest_summary`,
-    summary: data,
-    updatedAt: toMillis(data.updatedAt) || toMillis(data.createdAt),
-  };
+  return snapshot.exists ? snapshot.data() as SummaryMatrix : null;
 };
 
 const fetchCurrentCacheData = async (moduleName: string) => {
   const snapshot = await dataDoc('sip_display_cache_current', moduleName).get();
-  if (!snapshot.exists) return null;
-  const docData = snapshot.data();
-  return {
-    data: docData?.data || null,
-    updatedAt: toMillis(docData?.calculatedAt) || toMillis(docData?.updatedAt),
-  };
+  return snapshot.exists ? snapshot.data()?.data || null : null;
 };
 
 const pickSummaryFromCurrentCache = async (
   moduleName: string,
   fieldName: 'netBuyStats' | 'cashStats',
-): Promise<SummaryCandidate | null> => {
-  const cached = await fetchCurrentCacheData(moduleName);
-  const summary = cached?.data?.[fieldName];
+): Promise<SummaryMatrix | null> => {
+  const data = await fetchCurrentCacheData(moduleName);
+  const summary = data?.[fieldName];
   if (!summary || !Array.isArray(summary.accounts) || !Array.isArray(summary.markets) || !summary.rawMatrix) {
     return null;
   }
-  return {
-    source: 'display_cache',
-    label: `${moduleName}.${fieldName}`,
-    summary: summary as SummaryMatrix,
-    updatedAt: cached?.updatedAt || 0,
-  };
-};
-
-const chooseNewestSummary = (...candidates: Array<SummaryCandidate | null>) => {
-  const available = candidates.filter(Boolean) as SummaryCandidate[];
-  if (available.length === 0) return null;
-  return available.sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  return summary as SummaryMatrix;
 };
 
 const buildInitialCashStats = (initialCash: InitialCash[]) => {
@@ -381,36 +336,32 @@ export const calculateCashDisplayCache = async (): Promise<CashDisplayCacheResul
     fetchFormalSummary('sip_holding_cash_cbbc'),
   ]);
 
-  const stockChoice = chooseNewestSummary(stockCacheSummary, spotFormalSummary);
-  const fcnChoice = chooseNewestSummary(fcnCacheSummary, fcnFormalSummary);
-  const optionChoice = chooseNewestSummary(optionCacheSummary, optionFormalSummary);
+  const stockSummary = stockCacheSummary || spotFormalSummary;
+  const fcnSummary = fcnCacheSummary || fcnFormalSummary;
+  const optionSummary = optionCacheSummary || optionFormalSummary;
 
-  const stockSummary = stockChoice?.summary || null;
-  const fcnSummary = fcnChoice?.summary || null;
-  const optionSummary = optionChoice?.summary || null;
-
-  if (stockChoice?.source === 'display_cache') displayCacheInputs.push(stockChoice.label);
-  else if (stockChoice?.source === 'formal_summary') formalSummaryInputs.push(stockChoice.label);
+  if (stockCacheSummary) displayCacheInputs.push('stocks.netBuyStats');
+  else if (spotFormalSummary) formalSummaryInputs.push('sip_holding_cash_stock/latest_summary');
   else missingSummaryInputs.push('stock cash summary');
 
-  if (fcnChoice?.source === 'display_cache') displayCacheInputs.push(fcnChoice.label);
-  else if (fcnChoice?.source === 'formal_summary') formalSummaryInputs.push(fcnChoice.label);
+  if (fcnCacheSummary) displayCacheInputs.push('fcn.cashStats');
+  else if (fcnFormalSummary) formalSummaryInputs.push('sip_holding_cash_fcn/latest_summary');
   else missingSummaryInputs.push('fcn cash summary');
 
-  if (optionChoice?.source === 'display_cache') displayCacheInputs.push(optionChoice.label);
-  else if (optionChoice?.source === 'formal_summary') formalSummaryInputs.push(optionChoice.label);
+  if (optionCacheSummary) displayCacheInputs.push('option.cashStats');
+  else if (optionFormalSummary) formalSummaryInputs.push('sip_holding_cash_option/latest_summary');
   else missingSummaryInputs.push('option cash summary');
 
-  if (peFormalSummary) formalSummaryInputs.push(peFormalSummary.label);
+  if (peFormalSummary) formalSummaryInputs.push('sip_holding_cash_pe/latest_summary');
   else missingSummaryInputs.push('pe cash summary');
-  if (cbbcFormalSummary) formalSummaryInputs.push(cbbcFormalSummary.label);
+  if (cbbcFormalSummary) formalSummaryInputs.push('sip_holding_cash_cbbc/latest_summary');
   else missingSummaryInputs.push('cbbc cash summary');
 
   if (missingSummaryInputs.length > 0) {
     warnings.push(`Missing cash summary inputs: ${missingSummaryInputs.join(', ')}.`);
   }
 
-  const subSummaries = [stockSummary, peFormalSummary?.summary, cbbcFormalSummary?.summary, optionSummary, fcnSummary]
+  const subSummaries = [stockSummary, peFormalSummary, cbbcFormalSummary, optionSummary, fcnSummary]
     .filter(Boolean) as SummaryMatrix[];
   const fxCurrencies = new Set<string>();
   initialCash.forEach((item) => fxCurrencies.add(item.currency));
