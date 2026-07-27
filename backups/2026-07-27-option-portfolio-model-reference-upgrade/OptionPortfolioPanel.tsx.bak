@@ -1,0 +1,189 @@
+import {
+  BarChart3,
+  Calculator,
+  CircleDollarSign,
+  Layers3,
+  LineChart,
+  Plus,
+  ShieldAlert,
+  Sigma,
+  SlidersHorizontal,
+  Target,
+} from 'lucide-react';
+
+const roadmapItems = [
+  {
+    title: '组合腿录入',
+    description: '支持 Call / Put、买入 / 卖出、数量、执行价、到期日、波动率和期权价格。',
+    icon: <Layers3 size={18} />,
+  },
+  {
+    title: '组合 Greeks',
+    description: '汇总 Delta、Gamma、Vega、Theta，并可按标的、到期日、方向拆分。',
+    icon: <Sigma size={18} />,
+  },
+  {
+    title: '情景压力测试',
+    description: '观察标的价格、隐含波动率和剩余期限变化时，组合估值与风险的敏感性。',
+    icon: <ShieldAlert size={18} />,
+  },
+  {
+    title: '到期收益结构',
+    description: '展示 payoff 曲线、盈亏平衡点、最大盈利、最大亏损和关键价位。',
+    icon: <LineChart size={18} />,
+  },
+];
+
+const placeholderLegs = [
+  { leg: 'Leg 1', type: 'Call', side: 'Buy', strike: '--', expiry: '--', qty: '--' },
+  { leg: 'Leg 2', type: 'Call', side: 'Sell', strike: '--', expiry: '--', qty: '--' },
+  { leg: 'Leg 3', type: 'Put', side: 'Buy / Sell', strike: '--', expiry: '--', qty: '--' },
+];
+
+export default function OptionPortfolioPanel() {
+  return (
+    <div className="space-y-5">
+      <section className="overflow-hidden rounded-[26px] border border-slate-900/10 bg-white shadow-sm">
+        <div className="grid gap-5 bg-gradient-to-br from-[#123332] via-[#163d39] to-[#74421f] px-6 py-6 text-white lg:grid-cols-[1.15fr_0.85fr] lg:items-center">
+          <div>
+            <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.22em] text-[#f0bd82]">
+              <SlidersHorizontal size={14} />
+              Option Portfolio Model
+            </div>
+            <h3 className="mt-3 font-serif text-3xl font-semibold tracking-tight">期权组合模型</h3>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-200">
+              第一版先建立工作台入口。后续这里可以逐步接入多腿期权录入、Black-Scholes / 二叉树估值、
+              组合 Greeks、到期收益图和情景压力测试。
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <MiniMetric label="组合腿数" value="待录入" icon={<Layers3 size={15} />} />
+            <MiniMetric label="估值方法" value="待选择" icon={<Calculator size={15} />} />
+            <MiniMetric label="风险视角" value="Greeks" icon={<Sigma size={15} />} />
+            <MiniMetric label="结果币种" value="本币 / HKD" icon={<CircleDollarSign size={15} />} />
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
+        <div className="rounded-[24px] border border-slate-900/10 bg-white p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h4 className="font-serif text-xl font-semibold text-slate-900">组合腿草稿</h4>
+              <p className="mt-1 text-xs text-slate-500">后续会在这里新增、删除和编辑每一条期权腿。</p>
+            </div>
+            <button
+              type="button"
+              disabled
+              className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-400"
+            >
+              <Plus size={14} />
+              新增腿
+            </button>
+          </div>
+
+          <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
+            <table className="min-w-full text-xs">
+              <thead className="bg-[#f7f3eb] text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 text-left">腿</th>
+                  <th className="px-3 py-2 text-left">类型</th>
+                  <th className="px-3 py-2 text-left">方向</th>
+                  <th className="px-3 py-2 text-right">执行价</th>
+                  <th className="px-3 py-2 text-left">到期日</th>
+                  <th className="px-3 py-2 text-right">数量</th>
+                </tr>
+              </thead>
+              <tbody>
+                {placeholderLegs.map(item => (
+                  <tr key={item.leg} className="border-t border-slate-100">
+                    <td className="px-3 py-2 font-semibold text-slate-700">{item.leg}</td>
+                    <td className="px-3 py-2 text-slate-500">{item.type}</td>
+                    <td className="px-3 py-2 text-slate-500">{item.side}</td>
+                    <td className="px-3 py-2 text-right font-mono text-slate-400">{item.strike}</td>
+                    <td className="px-3 py-2 font-mono text-slate-400">{item.expiry}</td>
+                    <td className="px-3 py-2 text-right font-mono text-slate-400">{item.qty}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          {roadmapItems.map(item => (
+            <div key={item.title} className="rounded-[22px] border border-slate-900/10 bg-[#fffaf1] p-5 shadow-sm">
+              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#153a36] text-[#f0bd82]">
+                {item.icon}
+              </div>
+              <h4 className="mt-4 font-serif text-lg font-semibold text-slate-900">{item.title}</h4>
+              <p className="mt-2 text-xs leading-5 text-slate-500">{item.description}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="grid gap-5 lg:grid-cols-3">
+        <PlaceholderCard
+          title="组合 Greeks"
+          description="未来展示 Delta / Gamma / Vega / Theta 的组合净敞口。"
+          icon={<Sigma size={18} />}
+        />
+        <PlaceholderCard
+          title="到期收益图"
+          description="未来展示不同到期标的价格下的组合 payoff 曲线。"
+          icon={<BarChart3 size={18} />}
+        />
+        <PlaceholderCard
+          title="关键风险点"
+          description="未来提示最大亏损、盈亏平衡点、波动率冲击和临近到期风险。"
+          icon={<Target size={18} />}
+        />
+      </section>
+    </div>
+  );
+}
+
+function MiniMetric({
+  label,
+  value,
+  icon,
+}: {
+  label: string;
+  value: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/8 px-4 py-3 backdrop-blur">
+      <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-300">
+        <span className="text-[#f0bd82]">{icon}</span>
+        {label}
+      </div>
+      <div className="mt-1.5 text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function PlaceholderCard({
+  title,
+  description,
+  icon,
+}: {
+  title: string;
+  description: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-[22px] border border-dashed border-slate-300 bg-white/70 p-5">
+      <div className="flex items-center gap-2 text-sm font-bold text-[#153a36]">
+        {icon}
+        {title}
+      </div>
+      <p className="mt-2 text-xs leading-5 text-slate-500">{description}</p>
+      <div className="mt-4 rounded-2xl bg-slate-100 px-4 py-3 text-center text-xs font-semibold text-slate-400">
+        待接入计算逻辑
+      </div>
+    </div>
+  );
+}

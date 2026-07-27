@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
@@ -42,23 +42,6 @@ interface InitialHolding {
   account: string;
   quantity: number;
   costPrice: number;
-  updatedAt?: any;
-  createdAt?: any;
-}
-
-interface StockMktStats {
-  accounts: string[];
-  markets: string[];
-  rawMatrix: Record<string, Record<string, number>>;
-  updatedAt?: any;
-  createdAt?: any;
-}
-
-interface StockPlStats {
-  markets: string[];
-  rawMatrix: Record<string, { realized: number; unrealized: number; total: number }>;
-  updatedAt?: any;
-  createdAt?: any;
 }
 
 // --- 聚合后的持仓类型 ---
@@ -127,8 +110,6 @@ type StockMarketCache = {
 type StockDisplayCachePayload = {
     calculatedAt?: any;
     data?: {
-        currentMktStats?: StockMktStats;
-        currentPlStats?: StockPlStats;
         quoteStatus?: {
             fxRates?: Record<string, number>;
             quotes?: Record<string, { price: number; changePercent: number }>;
@@ -211,12 +192,6 @@ export default function SpotHoldingsPage() {
   const [quoteRefreshAttempted, setQuoteRefreshAttempted] = useState(false);
   const [cachedMarketDataTime, setCachedMarketDataTime] = useState<string>('');
   const [cachedMarketDataSource, setCachedMarketDataSource] = useState<string>('');
-  const [cachedMarketDataMillis, setCachedMarketDataMillis] = useState(0);
-  const [displayCacheMillis, setDisplayCacheMillis] = useState(0);
-  const [displayCacheMktStats, setDisplayCacheMktStats] = useState<StockMktStats | null>(null);
-  const [displayCachePlStats, setDisplayCachePlStats] = useState<StockPlStats | null>(null);
-  const [publishedMktStats, setPublishedMktStats] = useState<StockMktStats | null>(null);
-  const [publishedPlStats, setPublishedPlStats] = useState<StockPlStats | null>(null);
   const quoteRequestIdRef = useRef(0);
   const [showFxModal, setShowFxModal] = useState(false);
   
@@ -317,8 +292,6 @@ export default function SpotHoldingsPage() {
               setQuoteRefreshAttempted(true);
           }
           if (cache.savedAt) {
-              const savedMillis = new Date(cache.savedAt).getTime() || 0;
-              setCachedMarketDataMillis(savedMillis);
               setCachedMarketDataTime(new Date(cache.savedAt).toLocaleString('zh-CN', { hour12: false }));
               setCachedMarketDataSource('本地手动刷新缓存');
           }
@@ -337,22 +310,9 @@ export default function SpotHoldingsPage() {
               if (!snapshot.exists() || cancelled) return;
 
               const cache = snapshot.data() as StockDisplayCachePayload;
-              const calculatedAtValue = cache.calculatedAt?.toDate?.()
-                  || (cache.calculatedAt?.seconds ? new Date(cache.calculatedAt.seconds * 1000) : new Date());
-              const calculatedAtMillis = calculatedAtValue.getTime();
-              setDisplayCacheMillis(calculatedAtMillis);
-              setCachedMarketDataMillis(calculatedAtMillis);
-              setDisplayCacheMktStats(cache.data?.currentMktStats || null);
-              setDisplayCachePlStats(cache.data?.currentPlStats || null);
-
               const fxRates = cache.data?.quoteStatus?.fxRates || {};
               const quotes = cache.data?.quoteStatus?.quotes || {};
-              if (
-                  Object.keys(fxRates).length === 0
-                  && Object.keys(quotes).length === 0
-                  && !cache.data?.currentMktStats
-                  && !cache.data?.currentPlStats
-              ) return;
+              if (Object.keys(fxRates).length === 0 && Object.keys(quotes).length === 0) return;
 
               if (Object.keys(fxRates).length > 0) {
                   setGlobalFxRates(fxRates);
@@ -362,6 +322,8 @@ export default function SpotHoldingsPage() {
                   setQuoteRefreshAttempted(true);
               }
 
+              const calculatedAtValue = cache.calculatedAt?.toDate?.()
+                  || (cache.calculatedAt?.seconds ? new Date(cache.calculatedAt.seconds * 1000) : new Date());
               const savedAt = calculatedAtValue.toISOString();
               setCachedMarketDataTime(calculatedAtValue.toLocaleString('zh-CN', { hour12: false }));
               setCachedMarketDataSource('后端自动刷新缓存');
@@ -441,23 +403,11 @@ export default function SpotHoldingsPage() {
             });
 
             unsubMktValTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_stock_mktvalue', 'latest_summary'), (docSnap) => {
-                if (docSnap.exists()) {
-                    const data = docSnap.data() as StockMktStats;
-                    setPublishedMktStats(data);
-                    if (data.updatedAt) setLastMktValSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
-                } else {
-                    setPublishedMktStats(null);
-                }
+                if (docSnap.exists() && docSnap.data().updatedAt) setLastMktValSavedTime(new Date(docSnap.data().updatedAt).toLocaleString('zh-CN', { hour12: false }));
             });
 
             unsubPlTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_stock_pl', 'latest_summary'), (docSnap) => {
-                if (docSnap.exists()) {
-                    const data = docSnap.data() as StockPlStats;
-                    setPublishedPlStats(data);
-                    if (data.updatedAt) setLastPlSavedTime(new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }));
-                } else {
-                    setPublishedPlStats(null);
-                }
+                if (docSnap.exists() && docSnap.data().updatedAt) setLastPlSavedTime(new Date(docSnap.data().updatedAt).toLocaleString('zh-CN', { hour12: false }));
             });
 
             unsubInitTime = onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_spot_start', 'latest_summary'), (docSnap) => {
@@ -653,7 +603,6 @@ export default function SpotHoldingsPage() {
       if (requestId !== quoteRequestIdRef.current) return;
       setRealTimeQuotes(newQuotes);
       const savedAt = new Date().toISOString();
-      setCachedMarketDataMillis(new Date(savedAt).getTime());
       setCachedMarketDataTime(new Date(savedAt).toLocaleString('zh-CN', { hour12: false }));
       setCachedMarketDataSource('本页手动刷新缓存');
       if (typeof window !== 'undefined') {
@@ -822,32 +771,6 @@ export default function SpotHoldingsPage() {
       
       return { markets, rawMatrix };
   }, [calculatedHoldings]);
-
-  const liveInputLatestMillis = useMemo(() => {
-      const tradeMillis = allTrades.reduce((max, trade) => Math.max(max, trade.updatedAt || 0), 0);
-      const initMillis = initialHoldings.reduce((max, holding) => Math.max(max, getTime(holding.updatedAt) || getTime(holding.createdAt)), 0);
-      return Math.max(tradeMillis, initMillis, cachedMarketDataMillis);
-  }, [allTrades, initialHoldings, cachedMarketDataMillis]);
-
-  const effectiveCurrentMktStats = useMemo(() => {
-      const candidates = [
-          { source: 'live', time: liveInputLatestMillis, data: currentMktStats },
-          { source: 'display_cache', time: displayCacheMillis || getTime(displayCacheMktStats?.updatedAt) || getTime(displayCacheMktStats?.createdAt), data: displayCacheMktStats },
-          { source: 'published_summary', time: getTime(publishedMktStats?.updatedAt) || getTime(publishedMktStats?.createdAt), data: publishedMktStats },
-      ].filter(candidate => candidate.data && candidate.time >= 0) as Array<{ source: string; time: number; data: StockMktStats }>;
-
-      return candidates.reduce((best, candidate) => candidate.time >= best.time ? candidate : best, candidates[0] || { source: 'live', time: liveInputLatestMillis, data: currentMktStats }).data;
-  }, [currentMktStats, displayCacheMktStats, displayCacheMillis, publishedMktStats, liveInputLatestMillis]);
-
-  const effectiveCurrentPlStats = useMemo(() => {
-      const candidates = [
-          { source: 'live', time: liveInputLatestMillis, data: currentPlStats },
-          { source: 'display_cache', time: displayCacheMillis || getTime(displayCachePlStats?.updatedAt) || getTime(displayCachePlStats?.createdAt), data: displayCachePlStats },
-          { source: 'published_summary', time: getTime(publishedPlStats?.updatedAt) || getTime(publishedPlStats?.createdAt), data: publishedPlStats },
-      ].filter(candidate => candidate.data && candidate.time >= 0) as Array<{ source: string; time: number; data: StockPlStats }>;
-
-      return candidates.reduce((best, candidate) => candidate.time >= best.time ? candidate : best, candidates[0] || { source: 'live', time: liveInputLatestMillis, data: currentPlStats }).data;
-  }, [currentPlStats, displayCachePlStats, displayCacheMillis, publishedPlStats, liveInputLatestMillis]);
 
   // --- 模块 2: 盈亏分析处理 ---
   const pnlData = useMemo(() => {
@@ -1074,9 +997,9 @@ export default function SpotHoldingsPage() {
       setIsSavingMktVal(true);
       try {
           const payload = {
-              accounts: effectiveCurrentMktStats.accounts,
-              markets: effectiveCurrentMktStats.markets,
-              rawMatrix: effectiveCurrentMktStats.rawMatrix,
+              accounts: currentMktStats.accounts,
+              markets: currentMktStats.markets,
+              rawMatrix: currentMktStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_stock_mktvalue', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
@@ -1094,8 +1017,8 @@ export default function SpotHoldingsPage() {
       setIsSavingPl(true);
       try {
           const payload = {
-              markets: effectiveCurrentPlStats.markets,
-              rawMatrix: effectiveCurrentPlStats.rawMatrix,
+              markets: currentPlStats.markets,
+              rawMatrix: currentPlStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_stock_pl', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
@@ -1533,22 +1456,22 @@ export default function SpotHoldingsPage() {
                         <thead className="bg-indigo-100/50 text-indigo-900 font-medium">
                             <tr>
                                 <th className="px-3 py-2 text-center border-b border-r border-indigo-100 bg-indigo-50/50">币种 \ 账户</th>
-                                {effectiveCurrentMktStats.accounts.map(acc => (
+                                {currentMktStats.accounts.map(acc => (
                                     <th key={acc} className="px-3 py-2 border-b border-indigo-100">{acc}</th>
                                 ))}
                                 <th className="px-3 py-2 border-b border-l border-indigo-100 bg-indigo-50/50">SUM (HKD)</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-indigo-50">
-                            {effectiveCurrentMktStats.markets.map(mkt => {
+                            {currentMktStats.markets.map(mkt => {
                                 const rate = isHKDView ? (globalFxRates[mkt] || 1) : 1;
                                 const actualRate = globalFxRates[mkt] || 1;
                                 let rawRowSum = 0;
                                 return (
                                     <tr key={mkt} className="hover:bg-indigo-50/30">
                                         <td className="px-3 py-2 text-center font-bold text-gray-700 border-r border-indigo-50 bg-indigo-50/20">{mkt}</td>
-                                        {effectiveCurrentMktStats.accounts.map(acc => {
-                                            const rawVal = effectiveCurrentMktStats.rawMatrix[mkt][acc] || 0;
+                                        {currentMktStats.accounts.map(acc => {
+                                            const rawVal = currentMktStats.rawMatrix[mkt][acc] || 0;
                                             rawRowSum += rawVal;
                                             const displayVal = rawVal * rate;
                                             return (
@@ -1563,18 +1486,18 @@ export default function SpotHoldingsPage() {
                                     </tr>
                                 );
                             })}
-                            {effectiveCurrentMktStats.markets.length === 0 && (
-                                <tr><td colSpan={effectiveCurrentMktStats.accounts.length + 2} className="px-3 py-4 text-center text-gray-400">暂无数据</td></tr>
+                            {currentMktStats.markets.length === 0 && (
+                                <tr><td colSpan={currentMktStats.accounts.length + 2} className="px-3 py-4 text-center text-gray-400">暂无数据</td></tr>
                             )}
                         </tbody>
-                        {effectiveCurrentMktStats.markets.length > 0 && (
+                        {currentMktStats.markets.length > 0 && (
                             <tfoot className="bg-indigo-100 text-indigo-900 border-t-2 border-indigo-200 shadow-inner">
                                 <tr>
                                     <td className="px-3 py-3 text-center font-bold border-r border-indigo-200">SUM (HKD)</td>
-                                    {effectiveCurrentMktStats.accounts.map(acc => {
+                                    {currentMktStats.accounts.map(acc => {
                                         let colSumHKD = 0;
-                                        effectiveCurrentMktStats.markets.forEach(mkt => {
-                                            const rawVal = effectiveCurrentMktStats.rawMatrix[mkt][acc] || 0;
+                                        currentMktStats.markets.forEach(mkt => {
+                                            const rawVal = currentMktStats.rawMatrix[mkt][acc] || 0;
                                             colSumHKD += rawVal * (globalFxRates[mkt] || 1);
                                         });
                                         return (
@@ -1736,9 +1659,9 @@ export default function SpotHoldingsPage() {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-rose-50">
-                            {effectiveCurrentPlStats.markets.map(mkt => {
+                            {currentPlStats.markets.map(mkt => {
                                 const rate = isHKDView ? (globalFxRates[mkt] || 1) : 1;
-                                const data = effectiveCurrentPlStats.rawMatrix[mkt];
+                                const data = currentPlStats.rawMatrix[mkt];
                                 const displayRealized = data.realized * rate;
                                 const displayUnrealized = data.unrealized * rate;
                                 const displayTotal = data.total * rate;
@@ -1757,11 +1680,11 @@ export default function SpotHoldingsPage() {
                                     </tr>
                                 );
                             })}
-                            {effectiveCurrentPlStats.markets.length === 0 && (
+                            {currentPlStats.markets.length === 0 && (
                                 <tr><td colSpan={4} className="px-3 py-6 text-center text-gray-400">暂无数据</td></tr>
                             )}
                         </tbody>
-                        {effectiveCurrentPlStats.markets.length > 0 && (
+                        {currentPlStats.markets.length > 0 && (
                             <tfoot className="bg-rose-100 text-rose-900 border-t-2 border-rose-200 shadow-inner">
                                 <tr>
                                     <td className="px-3 py-4 text-center font-bold border-r border-rose-200">

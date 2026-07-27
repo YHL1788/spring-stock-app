@@ -1,0 +1,618 @@
+﻿"use client";
+
+import React, { useMemo, useState } from 'react';
+import {
+  BarChart3,
+  Calculator,
+  CircleDollarSign,
+  FileSpreadsheet,
+  RefreshCw,
+  Sigma,
+  SlidersHorizontal,
+  Target,
+} from 'lucide-react';
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+
+type OptionType = 'call' | 'put';
+type OptionSide = 'buy' | 'sell';
+type QuoteMode = 'natural' | 'mid';
+
+type ChainRow = {
+  k: number;
+  cb: number;
+  ca: number;
+  cm: number;
+  civ: number;
+  pb: number;
+  pa: number;
+  pm: number;
+  piv: number;
+};
+
+type Leg = {
+  id: 'longCall' | 'shortCall' | 'longPut' | 'shortPut';
+  name: string;
+  type: OptionType;
+  side: OptionSide;
+  strike: number;
+  quantity: number;
+  openPrice: number;
+  iv: number;
+};
+
+const DEFAULT_CHAIN: ChainRow[] = [
+  { k: 150, cb: 61.9, ca: 63.6, cm: 62.75, civ: 0.4858, pb: 3.7, pa: 3.85, pm: 3.775, piv: 0.4896 },
+  { k: 160, cb: 54.35, ca: 55.45, cm: 54.9, civ: 0.4865, pb: 5.3, pa: 5.55, pm: 5.425, piv: 0.4774 },
+  { k: 170, cb: 46.55, ca: 47.55, cm: 47.05, civ: 0.4701, pb: 7.45, pa: 7.65, pm: 7.55, piv: 0.4654 },
+  { k: 180, cb: 39.7, ca: 40.3, cm: 40, civ: 0.4616, pb: 10.15, pa: 10.4, pm: 10.275, piv: 0.4551 },
+  { k: 190, cb: 33.3, ca: 33.8, cm: 33.55, civ: 0.4529, pb: 13.55, pa: 13.85, pm: 13.7, piv: 0.4469 },
+  { k: 200, cb: 27.55, ca: 28, cm: 27.775, civ: 0.4451, pb: 17.6, pa: 17.95, pm: 17.775, piv: 0.4385 },
+  { k: 210, cb: 22.5, ca: 22.9, cm: 22.7, civ: 0.438, pb: 22.45, pa: 22.8, pm: 22.625, piv: 0.432 },
+  { k: 220, cb: 18.1, ca: 18.45, cm: 18.275, civ: 0.431, pb: 28, pa: 28.4, pm: 28.2, piv: 0.4264 },
+  { k: 230, cb: 14.4, ca: 14.75, cm: 14.575, civ: 0.4258, pb: 34, pa: 34.8, pm: 34.4, piv: 0.42 },
+  { k: 240, cb: 11.35, ca: 11.65, cm: 11.5, civ: 0.4213, pb: 40.55, pa: 42.45, pm: 41.5, piv: 0.4193 },
+  { k: 250, cb: 8.85, ca: 9.05, cm: 8.95, civ: 0.4168, pb: 47.6, pa: 50.2, pm: 48.9, piv: 0.413 },
+  { k: 260, cb: 6.8, ca: 7.1, cm: 6.95, civ: 0.4142, pb: 56.35, pa: 58.35, pm: 57.35, piv: 0.4203 },
+  { k: 270, cb: 5.25, ca: 5.45, cm: 5.35, civ: 0.4118, pb: 64.6, pa: 66.5, pm: 65.55, piv: 0.4096 },
+  { k: 280, cb: 4, ca: 4.2, cm: 4.1, civ: 0.4102, pb: 73.55, pa: 76.25, pm: 74.9, piv: 0.4241 },
+  { k: 290, cb: 3.1, ca: 3.3, cm: 3.2, civ: 0.4115, pb: 82.85, pa: 85.55, pm: 84.2, piv: 0.4293 },
+  { k: 300, cb: 2.42, ca: 2.63, cm: 2.525, civ: 0.4141, pb: 92.5, pa: 95.05, pm: 93.775, piv: 0.4386 },
+];
+
+const DEFAULT_PARAMS = {
+  symbol: 'NVDA',
+  targetPrice: 240,
+  capitalHkd: 3_000_000,
+  fx: 7.85,
+  contractSize: 100,
+  openDate: '2026-07-27',
+  expiryDate: '2026-12-18',
+  closeDate: '2026-12-18',
+  rate: 4.25,
+  dividend: 0,
+  mode: 'natural' as QuoteMode,
+};
+
+const money = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+
+function normalizeNumber(value: unknown) {
+  if (value === null || value === undefined) return null;
+  let text = String(value).trim().replace(/"/g, '');
+  if (!text || text === '-' || text === '--' || text === '—') return null;
+  let multiplier = 1;
+  if (text.includes('万')) {
+    multiplier = 10000;
+    text = text.replace('万', '');
+  }
+  const parsed = Number(text.replace(/%|,|张|張/g, ''));
+  return Number.isFinite(parsed) ? parsed * multiplier : null;
+}
+
+function splitLine(line: string) {
+  const out: string[] = [];
+  let current = '';
+  let quoted = false;
+  for (const char of line) {
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if ((char === ',' || char === '\t') && !quoted) {
+      out.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  out.push(current.trim());
+  return out;
+}
+
+function parseOptionChain(text: string) {
+  const lines = text.split(/\r?\n/).map(splitLine).filter(row => row.some(cell => cell.trim()));
+  let rows: Partial<ChainRow>[] = [];
+
+  for (const row of lines) {
+    if (row.length >= 27 && normalizeNumber(row[13]) !== null) {
+      rows.push({
+        k: normalizeNumber(row[13]) ?? undefined,
+        cb: normalizeNumber(row[12]) ?? undefined,
+        ca: normalizeNumber(row[11]) ?? undefined,
+        cm: normalizeNumber(row[10]) ?? undefined,
+        civ: (normalizeNumber(row[5]) ?? 0) / 100,
+        pb: normalizeNumber(row[14]) ?? undefined,
+        pa: normalizeNumber(row[15]) ?? undefined,
+        pm: normalizeNumber(row[16]) ?? undefined,
+        piv: (normalizeNumber(row[21]) ?? 0) / 100,
+      });
+    }
+  }
+
+  if (!rows.length && lines.length > 1) {
+    const header = lines[0].map(item => item.toLowerCase());
+    const findIndex = (...keys: string[]) => header.findIndex(item => keys.some(key => item.includes(key)));
+    const strikeIndex = findIndex('strike', '行权');
+    const typeIndex = findIndex('type', '类型');
+    const bidIndex = findIndex('bid', '买入价');
+    const askIndex = findIndex('ask', '卖出价');
+    const midIndex = findIndex('mid', '中间');
+    const ivIndex = findIndex('iv', '波幅', '波动');
+    const byStrike: Record<string, Partial<ChainRow>> = {};
+
+    for (const row of lines.slice(1)) {
+      const strike = normalizeNumber(row[strikeIndex]);
+      if (strike === null) continue;
+      const key = String(strike);
+      byStrike[key] ||= { k: strike };
+      const type = String(row[typeIndex] || '').toLowerCase();
+      if (type.includes('c') || type.includes('call')) {
+        byStrike[key].cb = normalizeNumber(row[bidIndex]) ?? undefined;
+        byStrike[key].ca = normalizeNumber(row[askIndex]) ?? undefined;
+        byStrike[key].cm = normalizeNumber(row[midIndex]) ?? undefined;
+        byStrike[key].civ = (normalizeNumber(row[ivIndex]) ?? 45) / 100;
+      }
+      if (type.includes('p') || type.includes('put')) {
+        byStrike[key].pb = normalizeNumber(row[bidIndex]) ?? undefined;
+        byStrike[key].pa = normalizeNumber(row[askIndex]) ?? undefined;
+        byStrike[key].pm = normalizeNumber(row[midIndex]) ?? undefined;
+        byStrike[key].piv = (normalizeNumber(row[ivIndex]) ?? 45) / 100;
+      }
+    }
+    rows = Object.values(byStrike);
+  }
+
+  return rows
+    .filter(row => row.k !== undefined)
+    .map(row => ({
+      k: row.k as number,
+      cb: row.cb ?? row.cm ?? 0,
+      ca: row.ca ?? row.cm ?? 0,
+      cm: row.cm ?? ((row.cb ?? 0) + (row.ca ?? 0)) / 2,
+      civ: row.civ || 0.45,
+      pb: row.pb ?? row.pm ?? 0,
+      pa: row.pa ?? row.pm ?? 0,
+      pm: row.pm ?? ((row.pb ?? 0) + (row.pa ?? 0)) / 2,
+      piv: row.piv || 0.45,
+    }))
+    .sort((a, b) => a.k - b.k);
+}
+
+function normCdf(x: number) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const d = 0.3989423 * Math.exp((-x * x) / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return x > 0 ? 1 - p : p;
+}
+
+function normPdf(x: number) {
+  return Math.exp((-x * x) / 2) / Math.sqrt(2 * Math.PI);
+}
+
+function bsm(type: OptionType, s: number, k: number, t: number, r: number, q: number, vol: number) {
+  if (t <= 0 || vol <= 0 || s <= 0 || k <= 0) {
+    return type === 'call' ? Math.max(s - k, 0) : Math.max(k - s, 0);
+  }
+  const sd = vol * Math.sqrt(t);
+  const d1 = (Math.log(s / k) + (r - q + 0.5 * vol * vol) * t) / sd;
+  const d2 = d1 - sd;
+  if (type === 'call') return s * Math.exp(-q * t) * normCdf(d1) - k * Math.exp(-r * t) * normCdf(d2);
+  return k * Math.exp(-r * t) * normCdf(-d2) - s * Math.exp(-q * t) * normCdf(-d1);
+}
+
+function bsmGreeks(type: OptionType, s: number, k: number, t: number, r: number, q: number, vol: number) {
+  if (t <= 0 || vol <= 0 || s <= 0 || k <= 0) {
+    const intrinsicDelta = type === 'call' ? (s > k ? 1 : 0) : (s < k ? -1 : 0);
+    return { delta: intrinsicDelta, gamma: 0, vega: 0, theta: 0 };
+  }
+  const sd = vol * Math.sqrt(t);
+  const d1 = (Math.log(s / k) + (r - q + 0.5 * vol * vol) * t) / sd;
+  const d2 = d1 - sd;
+  const signDelta = type === 'call' ? Math.exp(-q * t) * normCdf(d1) : Math.exp(-q * t) * (normCdf(d1) - 1);
+  const gamma = Math.exp(-q * t) * normPdf(d1) / (s * sd);
+  const vega = s * Math.exp(-q * t) * normPdf(d1) * Math.sqrt(t) / 100;
+  const thetaCall = (-(s * Math.exp(-q * t) * normPdf(d1) * vol) / (2 * Math.sqrt(t)) - r * k * Math.exp(-r * t) * normCdf(d2) + q * s * Math.exp(-q * t) * normCdf(d1)) / 365;
+  const thetaPut = (-(s * Math.exp(-q * t) * normPdf(d1) * vol) / (2 * Math.sqrt(t)) + r * k * Math.exp(-r * t) * normCdf(-d2) - q * s * Math.exp(-q * t) * normCdf(-d1)) / 365;
+  return { delta: signDelta, gamma, vega, theta: type === 'call' ? thetaCall : thetaPut };
+}
+
+function daysBetween(a: string, b: string) {
+  const start = new Date(`${a}T00:00:00`).getTime();
+  const end = new Date(`${b}T00:00:00`).getTime();
+  return Math.round((end - start) / 86400000);
+}
+
+function formatMoney(value: number) {
+  return `${value >= 0 ? '+' : '-'}HK$${money.format(Math.abs(value))}`;
+}
+
+function formatPct(value: number, digits = 1) {
+  if (!Number.isFinite(value)) return '--';
+  return `${value >= 0 ? '+' : ''}${(value * 100).toFixed(digits)}%`;
+}
+
+function getQuote(row: ChainRow | undefined, type: OptionType, side: OptionSide, mode: QuoteMode) {
+  if (!row) return { price: 0, iv: 0.45 };
+  if (type === 'call') {
+    if (mode === 'mid') return { price: row.cm, iv: row.civ };
+    return { price: side === 'buy' ? row.ca : row.cb, iv: row.civ };
+  }
+  if (mode === 'mid') return { price: row.pm, iv: row.piv };
+  return { price: side === 'buy' ? row.pa : row.pb, iv: row.piv };
+}
+
+function nearestStrike(strikes: number[], target: number) {
+  return strikes.reduce((best, item) => Math.abs(item - target) < Math.abs(best - target) ? item : best, strikes[0] ?? target);
+}
+
+function createDefaultLegs(chain: ChainRow[], mode: QuoteMode): Leg[] {
+  const strikes = chain.map(row => row.k);
+  const defs = [
+    { id: 'longCall', name: '买入 Call', type: 'call', side: 'buy', strike: 190, quantity: 20 },
+    { id: 'shortCall', name: '卖出 Call', type: 'call', side: 'sell', strike: 240, quantity: 20 },
+    { id: 'longPut', name: '买入 Put', type: 'put', side: 'buy', strike: 190, quantity: 0 },
+    { id: 'shortPut', name: '卖出 Put', type: 'put', side: 'sell', strike: 190, quantity: 20 },
+  ] as const;
+
+  return defs.map(item => {
+    const strike = nearestStrike(strikes, item.strike);
+    const quote = getQuote(chain.find(row => row.k === strike), item.type, item.side, mode);
+    return { ...item, strike, openPrice: quote.price, iv: quote.iv * 100 };
+  });
+}
+
+export default function OptionPortfolioPanel() {
+  const [symbol, setSymbol] = useState(DEFAULT_PARAMS.symbol);
+  const [targetPrice, setTargetPrice] = useState(DEFAULT_PARAMS.targetPrice);
+  const [capitalHkd, setCapitalHkd] = useState(DEFAULT_PARAMS.capitalHkd);
+  const [fx, setFx] = useState(DEFAULT_PARAMS.fx);
+  const [contractSize, setContractSize] = useState(DEFAULT_PARAMS.contractSize);
+  const [openDate, setOpenDate] = useState(DEFAULT_PARAMS.openDate);
+  const [expiryDate, setExpiryDate] = useState(DEFAULT_PARAMS.expiryDate);
+  const [closeDate, setCloseDate] = useState(DEFAULT_PARAMS.closeDate);
+  const [rate, setRate] = useState(DEFAULT_PARAMS.rate);
+  const [dividend, setDividend] = useState(DEFAULT_PARAMS.dividend);
+  const [mode, setMode] = useState<QuoteMode>(DEFAULT_PARAMS.mode);
+  const [chainRows, setChainRows] = useState<ChainRow[]>(DEFAULT_CHAIN);
+  const [legs, setLegs] = useState<Leg[]>(() => createDefaultLegs(DEFAULT_CHAIN, DEFAULT_PARAMS.mode));
+  const [pasteText, setPasteText] = useState('');
+  const [parseStatus, setParseStatus] = useState('当前使用默认 NVDA 2026-12-18 期权链。');
+
+  const strikes = useMemo(() => chainRows.map(row => row.k).sort((a, b) => a - b), [chainRows]);
+  const chainMap = useMemo(() => new Map(chainRows.map(row => [row.k, row])), [chainRows]);
+  const yearsToExpiry = Math.max(daysBetween(closeDate, expiryDate), 0) / 365;
+  const holdingDays = Math.max(daysBetween(openDate, closeDate), 1);
+  const rateDecimal = rate / 100;
+  const dividendDecimal = dividend / 100;
+
+  const calcAtPrice = (price: number) => {
+    const openingCash = legs.reduce((sum, leg) => {
+      const sign = leg.side === 'buy' ? -1 : 1;
+      return sum + sign * leg.openPrice * leg.quantity * contractSize * fx;
+    }, 0);
+    const closingValue = legs.reduce((sum, leg) => {
+      const sign = leg.side === 'buy' ? 1 : -1;
+      const value = bsm(leg.type, price, leg.strike, yearsToExpiry, rateDecimal, dividendDecimal, leg.iv / 100);
+      return sum + sign * value * leg.quantity * contractSize * fx;
+    }, 0);
+    const pnl = openingCash + closingValue;
+    const ret = pnl / Math.max(capitalHkd, 1);
+    const ann = ret * 365 / holdingDays;
+    return { openingCash, closingValue, pnl, ret, ann };
+  };
+
+  const targetResult = useMemo(() => calcAtPrice(targetPrice), [legs, targetPrice, capitalHkd, fx, contractSize, yearsToExpiry, rateDecimal, dividendDecimal, holdingDays]);
+
+  const greeks = useMemo(() => {
+    return legs.reduce((sum, leg) => {
+      const sign = leg.side === 'buy' ? 1 : -1;
+      const g = bsmGreeks(leg.type, targetPrice, leg.strike, yearsToExpiry, rateDecimal, dividendDecimal, leg.iv / 100);
+      const multiplier = sign * leg.quantity * contractSize;
+      return {
+        delta: sum.delta + g.delta * multiplier,
+        gamma: sum.gamma + g.gamma * multiplier,
+        vega: sum.vega + g.vega * multiplier * fx,
+        theta: sum.theta + g.theta * multiplier * fx,
+      };
+    }, { delta: 0, gamma: 0, vega: 0, theta: 0 });
+  }, [legs, targetPrice, yearsToExpiry, rateDecimal, dividendDecimal, contractSize, fx]);
+
+  const chartData = useMemo(() => {
+    const keyPrices = legs.map(leg => leg.strike).concat(targetPrice).filter(Number.isFinite);
+    const minPrice = Math.max(0, Math.min(120, Math.min(...keyPrices) - 70, targetPrice - 80));
+    const maxPrice = Math.max(300, Math.max(...keyPrices) + 80, targetPrice + 80);
+    const points = [];
+    const step = Math.max(1, Math.round((maxPrice - minPrice) / 80));
+    for (let price = minPrice; price <= maxPrice; price += step) {
+      const result = calcAtPrice(price);
+      points.push({ price, pnl: result.pnl, ret: result.ret * 100 });
+    }
+    return points;
+  }, [legs, targetPrice, capitalHkd, fx, contractSize, yearsToExpiry, rateDecimal, dividendDecimal, holdingDays]);
+
+  const scenarioRows = useMemo(() => {
+    const basePrices = [150, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260, 270, 300, targetPrice]
+      .filter((value, index, arr) => value > 0 && arr.indexOf(value) === index)
+      .sort((a, b) => a - b);
+    return basePrices.map(price => ({ price, ...calcAtPrice(price) }));
+  }, [legs, targetPrice, capitalHkd, fx, contractSize, yearsToExpiry, rateDecimal, dividendDecimal, holdingDays]);
+
+  const breakevens = useMemo(() => {
+    const roots: number[] = [];
+    let previousPrice = 0;
+    let previousPnl = calcAtPrice(0.01).pnl;
+    for (let price = 0.5; price <= 600; price += 0.5) {
+      const currentPnl = calcAtPrice(price).pnl;
+      if ((previousPnl < 0 && currentPnl > 0) || (previousPnl > 0 && currentPnl < 0)) {
+        const weight = Math.abs(previousPnl) / (Math.abs(previousPnl) + Math.abs(currentPnl));
+        roots.push(previousPrice + (price - previousPrice) * weight);
+      }
+      previousPrice = price;
+      previousPnl = currentPnl;
+    }
+    return roots.map(value => value.toFixed(2));
+  }, [legs, capitalHkd, fx, contractSize, yearsToExpiry, rateDecimal, dividendDecimal, holdingDays]);
+
+  const updateLeg = (id: Leg['id'], patch: Partial<Leg>) => {
+    setLegs(prev => prev.map(leg => leg.id === id ? { ...leg, ...patch } : leg));
+  };
+
+  const updateLegStrike = (id: Leg['id'], strike: number) => {
+    setLegs(prev => prev.map(leg => {
+      if (leg.id !== id) return leg;
+      const quote = getQuote(chainMap.get(strike), leg.type, leg.side, mode);
+      return { ...leg, strike, openPrice: quote.price, iv: quote.iv * 100 };
+    }));
+  };
+
+  const resetPremiums = (nextMode = mode, nextChain = chainRows) => {
+    setMode(nextMode);
+    const nextMap = new Map(nextChain.map(row => [row.k, row]));
+    setLegs(prev => prev.map(leg => {
+      const quote = getQuote(nextMap.get(leg.strike), leg.type, leg.side, nextMode);
+      return { ...leg, openPrice: quote.price, iv: quote.iv * 100 };
+    }));
+  };
+
+  const handleParse = () => {
+    const parsed = parseOptionChain(pasteText.trim());
+    if (!parsed.length) {
+      setParseStatus('未能识别期权链格式。请检查是否包含 Strike / Type / Bid / Ask / Mid / IV 字段，或使用左右 Call/Put 链格式。');
+      return;
+    }
+    setChainRows(parsed);
+    const nextStrikes = parsed.map(row => row.k);
+    setLegs(prev => prev.map(leg => {
+      const strike = nearestStrike(nextStrikes, leg.strike);
+      const quote = getQuote(parsed.find(row => row.k === strike), leg.type, leg.side, mode);
+      return { ...leg, strike, openPrice: quote.price, iv: quote.iv * 100 };
+    }));
+    setParseStatus(`已解析 ${parsed.length} 个行权价。请检查四腿行权价、开仓价和 IV。`);
+  };
+
+  const restoreDefault = () => {
+    setChainRows(DEFAULT_CHAIN);
+    setLegs(createDefaultLegs(DEFAULT_CHAIN, mode));
+    setPasteText('');
+    setParseStatus('已恢复默认 NVDA 2026-12-18 期权链。');
+  };
+
+  return (
+    <div className="space-y-5">
+      <section className="overflow-hidden rounded-[26px] border border-slate-900/10 bg-white shadow-sm">
+        <div className="grid gap-5 bg-gradient-to-br from-[#123332] via-[#163d39] to-[#74421f] px-6 py-6 text-white lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
+          <div>
+            <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.22em] text-[#f0bd82]">
+              <SlidersHorizontal size={14} /> Option Portfolio Close-out Model
+            </div>
+            <h3 className="mt-3 font-serif text-3xl font-semibold tracking-tight">期权组合平仓估值器</h3>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-200">
+              参考你提供的 NVDA 模型：支持四腿期权、券商期权链粘贴、保守 bid/ask 与 mid 报价切换。若平仓日在到期日前，按 BSM 估算剩余期权价值；到期日则按内在价值计算。
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <MiniMetric label="目标收益" value={formatPct(targetResult.ret)} icon={<Target size={15} />} />
+            <MiniMetric label="期初现金流" value={formatMoney(targetResult.openingCash)} icon={<CircleDollarSign size={15} />} />
+            <MiniMetric label="盈亏平衡" value={breakevens.length ? breakevens.join(', ') : '无'} icon={<BarChart3 size={15} />} />
+            <MiniMetric label="剩余期限" value={`${Math.round(yearsToExpiry * 365)} 天`} icon={<Calculator size={15} />} />
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-[440px_1fr]">
+        <div className="space-y-5">
+          <Card title="基础参数" subtitle="价格、日期、利率和报价方式">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="股票代码"><input value={symbol} onChange={event => setSymbol(event.target.value.toUpperCase())} /></Field>
+              <Field label="平仓价 / 目标价"><NumberInput value={targetPrice} onChange={setTargetPrice} step={1} /></Field>
+              <Field label="本金 HKD"><NumberInput value={capitalHkd} onChange={setCapitalHkd} step={10000} /></Field>
+              <Field label="汇率"><NumberInput value={fx} onChange={setFx} step={0.01} /></Field>
+              <Field label="合约乘数"><NumberInput value={contractSize} onChange={setContractSize} step={1} /></Field>
+              <Field label="报价方式">
+                <select value={mode} onChange={event => resetPremiums(event.target.value as QuoteMode)}>
+                  <option value="natural">保守 bid/ask</option>
+                  <option value="mid">Mid price</option>
+                </select>
+              </Field>
+              <Field label="开仓日"><input type="date" value={openDate} onChange={event => setOpenDate(event.target.value)} /></Field>
+              <Field label="到期日"><input type="date" value={expiryDate} onChange={event => setExpiryDate(event.target.value)} /></Field>
+              <Field label="平仓日"><input type="date" value={closeDate} onChange={event => setCloseDate(event.target.value)} /></Field>
+              <Field label="无风险利率 %"><NumberInput value={rate} onChange={setRate} step={0.05} /></Field>
+              <Field label="股息率 %"><NumberInput value={dividend} onChange={setDividend} step={0.05} /></Field>
+            </div>
+          </Card>
+
+          <Card title="期权链数据" subtitle="从 Excel / CSV 复制粘贴后解析">
+            <textarea
+              value={pasteText}
+              onChange={event => setPasteText(event.target.value)}
+              placeholder="支持类似 IBKR 的左右 Call/Put 链，也支持含 Strike / Type / Bid / Ask / Mid / IV 字段的普通表格。"
+              className="min-h-[132px] w-full resize-y rounded-2xl border border-slate-200 bg-[#fbfaf7] p-3 font-mono text-xs text-slate-700 outline-none focus:border-teal-700 focus:bg-white focus:ring-4 focus:ring-teal-700/10"
+            />
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <button type="button" onClick={handleParse} className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#153a36] px-4 py-2 text-xs font-bold text-white hover:bg-[#0f2d2a]">
+                <FileSpreadsheet size={14} /> 解析粘贴数据
+              </button>
+              <button type="button" onClick={restoreDefault} className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-600 hover:border-[#d95f2b] hover:text-[#b94b1d]">
+                <RefreshCw size={14} /> 恢复默认数据
+              </button>
+            </div>
+            <p className="mt-3 text-xs leading-5 text-slate-500">{parseStatus}</p>
+          </Card>
+        </div>
+
+        <div className="space-y-5">
+          <Card title="四腿期权" subtitle="切换行权价时会自动带出对应权利金与 IV；仍可手动覆盖">
+            <div className="grid gap-3 lg:grid-cols-2">
+              {legs.map(leg => (
+                <div key={leg.id} className="rounded-2xl border border-slate-200 bg-[#fffaf1] p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h5 className="font-serif text-lg font-semibold text-slate-900">{leg.name}</h5>
+                    <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${leg.side === 'buy' ? 'bg-teal-100 text-teal-800' : 'bg-orange-100 text-orange-800'}`}>{leg.side}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="行权价">
+                      <select value={leg.strike} onChange={event => updateLegStrike(leg.id, Number(event.target.value))}>
+                        {strikes.map(strike => <option key={strike} value={strike}>{strike}</option>)}
+                      </select>
+                    </Field>
+                    <Field label="张数"><NumberInput value={leg.quantity} onChange={value => updateLeg(leg.id, { quantity: value })} step={1} min={0} /></Field>
+                    <Field label="开仓价"><NumberInput value={leg.openPrice} onChange={value => updateLeg(leg.id, { openPrice: value })} step={0.01} /></Field>
+                    <Field label="IV %"><NumberInput value={leg.iv} onChange={value => updateLeg(leg.id, { iv: value })} step={0.1} /></Field>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <div className="grid gap-4 sm:grid-cols-5">
+            <ResultCard label="平仓价总盈亏" value={formatMoney(targetResult.pnl)} positive={targetResult.pnl >= 0} />
+            <ResultCard label="本金收益率" value={formatPct(targetResult.ret)} positive={targetResult.ret >= 0} />
+            <ResultCard label="简单年化" value={formatPct(targetResult.ann)} positive={targetResult.ann >= 0} />
+            <ResultCard label="盈亏平衡" value={breakevens.length ? breakevens.join(', ') : '无'} />
+            <ResultCard label="期初净现金流" value={formatMoney(targetResult.openingCash)} positive={targetResult.openingCash >= 0} />
+          </div>
+
+          <Card title="平仓估值曲线" subtitle={yearsToExpiry > 0 ? `平仓日至到期日剩余 ${Math.round(yearsToExpiry * 365)} 天，使用各腿 IV 按 BSM 估算。` : '平仓日等于或晚于到期日，按到期内在价值计算。'}>
+            <div className="h-[330px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 10, right: 20, bottom: 8, left: 20 }}>
+                  <CartesianGrid stroke="#e8e1d3" strokeDasharray="4 4" />
+                  <XAxis dataKey="price" tick={{ fontSize: 11, fill: '#64748b' }} tickFormatter={value => String(Math.round(Number(value)))} />
+                  <YAxis tick={{ fontSize: 11, fill: '#64748b' }} tickFormatter={value => `${Number(value).toFixed(0)}%`} />
+                  <Tooltip
+                    formatter={value => [`${Number(value).toFixed(2)}%`, '本金收益率']}
+                    labelFormatter={label => `平仓价 ${Number(label).toFixed(2)}`}
+                  />
+                  <ReferenceLine y={0} stroke="#64748b" strokeDasharray="5 5" />
+                  <ReferenceLine x={targetPrice} stroke="#0f766e" strokeDasharray="5 5" />
+                  <Line type="monotone" dataKey="ret" stroke="#d95f2b" strokeWidth={3} dot={false} name="本金收益率" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+        </div>
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
+        <Card title="组合 Greeks" subtitle={`基于 ${symbol || '标的'} 目标价 ${targetPrice} 估算，Delta 为股数等效敞口`}>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <GreekCard label="Delta" value={greeks.delta.toFixed(2)} />
+            <GreekCard label="Gamma" value={greeks.gamma.toFixed(4)} />
+            <GreekCard label="Vega / 1%" value={`HK$${money.format(greeks.vega)}`} />
+            <GreekCard label="Theta / day" value={`HK$${money.format(greeks.theta)}`} />
+          </div>
+        </Card>
+
+        <Card title="情景收益表" subtitle="用于快速观察不同平仓价下的总盈亏和收益率">
+          <div className="max-h-[360px] overflow-auto rounded-2xl border border-slate-200">
+            <table className="min-w-full text-xs">
+              <thead className="sticky top-0 bg-[#f7f3eb] text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 text-left">平仓价</th>
+                  <th className="px-3 py-2 text-right">估算总盈亏 HKD</th>
+                  <th className="px-3 py-2 text-right">本金收益率</th>
+                  <th className="px-3 py-2 text-right">简单年化</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scenarioRows.map(row => (
+                  <tr key={row.price} className="border-t border-slate-100 hover:bg-teal-50/40">
+                    <td className="px-3 py-2 font-mono font-semibold text-slate-700">{row.price === targetPrice ? `${row.price} 目标` : row.price}</td>
+                    <td className={`px-3 py-2 text-right font-mono font-semibold ${row.pnl >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatMoney(row.pnl)}</td>
+                    <td className={`px-3 py-2 text-right font-mono ${row.ret >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatPct(row.ret)}</td>
+                    <td className={`px-3 py-2 text-right font-mono ${row.ann >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatPct(row.ann)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </section>
+    </div>
+  );
+}
+
+function NumberInput({ value, onChange, step, min }: { value: number; onChange: (value: number) => void; step?: number; min?: number }) {
+  return <input type="number" value={value} step={step} min={min} onChange={event => onChange(Number(event.target.value) || 0)} />;
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="grid gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+      {label}
+      {children}
+    </label>
+  );
+}
+
+function Card({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-[24px] border border-slate-900/10 bg-white p-5 shadow-sm">
+      <div className="mb-4">
+        <h4 className="font-serif text-xl font-semibold text-slate-900">{title}</h4>
+        {subtitle && <p className="mt-1 text-xs leading-5 text-slate-500">{subtitle}</p>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function MiniMetric({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3 backdrop-blur">
+      <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-300">
+        <span className="text-[#f0bd82]">{icon}</span>
+        {label}
+      </div>
+      <div className="mt-1.5 truncate text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function ResultCard({ label, value, positive }: { label: string; value: string; positive?: boolean }) {
+  const color = positive === undefined ? 'text-slate-900' : positive ? 'text-emerald-700' : 'text-rose-700';
+  return (
+    <div className="rounded-2xl border border-slate-900/10 bg-white p-4 shadow-sm">
+      <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">{label}</div>
+      <div className={`mt-2 truncate font-mono text-lg font-black ${color}`}>{value}</div>
+    </div>
+  );
+}
+
+function GreekCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-[#fffaf1] p-4">
+      <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">{label}</div>
+      <div className="mt-2 font-mono text-lg font-black text-[#153a36]">{value}</div>
+    </div>
+  );
+}

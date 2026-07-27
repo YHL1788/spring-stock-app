@@ -7,7 +7,6 @@ import {
   Binary,
   CircleDollarSign,
   FlaskConical,
-  GitBranch,
   Layers3,
   Network,
   ShieldCheck,
@@ -15,9 +14,8 @@ import {
 } from 'lucide-react';
 import FCNPanel from './_components/FCNPanel';
 import DQAQPanel from './_components/DQ-AQPanel';
-import OptionPortfolioPanel from './_components/OptionPortfolioPanel';
 
-type ModelKey = 'FCN' | 'DQ/AQ' | 'OPTION_PORTFOLIO';
+type ModelKey = 'FCN' | 'DQ/AQ';
 
 const MODEL_META: Record<ModelKey, {
   eyebrow: string;
@@ -36,12 +34,6 @@ const MODEL_META: Record<ModelKey, {
     title: 'DQ / AQ 估值模型',
     description: '模拟逐日累积或减持路径，刻画保证期、行权区间、完成率及预期交割股数。',
     tags: ['单标的', '逐日累计', '交割估值'],
-  },
-  OPTION_PORTFOLIO: {
-    eyebrow: 'Options Strategy Workbench',
-    title: '期权组合模型',
-    description: '用于搭建多腿期权组合，后续可扩展组合 Greeks、到期收益结构、情景压力测试和保证金占用测算。',
-    tags: ['多腿组合', 'Greeks 汇总', '情景分析'],
   },
 };
 
@@ -70,14 +62,14 @@ export default function DerivativeValuationPage() {
             </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <HeroMetric icon={<Network size={16} />} label="模型范围" value="FCN · DQ/AQ · Options" />
+              <HeroMetric icon={<Network size={16} />} label="模型范围" value="FCN · DQ/AQ" />
               <HeroMetric icon={<Binary size={16} />} label="核心方法" value="Monte Carlo" />
               <HeroMetric icon={<CircleDollarSign size={16} />} label="结果视图" value="本币 · HKD" />
             </div>
           </div>
         </header>
 
-        <nav className="mt-6 grid gap-3 rounded-3xl border border-slate-900/10 bg-white/70 p-2 shadow-sm backdrop-blur lg:grid-cols-[1fr_1fr_1fr_auto]">
+        <nav className="mt-6 grid gap-3 rounded-3xl border border-slate-900/10 bg-white/70 p-2 shadow-sm backdrop-blur lg:grid-cols-[1fr_1fr_auto]">
           <ModelTab
             active={activeTab === 'FCN'}
             icon={<Layers3 size={18} />}
@@ -91,13 +83,6 @@ export default function DerivativeValuationPage() {
             title="DQ / AQ 模型"
             subtitle="逐日累积或减持估值"
             onClick={() => setActiveTab('DQ/AQ')}
-          />
-          <ModelTab
-            active={activeTab === 'OPTION_PORTFOLIO'}
-            icon={<GitBranch size={18} />}
-            title="期权组合模型"
-            subtitle="多腿组合、Greeks 与压力测试"
-            onClick={() => setActiveTab('OPTION_PORTFOLIO')}
           />
           <div className="hidden min-w-[240px] items-center gap-3 px-5 text-xs text-slate-500 lg:flex">
             <ShieldCheck size={18} className="shrink-0 text-teal-700" />
@@ -127,9 +112,7 @@ export default function DerivativeValuationPage() {
           </div>
 
           <div className="derivative-workbench p-3 sm:p-5 lg:p-6">
-            {activeTab === 'FCN' && <FCNPanel />}
-            {activeTab === 'DQ/AQ' && <DQAQPanel />}
-            {activeTab === 'OPTION_PORTFOLIO' && <OptionPortfolioPanel />}
+            {activeTab === 'FCN' ? <FCNPanel /> : <DQAQPanel />}
           </div>
         </section>
 
