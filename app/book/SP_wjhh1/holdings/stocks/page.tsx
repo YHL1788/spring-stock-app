@@ -218,6 +218,7 @@ export default function SpotHoldingsPage() {
   const [publishedMktStats, setPublishedMktStats] = useState<StockMktStats | null>(null);
   const [publishedPlStats, setPublishedPlStats] = useState<StockPlStats | null>(null);
   const quoteRequestIdRef = useRef(0);
+  const marketDataMillisRef = useRef(0);
   const [showFxModal, setShowFxModal] = useState(false);
   
   const [isSavingCash, setIsSavingCash] = useState(false);
@@ -318,6 +319,7 @@ export default function SpotHoldingsPage() {
           }
           if (cache.savedAt) {
               const savedMillis = new Date(cache.savedAt).getTime() || 0;
+              marketDataMillisRef.current = Math.max(marketDataMillisRef.current, savedMillis);
               setCachedMarketDataMillis(savedMillis);
               setCachedMarketDataTime(new Date(cache.savedAt).toLocaleString('zh-CN', { hour12: false }));
               setCachedMarketDataSource('本地手动刷新缓存');
@@ -341,7 +343,6 @@ export default function SpotHoldingsPage() {
                   || (cache.calculatedAt?.seconds ? new Date(cache.calculatedAt.seconds * 1000) : new Date());
               const calculatedAtMillis = calculatedAtValue.getTime();
               setDisplayCacheMillis(calculatedAtMillis);
-              setCachedMarketDataMillis(calculatedAtMillis);
               setDisplayCacheMktStats(cache.data?.currentMktStats || null);
               setDisplayCachePlStats(cache.data?.currentPlStats || null);
 
@@ -354,24 +355,28 @@ export default function SpotHoldingsPage() {
                   && !cache.data?.currentPlStats
               ) return;
 
-              if (Object.keys(fxRates).length > 0) {
+              const shouldUseBackendMarketCache = calculatedAtMillis >= marketDataMillisRef.current;
+              if (shouldUseBackendMarketCache) {
+                  marketDataMillisRef.current = calculatedAtMillis;
+                  setCachedMarketDataMillis(calculatedAtMillis);
+                  const savedAt = calculatedAtValue.toISOString();
+                  setCachedMarketDataTime(calculatedAtValue.toLocaleString('zh-CN', { hour12: false }));
+                  setCachedMarketDataSource('后端自动刷新缓存');
+                  if (typeof window !== 'undefined' && (Object.keys(fxRates).length > 0 || Object.keys(quotes).length > 0)) {
+                      window.localStorage.setItem(STOCK_MARKET_CACHE_KEY, JSON.stringify({
+                          savedAt,
+                          fxRates,
+                          quotes,
+                      } satisfies StockMarketCache));
+                  }
+              }
+
+              if (shouldUseBackendMarketCache && Object.keys(fxRates).length > 0) {
                   setGlobalFxRates(fxRates);
               }
-              if (Object.keys(quotes).length > 0) {
+              if (shouldUseBackendMarketCache && Object.keys(quotes).length > 0) {
                   setRealTimeQuotes(quotes);
                   setQuoteRefreshAttempted(true);
-              }
-
-              const savedAt = calculatedAtValue.toISOString();
-              setCachedMarketDataTime(calculatedAtValue.toLocaleString('zh-CN', { hour12: false }));
-              setCachedMarketDataSource('后端自动刷新缓存');
-
-              if (typeof window !== 'undefined') {
-                  window.localStorage.setItem(STOCK_MARKET_CACHE_KEY, JSON.stringify({
-                      savedAt,
-                      fxRates,
-                      quotes,
-                  } satisfies StockMarketCache));
               }
           } catch (error) {
               console.warn('Failed to load backend stock display cache.', error);
@@ -599,19 +604,19 @@ export default function SpotHoldingsPage() {
     
     try {
       const markets = new Set<string>();
-      const symbols = new Set<string>();
+      const symbolMarkets = new Map<string, string>();
       
       const collect = (code: string, market: string) => {
           if (market && market !== 'HKD') {
               markets.add(market);
           }
-          if (code) symbols.add(code);
+          if (code && !symbolMarkets.has(code)) symbolMarkets.set(code, market);
       };
 
       activeTrades.forEach(t => collect(t.code, t.market));
       initialHoldings.forEach(h => collect(h.code, h.market));
 
-      const newRates: Record<string, number> = { 'HKD': 1.0 };
+      const newRates: Record<string, number> = { ...globalFxRates, 'HKD': 1.0 };
 
       await Promise.all(Array.from(markets).map(async (currency) => {
           try {
@@ -630,13 +635,13 @@ export default function SpotHoldingsPage() {
       const newQuotes: Record<string, { price: number, changePercent: number }> = {};
 
       // 限制并发，避免大量标的一次性请求导致行情源限流。
-      const symbolList = Array.from(symbols);
+      const symbolList = Array.from(symbolMarkets.keys());
       const batchSize = 8;
       for (let index = 0; index < symbolList.length; index += batchSize) {
           if (requestId !== quoteRequestIdRef.current) return;
           await Promise.all(symbolList.slice(index, index + batchSize).map(async (symbol) => {
               try {
-                  const res = await fetch(`/api/quote?symbol=${encodeURIComponent(symbol)}`);
+                  const res = await fetch(`/api/quote?symbol=${encodeURIComponent(symbol)}&t=${Date.now()}`);
                   if (res.ok) {
                       const data = await res.json();
                       const price = Number(data.regularMarketPrice || data.price || data.close);
@@ -653,7 +658,9 @@ export default function SpotHoldingsPage() {
       if (requestId !== quoteRequestIdRef.current) return;
       setRealTimeQuotes(newQuotes);
       const savedAt = new Date().toISOString();
-      setCachedMarketDataMillis(new Date(savedAt).getTime());
+      const savedMillis = new Date(savedAt).getTime();
+      marketDataMillisRef.current = savedMillis;
+      setCachedMarketDataMillis(savedMillis);
       setCachedMarketDataTime(new Date(savedAt).toLocaleString('zh-CN', { hour12: false }));
       setCachedMarketDataSource('本页手动刷新缓存');
       if (typeof window !== 'undefined') {
