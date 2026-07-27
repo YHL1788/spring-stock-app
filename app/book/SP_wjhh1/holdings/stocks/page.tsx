@@ -829,25 +829,28 @@ export default function SpotHoldingsPage() {
       return Math.max(tradeMillis, initMillis, cachedMarketDataMillis);
   }, [allTrades, initialHoldings, cachedMarketDataMillis]);
 
-  const effectiveCurrentMktStats = useMemo(() => {
+  const effectiveCurrentMktCandidate = useMemo(() => {
       const candidates = [
           { source: 'live', time: liveInputLatestMillis, data: currentMktStats },
           { source: 'display_cache', time: displayCacheMillis || getTime(displayCacheMktStats?.updatedAt) || getTime(displayCacheMktStats?.createdAt), data: displayCacheMktStats },
           { source: 'published_summary', time: getTime(publishedMktStats?.updatedAt) || getTime(publishedMktStats?.createdAt), data: publishedMktStats },
       ].filter(candidate => candidate.data && candidate.time >= 0) as Array<{ source: string; time: number; data: StockMktStats }>;
 
-      return candidates.reduce((best, candidate) => candidate.time >= best.time ? candidate : best, candidates[0] || { source: 'live', time: liveInputLatestMillis, data: currentMktStats }).data;
+      return candidates.reduce((best, candidate) => candidate.time >= best.time ? candidate : best, candidates[0] || { source: 'live', time: liveInputLatestMillis, data: currentMktStats });
   }, [currentMktStats, displayCacheMktStats, displayCacheMillis, publishedMktStats, liveInputLatestMillis]);
 
-  const effectiveCurrentPlStats = useMemo(() => {
+  const effectiveCurrentPlCandidate = useMemo(() => {
       const candidates = [
           { source: 'live', time: liveInputLatestMillis, data: currentPlStats },
           { source: 'display_cache', time: displayCacheMillis || getTime(displayCachePlStats?.updatedAt) || getTime(displayCachePlStats?.createdAt), data: displayCachePlStats },
           { source: 'published_summary', time: getTime(publishedPlStats?.updatedAt) || getTime(publishedPlStats?.createdAt), data: publishedPlStats },
       ].filter(candidate => candidate.data && candidate.time >= 0) as Array<{ source: string; time: number; data: StockPlStats }>;
 
-      return candidates.reduce((best, candidate) => candidate.time >= best.time ? candidate : best, candidates[0] || { source: 'live', time: liveInputLatestMillis, data: currentPlStats }).data;
+      return candidates.reduce((best, candidate) => candidate.time >= best.time ? candidate : best, candidates[0] || { source: 'live', time: liveInputLatestMillis, data: currentPlStats });
   }, [currentPlStats, displayCachePlStats, displayCacheMillis, publishedPlStats, liveInputLatestMillis]);
+
+  const effectiveCurrentMktStats = effectiveCurrentMktCandidate.data;
+  const effectiveCurrentPlStats = effectiveCurrentPlCandidate.data;
 
   // --- 模块 2: 盈亏分析处理 ---
   const pnlData = useMemo(() => {
@@ -1074,9 +1077,9 @@ export default function SpotHoldingsPage() {
       setIsSavingMktVal(true);
       try {
           const payload = {
-              accounts: effectiveCurrentMktStats.accounts,
-              markets: effectiveCurrentMktStats.markets,
-              rawMatrix: effectiveCurrentMktStats.rawMatrix,
+              accounts: currentMktStats.accounts,
+              markets: currentMktStats.markets,
+              rawMatrix: currentMktStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_stock_mktvalue', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
@@ -1094,8 +1097,8 @@ export default function SpotHoldingsPage() {
       setIsSavingPl(true);
       try {
           const payload = {
-              markets: effectiveCurrentPlStats.markets,
-              rawMatrix: effectiveCurrentPlStats.rawMatrix,
+              markets: currentPlStats.markets,
+              rawMatrix: currentPlStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_stock_pl', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
@@ -1283,6 +1286,12 @@ export default function SpotHoldingsPage() {
   };
   
   const fmtPct = (val: number) => (val * 100).toFixed(2) + '%';
+
+  const formatStatsSource = (source: string) => {
+      if (source === 'published_summary') return '手动入库';
+      if (source === 'display_cache') return '后端自动刷新缓存';
+      return '当前实时计算';
+  };
   
   const getSourceBadge = (source: string) => {
       switch(source) {
@@ -1343,6 +1352,14 @@ export default function SpotHoldingsPage() {
                 已加载{cachedMarketDataSource || '行情缓存'}：{cachedMarketDataTime}。如需最新价格，请点击“更新行情”。
             </div>
         )}
+
+        <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-4 py-3 text-xs text-emerald-800">
+            统计矩阵采用来源：
+            市值矩阵 = {formatStatsSource(effectiveCurrentMktCandidate.source)}
+            （{effectiveCurrentMktCandidate.time ? new Date(effectiveCurrentMktCandidate.time).toLocaleString('zh-CN', { hour12: false }) : '--'}）；
+            收益表 = {formatStatsSource(effectiveCurrentPlCandidate.source)}
+            （{effectiveCurrentPlCandidate.time ? new Date(effectiveCurrentPlCandidate.time).toLocaleString('zh-CN', { hour12: false }) : '--'}）。
+        </div>
 
         {error && (
             <div className="bg-red-50 p-4 rounded text-red-700 flex items-center gap-2">
