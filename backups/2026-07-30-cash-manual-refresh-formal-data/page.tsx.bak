@@ -146,7 +146,6 @@ export default function CashHoldingsPage() {
   const [displayCacheTime, setDisplayCacheTime] = useState<string>('');
   const [displayCacheMillis, setDisplayCacheMillis] = useState(0);
   const [displayCacheWarnings, setDisplayCacheWarnings] = useState<string[]>([]);
-  const [manualFormalRefreshMillis, setManualFormalRefreshMillis] = useState(0);
   const [liveInputLoaded, setLiveInputLoaded] = useState<Record<string, boolean>>({});
   const [liveInputUpdatedAt, setLiveInputUpdatedAt] = useState<Record<string, number>>({});
   const [showBaseFxModal, setShowBaseFxModal] = useState(false);
@@ -385,7 +384,7 @@ export default function CashHoldingsPage() {
   }, [cashTrades, baseDate]);
 
   // --- 实时汇率获取 ---
-  const fetchFxRates = async (options?: { useFormalInputs?: boolean }) => {
+  const fetchFxRates = async () => {
     setIsFetchingFx(true);
     try {
       const newRates: Record<string, number> = { 'HKD': 1.0 };
@@ -399,9 +398,6 @@ export default function CashHoldingsPage() {
           } catch(e) {}
       }));
       setGlobalFxRates(newRates);
-      if (options?.useFormalInputs) {
-          setManualFormalRefreshMillis(Date.now());
-      }
     } catch (e) {
         console.error("FX fetch error", e);
     } finally {
@@ -543,8 +539,7 @@ export default function CashHoldingsPage() {
       Math.max(0, ...LIVE_CASH_INPUT_KEYS.map(key => liveInputUpdatedAt[key] || 0))
   ), [liveInputUpdatedAt]);
   const cacheIsNewerOrEqual = Boolean(displayCacheData) && displayCacheMillis > 0 && displayCacheMillis >= liveInputLatestMillis;
-  const manualFormalRefreshOverridesCache = manualFormalRefreshMillis > 0 && manualFormalRefreshMillis >= displayCacheMillis;
-  const usingBackendCacheFallback = Boolean(displayCacheData) && !manualFormalRefreshOverridesCache && (!liveCashInputsReady || cacheIsNewerOrEqual);
+  const usingBackendCacheFallback = Boolean(displayCacheData) && (!liveCashInputsReady || cacheIsNewerOrEqual);
   const effectiveCurrentCashStats = usingBackendCacheFallback && displayCacheData?.currentCashStats ? displayCacheData.currentCashStats : currentCashStats;
   const effectiveCurrentPlStats = usingBackendCacheFallback && displayCacheData?.currentPlStats ? displayCacheData.currentPlStats : currentPlStats;
   const effectiveCashBreakdownStats = usingBackendCacheFallback && displayCacheData?.cashBreakdownStats ? displayCacheData.cashBreakdownStats : cashBreakdownStats;
@@ -557,9 +552,9 @@ export default function CashHoldingsPage() {
       setIsSavingMktVal(true);
       try {
           const payload = {
-              accounts: currentCashStats.accounts,
-              markets: currentCashStats.markets,
-              rawMatrix: currentCashStats.rawMatrix,
+              accounts: effectiveCurrentCashStats.accounts,
+              markets: effectiveCurrentCashStats.markets,
+              rawMatrix: effectiveCurrentCashStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_mktvalue', payload, refreshGroup: 'holdings-cash', sourcePage: '/book/SP_wjhh1/holdings/cash' });
@@ -577,8 +572,8 @@ export default function CashHoldingsPage() {
       setIsSavingPl(true);
       try {
           const payload = {
-              markets: currentPlStats.markets,
-              rawMatrix: currentPlStats.rawMatrix,
+              markets: effectiveCurrentPlStats.markets,
+              rawMatrix: effectiveCurrentPlStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_pl', payload, refreshGroup: 'holdings-cash', sourcePage: '/book/SP_wjhh1/holdings/cash' });
@@ -647,7 +642,7 @@ export default function CashHoldingsPage() {
                     汇率详情
                 </button>
                  <button 
-                    onClick={() => fetchFxRates({ useFormalInputs: true })} 
+                    onClick={() => fetchFxRates()} 
                     disabled={isFetchingFx}
                     className="px-4 py-2 text-sm rounded border bg-white hover:bg-gray-50 flex items-center gap-2 text-gray-600 transition-colors shadow-sm"
                 >
@@ -778,7 +773,7 @@ export default function CashHoldingsPage() {
                 </div>
                 <div className="flex items-center gap-3">
                     <button 
-                        onClick={() => fetchFxRates({ useFormalInputs: true })} disabled={isFetchingFx}
+                        onClick={() => fetchFxRates()} disabled={isFetchingFx}
                         className="flex items-center gap-2 px-6 py-2 bg-white border border-emerald-600 text-emerald-600 hover:bg-emerald-50 text-sm font-bold rounded-lg shadow-sm transition-colors disabled:opacity-50"
                     >
                         <RefreshCw size={16} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
@@ -878,7 +873,7 @@ export default function CashHoldingsPage() {
                     </div>
                     <div className="flex items-center gap-3">
                         <button 
-                            onClick={() => fetchFxRates({ useFormalInputs: true })} disabled={isFetchingFx}
+                            onClick={() => fetchFxRates()} disabled={isFetchingFx}
                             className="flex items-center gap-1.5 px-4 py-1.5 bg-white border border-rose-600 text-rose-600 hover:bg-rose-50 text-xs font-bold rounded shadow-sm transition-colors disabled:opacity-50"
                         >
                             <RefreshCw size={12} className={isFetchingFx ? 'animate-spin' : ''} /> 手动刷新
