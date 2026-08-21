@@ -250,6 +250,8 @@ export default function SpotHoldingsPage() {
   const [holdingFilters, setHoldingFilters] = useState<Record<string, string>>({});
   const [selectedHoldingAccount, setSelectedHoldingAccount] = useState('');
   const [showHoldingExcelModal, setShowHoldingExcelModal] = useState(false);
+  const [holdingTrialEnabled, setHoldingTrialEnabled] = useState(false);
+  const [holdingTrialRatios, setHoldingTrialRatios] = useState<Record<string, string>>({});
   const [pnlSort, setPnlSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: 'totalPnl', dir: 'desc'});
   const [pnlFilters, setPnlFilters] = useState<Record<string, string>>({});
   const [expandedTable, setExpandedTable] = useState<'holdings' | 'pnl' | 'trades' | null>(null);
@@ -288,13 +290,28 @@ export default function SpotHoldingsPage() {
                   <div className="text-base font-bold text-gray-900">{title}</div>
                   <div className="text-xs text-gray-500">{subtitle}</div>
               </div>
-              <button
-                  onClick={() => setExpandedTable(null)}
-                  className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-bold text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
-              >
-                  <X size={14} />
-                  关闭弹窗
-              </button>
+              <div className="flex items-center gap-2">
+                  {key === 'holdings' && (
+                      <button
+                          onClick={() => setHoldingTrialEnabled(prev => !prev)}
+                          className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold shadow-sm transition-colors ${
+                              holdingTrialEnabled
+                                  ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                                  : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                          }`}
+                      >
+                          <Settings2 size={14} />
+                          {holdingTrialEnabled ? '关闭增减仓试算' : '增减仓试算'}
+                      </button>
+                  )}
+                  <button
+                      onClick={() => setExpandedTable(null)}
+                      className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-bold text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
+                  >
+                      <X size={14} />
+                      关闭弹窗
+                  </button>
+              </div>
           </div>
       );
   };
@@ -787,6 +804,26 @@ export default function SpotHoldingsPage() {
   }, [displayHoldings]);
 
   const totalUnrealizedPct = holdingSums.grossCostHKD > 0 ? holdingSums.unrealizedPnlHKD / holdingSums.grossCostHKD : 0;
+
+  const parseHoldingTrialRatio = (raw: string) => {
+      const cleaned = String(raw || '').trim();
+      if (!cleaned) return 0;
+      const hasPercent = cleaned.includes('%');
+      const numeric = Number(cleaned.replace('%', '').replace(/,/g, ''));
+      if (!Number.isFinite(numeric)) return 0;
+      if (hasPercent) return numeric / 100;
+      return Math.abs(numeric) > 1 ? numeric / 100 : numeric;
+  };
+
+  const getHoldingTrialKey = (h: StockHolding) => `${h.market}::${h.code}`;
+
+  const holdingTrialSums = useMemo(() => {
+      return displayHoldings.reduce((acc, h) => {
+          const ratio = parseHoldingTrialRatio(holdingTrialRatios[getHoldingTrialKey(h)] || '');
+          acc.adjustedMktValHKD += h.hasValidQuote ? h.mktValHKD * (1 + ratio) : 0;
+          return acc;
+      }, { adjustedMktValHKD: 0 });
+  }, [displayHoldings, holdingTrialRatios]);
 
   // --- 生成风控暴露汇总数据 (映射 displayHoldings) ---
   const riskExposureSummary = useMemo(() => {
@@ -1560,6 +1597,19 @@ export default function SpotHoldingsPage() {
             
             <div className={getTableContainerClass('holdings', 'overflow-x-auto overflow-y-auto max-h-[500px] relative scrollbar-thin')}>
                 {renderExpandedTableHeader('holdings', '当前持仓统计表', `当前显示 ${displayHoldings.length} 只标的，原页面筛选与排序同步生效。`)}
+                {expandedTable === 'holdings' && holdingTrialEnabled && (
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
+                        <span>
+                            增减比例支持输入 <b>-50%</b>、<b>-50</b> 或 <b>-0.5</b>；增减后市值 = 现市值 × (1 + 增减比例)。
+                        </span>
+                        <button
+                            onClick={() => setHoldingTrialRatios({})}
+                            className="rounded border border-amber-300 bg-white px-3 py-1.5 font-bold text-amber-800 shadow-sm transition-colors hover:bg-amber-100"
+                        >
+                            清空试算
+                        </button>
+                    </div>
+                )}
                 <table className="min-w-full text-xs text-left">
                     <thead className="text-gray-500 font-medium bg-gray-50 sticky top-0 z-20 shadow-sm">
                         <tr>
@@ -1572,6 +1622,12 @@ export default function SpotHoldingsPage() {
                             <Th label="今日涨跌" sortKey="dailyChangePct" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
                             <Th label="总成本 (HKD)" sortKey="totalCostHKD" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
                             <Th label="现市值 (HKD)" sortKey="mktValHKD" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
+                            {expandedTable === 'holdings' && holdingTrialEnabled && (
+                                <>
+                                    <Th label="增减比例" sortKey={null} filterKey={null} align="right" />
+                                    <Th label="增减后市值" sortKey={null} filterKey={null} align="right" />
+                                </>
+                            )}
                             <Th label="浮动盈亏 (HKD)" sortKey="unrealizedPnlHKD" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
                             <Th label="盈亏比" sortKey="pnlRatio" filterKey={null} currentSort={holdingSort} onSort={toggleHoldingSort} currentFilter={holdingFilters} onFilter={updateHoldingFilter} align="right" />
                             <Th label="市值占比" sortKey={null} filterKey={null} align="right" />
@@ -1581,11 +1637,15 @@ export default function SpotHoldingsPage() {
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                         {displayHoldings.length === 0 ? (
-                            <tr><td colSpan={14} className="p-8 text-center text-gray-400">当前空仓或无符合条件数据</td></tr>
+                            <tr><td colSpan={expandedTable === 'holdings' && holdingTrialEnabled ? 16 : 14} className="p-8 text-center text-gray-400">当前空仓或无符合条件数据</td></tr>
                         ) : displayHoldings.map(h => {
                             const pctOfTotalMktVal = holdingSums.grossMktValHKD > 0 ? Math.abs(h.mktValHKD) / holdingSums.grossMktValHKD : 0;
                             const pnlContribution = holdingSums.grossCostHKD > 0 ? h.unrealizedPnlHKD / holdingSums.grossCostHKD : 0;
                             const accountsArr = Object.entries(h.accounts).filter(([_k, qty]) => Math.abs(qty) > 0.000001).map(([acc, qty]) => `'${acc}': ${qty.toLocaleString()}`);
+                            const trialKey = getHoldingTrialKey(h);
+                            const trialRatioText = holdingTrialRatios[trialKey] || '';
+                            const trialRatio = parseHoldingTrialRatio(trialRatioText);
+                            const adjustedMktVal = h.hasValidQuote ? h.mktValHKD * (1 + trialRatio) : 0;
                             
                             return (
                                 <tr key={h.code} className="hover:bg-indigo-50/30 transition-colors">
@@ -1610,6 +1670,22 @@ export default function SpotHoldingsPage() {
                                     <td className="px-3 py-2 text-right font-mono font-bold text-gray-900">
                                         {h.hasValidQuote ? formatMoney(h.mktValHKD, true) : <span className="text-amber-600">--</span>}
                                     </td>
+                                    {expandedTable === 'holdings' && holdingTrialEnabled && (
+                                        <>
+                                            <td className="px-3 py-2 text-right bg-amber-50/50">
+                                                <input
+                                                    type="text"
+                                                    value={trialRatioText}
+                                                    onChange={(e) => setHoldingTrialRatios(prev => ({ ...prev, [trialKey]: e.target.value }))}
+                                                    placeholder="-50%"
+                                                    className="w-20 rounded border border-amber-200 bg-white px-2 py-1 text-right font-mono text-xs font-bold text-amber-900 outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                                                />
+                                            </td>
+                                            <td className="px-3 py-2 text-right font-mono font-bold text-amber-800 bg-amber-50/50">
+                                                {h.hasValidQuote ? formatMoney(adjustedMktVal, true) : '--'}
+                                            </td>
+                                        </>
+                                    )}
                                     <td className={`px-3 py-2 text-right font-mono font-bold ${h.hasValidQuote ? (h.unrealizedPnlHKD >= 0 ? 'text-red-600' : 'text-green-600') : 'text-amber-600'}`}>
                                         {h.hasValidQuote ? `${h.unrealizedPnlHKD > 0 ? '+' : ''}${formatMoney(h.unrealizedPnlHKD, true)}` : '--'}
                                     </td>
@@ -1635,6 +1711,12 @@ export default function SpotHoldingsPage() {
                                 <td colSpan={7} className="px-3 py-3 text-center font-bold text-indigo-900 tracking-widest">SUM</td>
                                 <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatMoney(holdingSums.totalCostHKD, true)}</td>
                                 <td className="px-3 py-3 text-right font-mono font-bold text-indigo-900">{formatMoney(holdingSums.mktValHKD, true)}</td>
+                                {expandedTable === 'holdings' && holdingTrialEnabled && (
+                                    <>
+                                        <td className="px-3 py-3 text-right font-mono font-bold text-amber-700 bg-amber-50">试算</td>
+                                        <td className="px-3 py-3 text-right font-mono font-bold text-amber-800 bg-amber-50">{formatMoney(holdingTrialSums.adjustedMktValHKD, true)}</td>
+                                    </>
+                                )}
                                 <td className={`px-3 py-3 text-right font-mono font-bold text-lg ${holdingSums.unrealizedPnlHKD >= 0 ? 'text-red-600' : 'text-green-600'}`}>
                                     {holdingSums.unrealizedPnlHKD > 0 ? '+' : ''}{formatMoney(holdingSums.unrealizedPnlHKD, true)}
                                 </td>
