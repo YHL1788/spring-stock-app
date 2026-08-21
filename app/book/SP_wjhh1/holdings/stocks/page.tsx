@@ -292,17 +292,26 @@ export default function SpotHoldingsPage() {
               </div>
               <div className="flex items-center gap-2">
                   {key === 'holdings' && (
-                      <button
-                          onClick={() => setHoldingTrialEnabled(prev => !prev)}
-                          className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold shadow-sm transition-colors ${
-                              holdingTrialEnabled
-                                  ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
-                                  : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
-                          }`}
-                      >
-                          <Settings2 size={14} />
-                          {holdingTrialEnabled ? '关闭增减仓试算' : '增减仓试算'}
-                      </button>
+                      <>
+                          <button
+                              onClick={() => setHoldingTrialEnabled(prev => !prev)}
+                              className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold shadow-sm transition-colors ${
+                                  holdingTrialEnabled
+                                      ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                                      : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                              }`}
+                          >
+                              <Settings2 size={14} />
+                              {holdingTrialEnabled ? '关闭增减仓试算' : '增减仓试算'}
+                          </button>
+                          <button
+                              onClick={() => setShowHoldingExcelModal(true)}
+                              className="flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 shadow-sm transition-colors hover:bg-emerald-100"
+                          >
+                              <ClipboardList size={14} />
+                              {holdingTrialEnabled ? '复制试算到 Excel' : '复制到 Excel'}
+                          </button>
+                      </>
                   )}
                   <button
                       onClick={() => setExpandedTable(null)}
@@ -1379,14 +1388,21 @@ export default function SpotHoldingsPage() {
           '盈亏贡献率%',
           '各账户持仓股数',
       ];
+      if (holdingTrialEnabled) {
+          headers.splice(12, 0, '增减比例', '增减后市值HKD');
+      }
       const rows = displayHoldings.map(h => {
           const pctOfTotalMktVal = holdingSums.grossMktValHKD > 0 ? Math.abs(h.mktValHKD) / holdingSums.grossMktValHKD : 0;
           const pnlContribution = holdingSums.grossCostHKD > 0 ? h.unrealizedPnlHKD / holdingSums.grossCostHKD : 0;
+          const trialKey = getHoldingTrialKey(h);
+          const trialRatioText = holdingTrialRatios[trialKey] || '';
+          const trialRatio = parseHoldingTrialRatio(trialRatioText);
+          const adjustedMktVal = h.hasValidQuote ? h.mktValHKD * (1 + trialRatio) : 0;
           const accountsText = Object.entries(h.accounts)
               .filter(([_account, qty]) => Math.abs(qty) > 0.000001)
               .map(([account, qty]) => `${account}:${excelNumber(qty, 6)}`)
               .join(' | ');
-          return [
+          const row = [
               accountLabel,
               h.name,
               h.code,
@@ -1405,10 +1421,14 @@ export default function SpotHoldingsPage() {
               excelNumber(pnlContribution * 100, 2),
               accountsText,
           ];
+          if (holdingTrialEnabled) {
+              row.splice(12, 0, trialRatioText, h.hasValidQuote ? excelNumber(adjustedMktVal, 2) : '');
+          }
+          return row;
       });
 
       if (displayHoldings.length > 0) {
-          rows.push([
+          const sumRow = [
               accountLabel,
               'SUM',
               '',
@@ -1426,11 +1446,15 @@ export default function SpotHoldingsPage() {
               '100.00',
               excelNumber(totalUnrealizedPct * 100, 2),
               '',
-          ]);
+          ];
+          if (holdingTrialEnabled) {
+              sumRow.splice(12, 0, '试算', excelNumber(holdingTrialSums.adjustedMktValHKD, 2));
+          }
+          rows.push(sumRow);
       }
 
       return [headers, ...rows].map(row => row.join('\t')).join('\n');
-  }, [displayHoldings, holdingSums, selectedHoldingAccount, totalUnrealizedPct]);
+  }, [displayHoldings, holdingSums, holdingTrialEnabled, holdingTrialRatios, holdingTrialSums.adjustedMktValHKD, selectedHoldingAccount, totalUnrealizedPct]);
 
   const formatStatsSource = (source: string) => {
       if (source === 'published_summary') return '手动入库';
@@ -2536,7 +2560,7 @@ export default function SpotHoldingsPage() {
                                 <ClipboardList size={20} /> 当前持仓统计表 - 复制到 Excel
                             </h3>
                             <p className="mt-1 text-xs text-gray-500">
-                                当前账户：{selectedHoldingAccount || '全部账户'}；当前显示 {displayHoldings.length} 只标的。内容为制表符分隔，复制后可直接粘贴到 Excel。
+                                当前账户：{selectedHoldingAccount || '全部账户'}；当前显示 {displayHoldings.length} 只标的；复制内容：{holdingTrialEnabled ? '增减仓试算表' : '当前持仓表'}。内容为制表符分隔，复制后可直接粘贴到 Excel。
                             </p>
                         </div>
                         <button onClick={() => setShowHoldingExcelModal(false)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
@@ -2549,7 +2573,7 @@ export default function SpotHoldingsPage() {
                     />
                     <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
                         <div className="text-xs text-gray-500">
-                            提示：如果只想复制某个账户，请先在“当前持仓统计表”右上角选择账户，再打开本弹窗。
+                            提示：如果只想复制某个账户，请先选择账户；如果要复制试算结果，请先在弹窗里开启“增减仓试算”并填写比例。
                         </div>
                         <div className="flex items-center gap-3">
                             <button
