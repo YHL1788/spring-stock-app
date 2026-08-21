@@ -248,6 +248,8 @@ export default function SpotHoldingsPage() {
   const [tradeFilters, setTradeFilters] = useState<Record<string, string>>({});
   const [holdingSort, setHoldingSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: 'mktValHKD', dir: 'desc'});
   const [holdingFilters, setHoldingFilters] = useState<Record<string, string>>({});
+  const [selectedHoldingAccount, setSelectedHoldingAccount] = useState('');
+  const [showHoldingExcelModal, setShowHoldingExcelModal] = useState(false);
   const [pnlSort, setPnlSort] = useState<{key: string, dir: 'asc'|'desc'|null}>({key: 'totalPnl', dir: 'desc'});
   const [pnlFilters, setPnlFilters] = useState<Record<string, string>>({});
   const [expandedTable, setExpandedTable] = useState<'holdings' | 'pnl' | 'trades' | null>(null);
@@ -301,8 +303,8 @@ export default function SpotHoldingsPage() {
   const hasActiveFilters = useMemo(() => {
       const holdingFiltered = Object.values(holdingFilters).some(val => val && String(val).trim() !== '');
       const tradeFiltered = Object.values(tradeFilters).some(val => val && String(val).trim() !== '');
-      return holdingFiltered || tradeFiltered;
-  }, [holdingFilters, tradeFilters]);
+      return Boolean(selectedHoldingAccount) || holdingFiltered || tradeFiltered;
+  }, [holdingFilters, selectedHoldingAccount, tradeFilters]);
 
   useEffect(() => {
       if (typeof window === 'undefined') return;
@@ -588,6 +590,27 @@ export default function SpotHoldingsPage() {
       return allTrades.filter(t => !baseDate || t.date > baseDate);
   }, [allTrades, baseDate]);
 
+  const holdingAccountOptions = useMemo(() => {
+      const accountSet = new Set<string>();
+      initialHoldings.forEach(h => {
+          if (h.account) accountSet.add(h.account);
+      });
+      activeTrades.forEach(t => {
+          if (t.account) accountSet.add(t.account);
+      });
+      return Array.from(accountSet).sort();
+  }, [activeTrades, initialHoldings]);
+
+  const accountScopedInitialHoldings = useMemo(() => {
+      if (!selectedHoldingAccount) return initialHoldings;
+      return initialHoldings.filter(h => h.account === selectedHoldingAccount);
+  }, [initialHoldings, selectedHoldingAccount]);
+
+  const accountScopedActiveTrades = useMemo(() => {
+      if (!selectedHoldingAccount) return activeTrades;
+      return activeTrades.filter(t => t.account === selectedHoldingAccount);
+  }, [activeTrades, selectedHoldingAccount]);
+
   // --- 过滤后的初始持仓显示 ---
   const displayInitialHoldings = useMemo(() => {
       if (!initCodeFilter.trim()) return initialHoldings;
@@ -683,13 +706,13 @@ export default function SpotHoldingsPage() {
   // --- 核心计算 (期初底座 + 平均转移成本增量) ---
   const calculatedHoldings = useMemo(() => {
       return calculateAverageCostHoldings({
-          initialHoldings,
-          trades: activeTrades,
+          initialHoldings: accountScopedInitialHoldings,
+          trades: accountScopedActiveTrades,
           quotes: realTimeQuotes,
           fxRates: globalFxRates,
           stockPool,
       }).holdings;
-  }, [activeTrades, initialHoldings, stockPool, globalFxRates, realTimeQuotes]);
+  }, [accountScopedActiveTrades, accountScopedInitialHoldings, stockPool, globalFxRates, realTimeQuotes]);
 
   const missingQuoteCodes = useMemo(() => {
       return calculatedHoldings
@@ -1294,6 +1317,84 @@ export default function SpotHoldingsPage() {
   
   const fmtPct = (val: number) => (val * 100).toFixed(2) + '%';
 
+  const holdingExcelText = useMemo(() => {
+      const excelNumber = (value: number, digits = 2) => {
+          if (!Number.isFinite(value)) return '';
+          return value.toFixed(digits);
+      };
+      const accountLabel = selectedHoldingAccount || '全部账户';
+      const headers = [
+          '账户筛选',
+          '名称',
+          '股票代码',
+          '币种',
+          '一级行业',
+          '二级行业',
+          '持仓数量',
+          '成本均价',
+          '实时现价',
+          '今日涨跌%',
+          '总成本HKD',
+          '现市值HKD',
+          '浮动盈亏HKD',
+          '盈亏比%',
+          '市值占比%',
+          '盈亏贡献率%',
+          '各账户持仓股数',
+      ];
+      const rows = displayHoldings.map(h => {
+          const pctOfTotalMktVal = holdingSums.grossMktValHKD > 0 ? Math.abs(h.mktValHKD) / holdingSums.grossMktValHKD : 0;
+          const pnlContribution = holdingSums.grossCostHKD > 0 ? h.unrealizedPnlHKD / holdingSums.grossCostHKD : 0;
+          const accountsText = Object.entries(h.accounts)
+              .filter(([_account, qty]) => Math.abs(qty) > 0.000001)
+              .map(([account, qty]) => `${account}:${excelNumber(qty, 6)}`)
+              .join(' | ');
+          return [
+              accountLabel,
+              h.name,
+              h.code,
+              h.market,
+              h.sector_level_1,
+              h.sector_level_2,
+              excelNumber(h.quantity, 6),
+              excelNumber(h.avgCost, 4),
+              h.hasValidQuote ? excelNumber(h.currentPrice, 4) : '',
+              h.hasValidQuote ? excelNumber(h.dailyChangePct * 100, 2) : '',
+              excelNumber(h.totalCostHKD, 2),
+              h.hasValidQuote ? excelNumber(h.mktValHKD, 2) : '',
+              h.hasValidQuote ? excelNumber(h.unrealizedPnlHKD, 2) : '',
+              h.hasValidQuote ? excelNumber(h.pnlRatio * 100, 2) : '',
+              excelNumber(pctOfTotalMktVal * 100, 2),
+              excelNumber(pnlContribution * 100, 2),
+              accountsText,
+          ];
+      });
+
+      if (displayHoldings.length > 0) {
+          rows.push([
+              accountLabel,
+              'SUM',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              excelNumber(holdingSums.totalCostHKD, 2),
+              excelNumber(holdingSums.mktValHKD, 2),
+              excelNumber(holdingSums.unrealizedPnlHKD, 2),
+              excelNumber(totalUnrealizedPct * 100, 2),
+              '100.00',
+              excelNumber(totalUnrealizedPct * 100, 2),
+              '',
+          ]);
+      }
+
+      return [headers, ...rows].map(row => row.join('\t')).join('\n');
+  }, [displayHoldings, holdingSums, selectedHoldingAccount, totalUnrealizedPct]);
+
   const formatStatsSource = (source: string) => {
       if (source === 'published_summary') return '手动入库';
       if (source === 'display_cache') return '后端自动刷新缓存';
@@ -1407,13 +1508,45 @@ export default function SpotHoldingsPage() {
                         <PieChart size={18} className="text-indigo-500" />
                         当前持仓统计表 ({displayHoldings.length} 只标的)
                     </h2>
+                    {selectedHoldingAccount && (
+                        <span className="text-xs font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                            账户视角：{selectedHoldingAccount}
+                        </span>
+                    )}
                     {baseDate && (
                         <span className="text-xs font-medium text-red-600 bg-red-50 px-2 py-0.5 rounded border border-red-100">
                             仅计入 {baseDate} 之后的增量流水
                         </span>
                     )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                    <select
+                        value={selectedHoldingAccount}
+                        onChange={(e) => setSelectedHoldingAccount(e.target.value)}
+                        className="h-8 rounded border border-indigo-200 bg-white px-2 text-xs font-bold text-gray-700 shadow-sm outline-none transition-colors hover:border-indigo-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                        title="按账户重算当前持仓、成本均价与盈亏"
+                    >
+                        <option value="">全部账户</option>
+                        {holdingAccountOptions.map(account => (
+                            <option key={account} value={account}>{account}</option>
+                        ))}
+                    </select>
+                    {selectedHoldingAccount && (
+                        <button
+                            onClick={() => setSelectedHoldingAccount('')}
+                            className="flex items-center gap-1 rounded border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-bold text-gray-500 shadow-sm transition-colors hover:bg-gray-50"
+                        >
+                            <X size={13} />
+                            清空账户
+                        </button>
+                    )}
+                    <button
+                        onClick={() => setShowHoldingExcelModal(true)}
+                        className="flex items-center gap-1.5 rounded border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 shadow-sm transition-colors hover:bg-emerald-100"
+                    >
+                        <ClipboardList size={14} />
+                        复制到 Excel
+                    </button>
                     <button
                         onClick={() => setExpandedTable('holdings')}
                         className="flex items-center gap-1.5 rounded border border-indigo-200 bg-white px-3 py-1.5 text-xs font-bold text-indigo-700 shadow-sm transition-colors hover:bg-indigo-50"
@@ -2310,6 +2443,57 @@ export default function SpotHoldingsPage() {
                 </div>
             )}
         </div>
+
+        {/* --- 当前持仓统计表 Excel 复制弹窗 --- */}
+        {showHoldingExcelModal && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-6xl flex flex-col h-[78vh]">
+                    <div className="flex justify-between items-start gap-4 mb-4 border-b pb-4">
+                        <div>
+                            <h3 className="font-bold text-lg flex items-center gap-2 text-emerald-700">
+                                <ClipboardList size={20} /> 当前持仓统计表 - 复制到 Excel
+                            </h3>
+                            <p className="mt-1 text-xs text-gray-500">
+                                当前账户：{selectedHoldingAccount || '全部账户'}；当前显示 {displayHoldings.length} 只标的。内容为制表符分隔，复制后可直接粘贴到 Excel。
+                            </p>
+                        </div>
+                        <button onClick={() => setShowHoldingExcelModal(false)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
+                    </div>
+                    <textarea
+                        readOnly
+                        value={holdingExcelText}
+                        className="flex-1 w-full resize-none rounded-lg border border-emerald-100 bg-emerald-50/40 p-3 font-mono text-xs text-gray-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                        onFocus={(e) => e.currentTarget.select()}
+                    />
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+                        <div className="text-xs text-gray-500">
+                            提示：如果只想复制某个账户，请先在“当前持仓统计表”右上角选择账户，再打开本弹窗。
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <button
+                                onClick={() => setShowHoldingExcelModal(false)}
+                                className="px-5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-medium transition-colors"
+                            >
+                                关闭
+                            </button>
+                            <button
+                                onClick={async () => {
+                                    try {
+                                        await navigator.clipboard.writeText(holdingExcelText);
+                                        alert('已复制，可直接粘贴到 Excel。');
+                                    } catch (error) {
+                                        alert('自动复制失败，请手动选中文本复制。');
+                                    }
+                                }}
+                                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-sm font-bold flex items-center gap-2 transition-colors"
+                            >
+                                <ClipboardList size={16}/> 一键复制
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )}
 
         {/* --- 汇率锁定弹窗 --- */}
         {showBaseFxModal && (
