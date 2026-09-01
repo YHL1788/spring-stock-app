@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { RefreshCw, Database, FileJson, Trash2, X, Save, Loader2, AlertCircle, TrendingUp, LineChart, PieChart, Clock, BarChart, Edit3 } from 'lucide-react';
+import { RefreshCw, Database, FileJson, Trash2, X, Save, Loader2, AlertCircle, TrendingUp, LineChart, PieChart, Clock, BarChart } from 'lucide-react';
 import { collection, getDocs, getDoc, doc, updateDoc, addDoc, deleteDoc, setDoc, query, where, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { db, auth, APP_ID } from '@/app/lib/stockService';
@@ -278,11 +278,6 @@ export default function DQAQHoldingPage() {
     const [riskFilters, setRiskFilters] = useState<Record<string, string>>({});
     const [diedSort, setDiedSort] = useState<any>({key: '', dir: null});
     const [diedFilters, setDiedFilters] = useState<Record<string, string>>({});
-    const [isEditModeLiving, setIsEditModeLiving] = useState(false);
-    const [isEditModeDied, setIsEditModeDied] = useState(false);
-    const [selectedLivingTradeIds, setSelectedLivingTradeIds] = useState<string[]>([]);
-    const [selectedDiedTradeIds, setSelectedDiedTradeIds] = useState<string[]>([]);
-    const [isDeleting, setIsDeleting] = useState(false);
     const toggleSort = (setSort: any) => (key: string) => {
         setSort((prev: any) => {
             if (prev.key === key) {
@@ -372,77 +367,6 @@ export default function DQAQHoldingPage() {
             });
             return merged;
         } catch (e) { console.warn("Fetch Error:", e); return []; }
-    };
-
-    const getDataCollectionRef = (collectionName: string) => (
-        collection(db, 'artifacts', APP_ID, 'public', 'data', collectionName)
-    );
-
-    const deleteCascadeRecords = async (tradeId: string, lifecycle: 'living' | 'died') => {
-        const collectionsToDelete = [
-            `sip_trade_dqaq_input_${lifecycle}`,
-            `sip_holding_dqaq_output_${lifecycle}`,
-            'sip_holding_dqaq_output_get-stock',
-        ];
-
-        let deletedCount = 0;
-        for (const colName of collectionsToDelete) {
-            const colRef = getDataCollectionRef(colName);
-            const snap = await getDocs(query(colRef, where('tradeId', '==', tradeId)));
-            for (const document of snap.docs) {
-                await deleteDoc(document.ref);
-                deletedCount++;
-            }
-        }
-        return deletedCount;
-    };
-
-    const handleCascadeDelete = async (tradeId: string, lifecycle: 'living' | 'died') => {
-        if (!confirm(`高危级联删除\n\n将永久删除 tradeId: ${tradeId} 的 DQ-AQ 输入、输出和 get-stock 交收记录。\n\n此操作不可逆，是否继续？`)) return;
-        setIsDeleting(true);
-        try {
-            const deletedCount = await deleteCascadeRecords(tradeId, lifecycle);
-            if (lifecycle === 'living') setSelectedLivingTradeIds(prev => prev.filter(id => id !== tradeId));
-            else setSelectedDiedTradeIds(prev => prev.filter(id => id !== tradeId));
-            await loadRecords();
-            if (activeDbTab.includes('_dqaq_')) fetchDbRecords(activeDbTab);
-            alert(`级联删除完成，共删除 ${deletedCount} 条关联记录。`);
-        } catch (e: any) {
-            alert(`级联删除失败: ${e.message}`);
-        } finally {
-            setIsDeleting(false);
-        }
-    };
-
-    const handleBatchCascadeDelete = async (lifecycle: 'living' | 'died') => {
-        const selectedIds = lifecycle === 'living' ? selectedLivingTradeIds : selectedDiedTradeIds;
-        const uniqueIds = Array.from(new Set(selectedIds)).filter(Boolean);
-        if (uniqueIds.length === 0) {
-            alert('请先勾选需要删除的记录。');
-            return;
-        }
-        if (!confirm(`高危批量级联删除\n\n将永久删除 ${uniqueIds.length} 条 DQ-AQ 记录及其输入、输出和 get-stock 交收记录。\n\n此操作不可逆，是否继续？`)) return;
-        setIsDeleting(true);
-        try {
-            let deletedCount = 0;
-            for (const tradeId of uniqueIds) {
-                deletedCount += await deleteCascadeRecords(tradeId, lifecycle);
-            }
-            if (lifecycle === 'living') setSelectedLivingTradeIds([]);
-            else setSelectedDiedTradeIds([]);
-            await loadRecords();
-            if (activeDbTab.includes('_dqaq_')) fetchDbRecords(activeDbTab);
-            alert(`批量级联删除完成，共删除 ${uniqueIds.length} 笔 DQ-AQ 和 ${deletedCount} 条关联记录。`);
-        } catch (e: any) {
-            alert(`批量级联删除失败: ${e.message}`);
-        } finally {
-            setIsDeleting(false);
-        }
-    };
-
-    const toggleSelectedTradeId = (lifecycle: 'living' | 'died', tradeId: string) => {
-        const setter = lifecycle === 'living' ? setSelectedLivingTradeIds : setSelectedDiedTradeIds;
-        setter(prev => prev.includes(tradeId) ? prev.filter(id => id !== tradeId) : [...prev, tradeId]);
     };
 
     const loadRecords = async () => {
@@ -694,14 +618,10 @@ export default function DQAQHoldingPage() {
     };
 
     // --- 刷新引擎核心逻辑 ---
-    const handleRefreshLiving = async (onlyTradeIds?: string[]) => {
+    const handleRefreshLiving = async () => {
         setLoadingLiving(true);
         try {
-            const selectedIds = Array.from(new Set(onlyTradeIds || [])).filter(Boolean);
-            const allLiving = await fetchMergedRecords('living');
-            const currentLiving = selectedIds.length > 0
-                ? allLiving.filter(record => selectedIds.includes(record.tradeId))
-                : allLiving;
+            const currentLiving = await fetchMergedRecords('living');
             if (currentLiving.length === 0) {
                 setLoadingLiving(false);
                 return;
@@ -726,7 +646,6 @@ export default function DQAQHoldingPage() {
             }
             await loadRecords();
             if (activeDbTab.includes('living')) fetchDbRecords(activeDbTab);
-            if (selectedIds.length > 0) setSelectedLivingTradeIds(prev => prev.filter(id => !selectedIds.includes(id)));
             if (allNewDeliveries.length > 0) {
                 setPendingDeliveries(allNewDeliveries);
                 setShowDeliveryModal(true);
@@ -757,19 +676,14 @@ export default function DQAQHoldingPage() {
         } catch(e:any) { alert("覆盖失败: " + e.message); } finally { setSyncingDeliveries(false); }
     };
 
-    const handleRefreshDied = async (onlyTradeIds?: string[]) => {
+    const handleRefreshDied = async () => {
         setLoadingDied(true);
         let errCount = 0;
         try {
-            const selectedIds = Array.from(new Set(onlyTradeIds || [])).filter(Boolean);
-            const allDied = await fetchMergedRecords('died');
-            const currentDied = selectedIds.length > 0
-                ? allDied.filter(record => selectedIds.includes(record.tradeId))
-                : allDied;
+            const currentDied = await fetchMergedRecords('died');
             if (currentDied.length === 0) { setLoadingDied(false); return; }
-            const allNewDeliveries: any[] = [];
             for (const record of currentDied) {
-                const { res, cleanInput, cleanOutput, newDeliveries } = await evaluateDQAQ(record);
+                const { res, cleanInput, cleanOutput } = await evaluateDQAQ(record);
                 if (res.status_msg.includes('存续中') || res.status_msg.includes('未开始') || res.status_msg.includes('尚未订约')) {
                     errCount++;
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_dqaq_input_living', record.inputId), cleanInput);
@@ -780,19 +694,11 @@ export default function DQAQHoldingPage() {
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_dqaq_input_died', record.inputId), cleanInput);
                     await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_holding_dqaq_output_died', record.outputId), cleanOutput);
                 }
-                if (newDeliveries.length > 0) {
-                    allNewDeliveries.push(...newDeliveries);
-                }
             }
             await loadRecords();
             if (activeDbTab.includes('died')) fetchDbRecords(activeDbTab);
-            if (selectedIds.length > 0) setSelectedDiedTradeIds(prev => prev.filter(id => !selectedIds.includes(id)));
-            if (allNewDeliveries.length > 0) {
-                setPendingDeliveries(allNewDeliveries);
-                setShowDeliveryModal(true);
-                if (errCount > 0) alert(`出错！有 ${errCount} 笔历史数据重新计算后发现仍在存续，且本次刷新生成了交收流水，请检查后确认覆盖。`);
-            } else if (errCount > 0) alert(`出错！有 ${errCount} 笔数据重新计算后发现仍在存续！请重新检查 died 库内容！`);
-            else alert('历史持仓刷新校验完毕！数据已基于历史收盘价精准覆盖。本次刷新未产生新的结算/接货记录。');
+            if (errCount > 0) alert(`出错！有 ${errCount} 笔数据重新计算后发现仍在存续！请重新检查 died 库内容！`);
+            else alert('历史持仓刷新校验完毕！数据已基于历史收盘价精准覆盖。');
         } catch(e:any) { alert("刷新失败: " + e.message); } finally { setLoadingDied(false); }
     };
 
@@ -1147,39 +1053,6 @@ export default function DQAQHoldingPage() {
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2"><Database size={20} className="text-blue-600"/>【DQ-AQ 持仓板块 (存续中)】</h2>
-                    <div className="flex flex-wrap items-center justify-end gap-3">
-                        <span className="text-sm text-gray-500">Living 库总计: {livingRecords.length} 笔</span>
-                        {isEditModeLiving && (
-                            <button
-                                onClick={() => handleRefreshLiving(selectedLivingTradeIds)}
-                                disabled={loadingLiving || selectedLivingTradeIds.length === 0}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-blue-600 text-white border-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
-                            >
-                                {loadingLiving ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                                刷新选中 ({selectedLivingTradeIds.length})
-                            </button>
-                        )}
-                        {isEditModeLiving && (
-                            <button
-                                onClick={() => handleBatchCascadeDelete('living')}
-                                disabled={isDeleting || selectedLivingTradeIds.length === 0}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-red-600 text-white border-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
-                            >
-                                {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                                删除选中 ({selectedLivingTradeIds.length})
-                            </button>
-                        )}
-                        <button
-                            onClick={() => {
-                                if (isEditModeLiving) setSelectedLivingTradeIds([]);
-                                setIsEditModeLiving(!isEditModeLiving);
-                            }}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold transition-colors border ${isEditModeLiving ? 'bg-red-50 text-red-700 border-red-200 shadow-inner' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50 shadow-sm'}`}
-                        >
-                            {isEditModeLiving ? <X size={14}/> : <Edit3 size={14}/>}
-                            {isEditModeLiving ? '退出高级编辑' : '开启高级编辑'}
-                        </button>
-                    </div>
                 </div>
                 <div className="overflow-x-auto overflow-y-auto max-h-[500px] border rounded-lg mb-4 shadow-sm relative scrollbar-thin">
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200">
@@ -1206,19 +1079,6 @@ export default function DQAQHoldingPage() {
                                 <Th label="已结算股数" sortKey="settled" align="right" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="已锁定未付股数" sortKey="locked" align="right" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
                                 <Th label="全价" sortKey="fullPrice" align="right" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} />
-                                {isEditModeLiving && (
-                                    <th className="px-5 py-3 text-center bg-red-50 text-red-800 font-bold border-l border-red-100 whitespace-nowrap">
-                                        <label className="flex items-center justify-center gap-2 cursor-pointer select-none">
-                                            <input
-                                                type="checkbox"
-                                                checked={finalLiving.length > 0 && finalLiving.every(item => selectedLivingTradeIds.includes(item.id))}
-                                                onChange={(e) => setSelectedLivingTradeIds(e.target.checked ? finalLiving.map(item => item.id) : [])}
-                                                className="h-3.5 w-3.5 rounded border-red-300 text-red-600 focus:ring-red-500"
-                                            />
-                                            高级编辑
-                                        </label>
-                                    </th>
-                                )}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
@@ -1291,39 +1151,12 @@ export default function DQAQHoldingPage() {
                                     <td className="px-3 py-2 text-right font-mono">{(item.settled || 0).toFixed(2)}</td>
                                     <td className="px-3 py-2 text-right font-mono">{(item.locked || 0).toFixed(2)}</td>
                                     <td className="px-3 py-2 text-right font-mono font-bold text-blue-800">{fmtMoney(item.fullPrice, item.currency)}</td>
-                                    {isEditModeLiving && (
-                                        <td className="px-5 py-2 text-center bg-red-50 border-l border-red-100">
-                                            <div className="flex items-center justify-center gap-2">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={selectedLivingTradeIds.includes(item.id)}
-                                                    onChange={() => toggleSelectedTradeId('living', item.id)}
-                                                    className="h-3.5 w-3.5 rounded border-red-300 text-red-600 focus:ring-red-500"
-                                                />
-                                                <button
-                                                    onClick={() => handleRefreshLiving([item.id])}
-                                                    disabled={loadingLiving}
-                                                    className="rounded bg-blue-600 px-2 py-1 text-[10px] font-bold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-40"
-                                                    title="刷新本条并同步重算交割单"
-                                                >
-                                                    {loadingLiving ? <Loader2 size={12} className="animate-spin"/> : <RefreshCw size={12}/>}
-                                                </button>
-                                                <button
-                                                    onClick={() => handleCascadeDelete(item.id, 'living')}
-                                                    disabled={isDeleting}
-                                                    className="rounded bg-red-600 px-2 py-1 text-[10px] font-bold text-white shadow-sm transition-colors hover:bg-red-700 disabled:opacity-40"
-                                                >
-                                                    {isDeleting ? <Loader2 size={12} className="animate-spin"/> : <Trash2 size={12}/>}
-                                                </button>
-                                            </div>
-                                        </td>
-                                    )}
                                 </tr>
                             ))}
                         </tbody>
                     </table>
                 </div>
-                <button onClick={() => handleRefreshLiving()} disabled={loadingLiving} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md flex justify-center items-center gap-2">
+                <button onClick={handleRefreshLiving} disabled={loadingLiving} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md flex justify-center items-center gap-2">
                     {loadingLiving ? <Loader2 className="animate-spin" size={18} /> : <RefreshCw size={18} />} {loadingLiving ? '重新测算与流转...' : '刷新当前持仓 (获取实时现价并提取交收流水)'}
                 </button>
             </div>
@@ -1387,39 +1220,6 @@ export default function DQAQHoldingPage() {
             <div className="bg-white shadow rounded-lg p-6 border border-gray-200">
                 <div className="flex justify-between items-center mb-4">
                     <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2"><Database size={20} className="text-orange-600"/>【DQ-AQ 持仓板块 (历史)】</h2>
-                    <div className="flex flex-wrap items-center justify-end gap-3">
-                        <span className="text-sm text-gray-500">Died 库总计: {diedRecords.length} 笔</span>
-                        {isEditModeDied && (
-                            <button
-                                onClick={() => handleRefreshDied(selectedDiedTradeIds)}
-                                disabled={loadingDied || selectedDiedTradeIds.length === 0}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-orange-600 text-white border-orange-600 hover:bg-orange-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
-                            >
-                                {loadingDied ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                                刷新选中 ({selectedDiedTradeIds.length})
-                            </button>
-                        )}
-                        {isEditModeDied && (
-                            <button
-                                onClick={() => handleBatchCascadeDelete('died')}
-                                disabled={isDeleting || selectedDiedTradeIds.length === 0}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-red-600 text-white border-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
-                            >
-                                {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                                删除选中 ({selectedDiedTradeIds.length})
-                            </button>
-                        )}
-                        <button
-                            onClick={() => {
-                                if (isEditModeDied) setSelectedDiedTradeIds([]);
-                                setIsEditModeDied(!isEditModeDied);
-                            }}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold transition-colors border ${isEditModeDied ? 'bg-red-50 text-red-700 border-red-200 shadow-inner' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50 shadow-sm'}`}
-                        >
-                            {isEditModeDied ? <X size={14}/> : <Edit3 size={14}/>}
-                            {isEditModeDied ? '退出高级编辑' : '开启高级编辑'}
-                        </button>
-                    </div>
                 </div>
                 <div className="overflow-x-auto overflow-y-auto max-h-[500px] border rounded-lg mb-4 shadow-sm relative scrollbar-thin">
                     <table className="min-w-full text-xs text-left divide-y divide-gray-200">
@@ -1439,19 +1239,6 @@ export default function DQAQHoldingPage() {
                                 <Th label="最终结算股数" sortKey="settled" align="right" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="最终完成率" sortKey="expRate" align="right" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
                                 <Th label="全价" sortKey="fullPrice" align="right" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} />
-                                {isEditModeDied && (
-                                    <th className="px-5 py-3 text-center bg-red-50 text-red-800 font-bold border-l border-red-100 whitespace-nowrap">
-                                        <label className="flex items-center justify-center gap-2 cursor-pointer select-none">
-                                            <input
-                                                type="checkbox"
-                                                checked={finalDied.length > 0 && finalDied.every(item => selectedDiedTradeIds.includes(item.id))}
-                                                onChange={(e) => setSelectedDiedTradeIds(e.target.checked ? finalDied.map(item => item.id) : [])}
-                                                className="h-3.5 w-3.5 rounded border-red-300 text-red-600 focus:ring-red-500"
-                                            />
-                                            高级编辑
-                                        </label>
-                                    </th>
-                                )}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
@@ -1490,40 +1277,12 @@ export default function DQAQHoldingPage() {
                                     <td className="px-3 py-2 text-right font-mono font-bold text-gray-800">{(item.settled || 0).toFixed(2)}</td>
                                     <td className="px-3 py-2 text-right font-mono">{fmtPct(item.expRate || 0)}</td>
                                     <td className="px-3 py-2 text-right font-mono font-bold text-blue-800">{fmtMoney(item.fullPrice, item.currency)}</td>
-                                    {isEditModeDied && (
-                                        <td className="px-5 py-2 text-center bg-red-50 border-l border-red-100">
-                                            <div className="flex items-center justify-center gap-2">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={selectedDiedTradeIds.includes(item.id)}
-                                                    onChange={() => toggleSelectedTradeId('died', item.id)}
-                                                    className="h-3.5 w-3.5 rounded border-red-300 text-red-600 focus:ring-red-500"
-                                                />
-                                                <button
-                                                    onClick={() => handleRefreshDied([item.id])}
-                                                    disabled={loadingDied}
-                                                    className="rounded bg-orange-600 px-2 py-1 text-[10px] font-bold text-white shadow-sm transition-colors hover:bg-orange-700 disabled:opacity-40"
-                                                    title="刷新本条并同步重算交割单"
-                                                >
-                                                    {loadingDied ? <Loader2 size={12} className="animate-spin"/> : <RefreshCw size={12}/>}
-                                                </button>
-                                                <button
-                                                    onClick={() => handleCascadeDelete(item.id, 'died')}
-                                                    disabled={isDeleting}
-                                                    className="rounded bg-red-600 px-2 py-1 text-[10px] font-bold text-white shadow-sm transition-colors hover:bg-red-700 disabled:opacity-40"
-                                                    title="级联删除本条"
-                                                >
-                                                    {isDeleting ? <Loader2 size={12} className="animate-spin"/> : <Trash2 size={12}/>}
-                                                </button>
-                                            </div>
-                                        </td>
-                                    )}
                                 </tr>
                             ))}
                         </tbody>
                     </table>
                 </div>
-                <button onClick={() => handleRefreshDied()} disabled={loadingDied} className="w-full py-3 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-md flex justify-center items-center gap-2">
+                <button onClick={handleRefreshDied} disabled={loadingDied} className="w-full py-3 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-md flex justify-center items-center gap-2">
                     {loadingDied ? <Loader2 className="animate-spin" size={18} /> : <RefreshCw size={18} />} {loadingDied ? '重新计算校验中...' : '刷新历史持仓 (校验状态准确性)'}
                 </button>
             </div>
