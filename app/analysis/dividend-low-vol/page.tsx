@@ -38,6 +38,8 @@ import type {
 
 type ViewKey = 'backtest' | 'selection';
 
+const LOCAL_CACHE_KEY = 'sip:dividend-low-vol:last-success:v1';
+
 const COLORS = {
   net: '#0f766e',
   gross: '#64a087',
@@ -103,6 +105,7 @@ export default function DividendLowVolPage() {
   const [selectedVersion, setSelectedVersion] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [warning, setWarning] = useState('');
   const [fromMonth, setFromMonth] = useState('2016-01');
   const [toMonth, setToMonth] = useState('');
   const [selectedMonth, setSelectedMonth] = useState('');
@@ -110,12 +113,14 @@ export default function DividendLowVolPage() {
   const load = useCallback(async (experimentId?: string) => {
     setLoading(true);
     setError('');
+    setWarning('');
     try {
       const query = experimentId ? `?experimentId=${encodeURIComponent(experimentId)}` : '';
       const response = await fetch(`/api/dividend-low-vol${query}`, { cache: 'no-store' });
       const payload: DividendLowVolApiResponse = await response.json();
       if (!response.ok || !payload.ok) throw new Error(payload.error || '红利低波结果读取失败。');
       const nextSnapshot = payload.snapshot || null;
+      setWarning(payload.warning || '');
       setSnapshot(nextSnapshot);
       setVersions(payload.versions || []);
       if (nextSnapshot) {
@@ -128,9 +133,36 @@ export default function DividendLowVolPage() {
           : [first, tenYearsBefore(last)].sort().at(-1) || first);
         setToMonth(previous => experimentId && previous >= first && previous <= last ? previous : last);
       }
+      try {
+        window.localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify({
+          cachedAt: new Date().toISOString(),
+          snapshot: nextSnapshot,
+          versions: payload.versions || [],
+        }));
+      } catch {
+        // Browser storage is optional; large research snapshots may exceed its quota.
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '红利低波结果读取失败。');
-      setSnapshot(null);
+      let restored = false;
+      try {
+        const cached = JSON.parse(window.localStorage.getItem(LOCAL_CACHE_KEY) || 'null');
+        if (cached?.snapshot) {
+          setSnapshot(cached.snapshot);
+          setVersions(cached.versions || []);
+          setSelectedVersion(cached.snapshot.experiment.experiment_id);
+          setWarning(`云端数据服务暂时不可用，当前展示本浏览器于 ${cached.cachedAt || '此前'} 保存的最近结果。`);
+          restored = true;
+        }
+      } catch {
+        // Fall through to the friendly empty state.
+      }
+      if (!restored) {
+        const message = caught instanceof Error ? caught.message : '红利低波结果读取失败。';
+        setError(message.includes('RESOURCE_EXHAUSTED') || message.includes('Quota exceeded')
+          ? '云端数据服务今日配额已用尽，暂时无法读取同步结果。请稍后重试或联系管理员提升 Firebase 配额。'
+          : message);
+        setSnapshot(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -214,6 +246,7 @@ export default function DividendLowVolPage() {
           </div>
         </section>
 
+        {warning && <Notice kind="warning">{warning}</Notice>}
         {error && <Notice kind="error">{error}</Notice>}
         {!loading && !error && !snapshot && (
           <section className="mt-6 rounded-3xl border border-dashed border-slate-300 bg-white p-10 text-center">
@@ -432,4 +465,4 @@ function MonthField({ label, value, min, max, onChange }: { label: string; value
 function ResearchFact({ label, value }: { label: string; value: string }) { return <div className="rounded-2xl border border-slate-100 bg-[#faf8f3] p-4"><div className="text-[10px] font-black uppercase tracking-widest text-slate-400">{label}</div><div className="mt-2 font-semibold text-slate-800">{value}</div></div>; }
 function MiniFact({ label, value }: { label: string; value: string }) { return <div className="rounded-2xl border border-slate-200 bg-[#faf8f3] p-3"><div className="text-[10px] font-bold text-slate-400">{label}</div><div className="mt-1 font-mono text-lg font-bold">{value}</div></div>; }
 function TradeList({ label, items, accent }: { label: string; items: string[]; accent: 'emerald' | 'rose' | 'slate' }) { const styles = accent === 'emerald' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : accent === 'rose' ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-slate-200 bg-slate-50 text-slate-700'; return <div className={`rounded-2xl border p-4 ${styles}`}><div className="text-xs font-black">{label} · {items.length}只</div><div className="mt-2 flex flex-wrap gap-1.5">{items.length ? items.map(item => <span key={item} className="rounded-md bg-white/70 px-2 py-1 font-mono text-xs">{item}</span>) : <span className="text-xs opacity-60">无变动</span>}</div></div>; }
-function Notice({ kind, children }: { kind: 'error' | 'info'; children: React.ReactNode }) { return <div className={`mt-6 flex items-start gap-3 rounded-2xl border px-4 py-3 text-sm ${kind === 'error' ? 'border-rose-300 bg-rose-50 text-rose-900' : 'border-sky-200 bg-sky-50 text-sky-900'}`}>{kind === 'error' ? <CircleAlert size={18} className="mt-0.5 shrink-0" /> : <Gauge size={18} className="mt-0.5 shrink-0" />}<span>{children}</span></div>; }
+function Notice({ kind, children }: { kind: 'error' | 'info' | 'warning'; children: React.ReactNode }) { const tone = kind === 'error' ? 'border-rose-300 bg-rose-50 text-rose-900' : kind === 'warning' ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-sky-200 bg-sky-50 text-sky-900'; return <div className={`mt-6 flex items-start gap-3 rounded-2xl border px-4 py-3 text-sm ${tone}`}>{kind === 'error' || kind === 'warning' ? <CircleAlert size={18} className="mt-0.5 shrink-0" /> : <Gauge size={18} className="mt-0.5 shrink-0" />}<span>{children}</span></div>; }

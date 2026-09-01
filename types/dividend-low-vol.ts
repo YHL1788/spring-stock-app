@@ -125,4 +125,7 @@ export type DividendLowVolApiResponse = {
   snapshot?: DividendLowVolSnapshot;
   versions?: DividendLowVolVersion[];
   error?: string;
+  error_code?: 'storage_quota_exhausted' | 'storage_unavailable' | 'unknown';
+  warning?: string;
+  stale?: boolean;
 };

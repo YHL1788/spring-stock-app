@@ -65,10 +65,12 @@ export const saveDividendLowVolSnapshot = async (payload: unknown) => {
   }, { merge: false });
 
   if (snapshot.experiment.approved) {
+    const canEmbedSnapshot = Buffer.byteLength(JSON.stringify(snapshot), 'utf8') <= 900_000;
     batch.set(latestRef, {
       experiment_id: experimentId,
       display_name: snapshot.experiment.display_name,
       published_at: snapshot.published_at,
+      ...(canEmbedSnapshot ? { snapshot } : {}),
       updated_at: FieldValue.serverTimestamp(),
     }, { merge: false });
   }
@@ -102,7 +104,11 @@ export const getDividendLowVolSnapshot = async (requestedExperimentId?: string |
   let experimentId = requestedExperimentId || '';
   if (!experimentId) {
     const latest = await dataCollection(LATEST_COLLECTION).doc(LATEST_ID).get();
-    experimentId = latest.exists ? String(latest.data()?.experiment_id || '') : '';
+    if (latest.exists) {
+      const latestData = serializeValue(latest.data());
+      if (latestData?.snapshot) return latestData.snapshot as DividendLowVolSnapshot;
+      experimentId = String(latestData?.experiment_id || '');
+    }
   }
   if (!experimentId) {
     const fallback = await dataCollection(RUNS_COLLECTION).orderBy('received_at', 'desc').limit(1).get();

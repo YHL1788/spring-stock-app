@@ -5,6 +5,14 @@ import { saveDividendLowVolSnapshot } from '@/app/lib/dividendLowVolStore';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+const isQuotaError = (error: unknown) => {
+  const code = String((error as { code?: unknown })?.code || '').toLowerCase();
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return code.includes('resource-exhausted')
+    || message.includes('resource_exhausted')
+    || message.includes('quota exceeded');
+};
+
 const isAuthorized = (request: NextRequest) => {
   const expected = process.env.DIVIDEND_LOW_VOL_SYNC_SECRET;
   if (!expected) return { ok: false, configurationMissing: true };
@@ -36,6 +44,13 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Invalid sync payload.';
     console.error('[dividend-low-vol] publish failed', error);
+    if (isQuotaError(error)) {
+      return NextResponse.json({
+        ok: false,
+        error_code: 'storage_quota_exhausted',
+        error: '云端数据库配额已用尽，本次同步尚未保存。请提升 Firebase 配额或等待配额恢复后重试。',
+      }, { status: 503 });
+    }
     return NextResponse.json({ ok: false, error: message }, { status: 400 });
   }
 }
