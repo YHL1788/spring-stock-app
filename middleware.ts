@@ -15,9 +15,13 @@ const isPublicCronRoute = createRouteMatcher([
   '/api/book/spwjhh1/refresh-display-cache(.*)',
 ]);
 
+const isPublicDividendLowVolPublishRoute = createRouteMatcher([
+  '/api/dividend-low-vol/publish(.*)',
+]);
+
 // 2. 鍦ㄤ腑闂翠欢涓繘琛屾嫤鎴?
 export default clerkMiddleware(async (auth, req) => {
-  if (isPublicCronRoute(req)) {
+  if (isPublicCronRoute(req) || isPublicDividendLowVolPublishRoute(req)) {
     return;
   }
 
