@@ -39,7 +39,7 @@ const navigation = [
       { name: '衍生品测算', href: '/analysis/derivative-valuation' },
       { name: '组合分析', href: '/analysis/portfolio-analysis' },
       { name: '量化分析', href: '/analysis/quantitative-analysis' },
-      { name: '红利低波分析', href: '/analysis/dividend-low-vol' },
+      { name: '红利低波分析', href: 'https://hk-dividend-low-vol-lab.streamlit.app/' },
     ],
   },
   {
