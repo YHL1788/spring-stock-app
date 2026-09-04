@@ -258,6 +258,9 @@ function SummaryPanel({ cache }: { cache: MobileCacheDoc | null }) {
       <SectionCard title="当前持仓市值分布矩阵" note="按资产和币种聚合，不按账户拆分。">
         <SummaryMktMatrix mktDataMap={data.mktDataMap} />
       </SectionCard>
+      <SectionCard title="当前交易归因盈亏矩阵" note="按资产和币种展示已实现/未实现/合计。">
+        <SummaryPlMatrix plDataMap={data.plDataMap} />
+      </SectionCard>
     </>
   );
 }

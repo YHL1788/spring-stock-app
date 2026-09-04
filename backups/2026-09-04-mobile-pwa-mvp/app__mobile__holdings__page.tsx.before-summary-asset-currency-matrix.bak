@@ -60,16 +60,6 @@ const TABS: Array<{ key: TabKey; label: string }> = [
   { key: "cbbc", label: "牛熊证" },
 ];
 
-const ASSET_LABELS: Record<string, string> = {
-  cash: "现金 (Cash)",
-  stock: "现货 (Spot)",
-  pe: "私募 (PE)",
-  cbbc: "牛熊/期货 (CBBC)",
-  option: "期权 (Option)",
-  fcn: "FCN",
-  dqaq: "DQ-AQ",
-};
-
 const EMPTY_STATE: HoldingsState = {
   summary: null,
   cash: null,
@@ -166,60 +156,19 @@ function MatrixTable({ matrix, type = "mkt" }: { matrix?: MatrixData | null; typ
 }
 
 function SummaryMktMatrix({ mktDataMap }: { mktDataMap?: Record<string, MatrixData> }) {
-  const rows = useMemo(() => Object.entries(mktDataMap || {}).map(([asset, matrix]) => {
-    const valuesByCurrency: Record<string, number> = {};
-    matrixRows(matrix).forEach(({ market, row }) => {
-      valuesByCurrency[market] = Object.values(row || {}).reduce<number>((sum, value) => sum + toNumber(value), 0);
-    });
-    return {
-      asset,
-      label: ASSET_LABELS[asset] || asset.toUpperCase(),
-      valuesByCurrency,
-      total: Object.values(valuesByCurrency).reduce((sum, value) => sum + value, 0),
-    };
-  }).filter((item) => item.total !== 0), [mktDataMap]);
-
-  const currencies = useMemo(() => {
-    const set = new Set<string>();
-    Object.values(mktDataMap || {}).forEach((matrix) => {
-      (matrix.markets || Object.keys(matrix.rawMatrix || {})).forEach((market) => set.add(market));
-    });
-    return Array.from(set);
-  }, [mktDataMap]);
-
-  const currencyTotals = useMemo(() => currencies.reduce<Record<string, number>>((acc, currency) => {
-    acc[currency] = rows.reduce((sum, row) => sum + toNumber(row.valuesByCurrency[currency]), 0);
-    return acc;
-  }, {}), [currencies, rows]);
-
-  const grandTotal = rows.reduce((sum, row) => sum + row.total, 0);
-
-  if (!rows.length || !currencies.length) return <Empty>暂无当前持仓市值分布矩阵</Empty>;
+  const rows = Object.entries(mktDataMap || {}).flatMap(([asset, matrix]) => (
+    matrixRows(matrix).map(({ market, row }) => ({ asset, market, row }))
+  ));
+  if (!rows.length) return <Empty>暂无当前持仓市值分布矩阵</Empty>;
   return (
     <div className={styles.tableWrap}>
       <table className={styles.table}>
-        <thead>
-          <tr>
-            <th>资产</th>
-            {currencies.map((currency) => <th key={currency}>{currency}</th>)}
-            <th>合计</th>
-          </tr>
-        </thead>
+        <thead><tr><th>资产</th><th>币种</th><th>市值合计</th></tr></thead>
         <tbody>
-          {rows.map((item) => (
-            <tr key={item.asset}>
-              <td>{item.label}</td>
-              {currencies.map((currency) => (
-                <td key={currency}>{formatHKD(item.valuesByCurrency[currency], 2)}</td>
-              ))}
-              <td>{formatHKD(item.total, 2)}</td>
-            </tr>
-          ))}
-          <tr>
-            <td>合计</td>
-            {currencies.map((currency) => <td key={currency}>{formatHKD(currencyTotals[currency], 2)}</td>)}
-            <td>{formatHKD(grandTotal, 2)}</td>
-          </tr>
+          {rows.map((item) => {
+            const total = Object.values(item.row || {}).reduce<number>((sum, value) => sum + toNumber(value), 0);
+            return <tr key={`${item.asset}-${item.market}`}><td>{item.asset.toUpperCase()}</td><td>{item.market}</td><td>{formatHKD(total, 2)}</td></tr>;
+          })}
         </tbody>
       </table>
     </div>
@@ -257,6 +206,9 @@ function SummaryPanel({ cache }: { cache: MobileCacheDoc | null }) {
       </SectionCard>
       <SectionCard title="当前持仓市值分布矩阵" note="按资产和币种聚合，不按账户拆分。">
         <SummaryMktMatrix mktDataMap={data.mktDataMap} />
+      </SectionCard>
+      <SectionCard title="当前交易归因盈亏矩阵" note="按资产和币种展示已实现/未实现/合计。">
+        <SummaryPlMatrix plDataMap={data.plDataMap} />
       </SectionCard>
     </>
   );
