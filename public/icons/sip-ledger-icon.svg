@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SIP Holdings">
+  <rect width="512" height="512" rx="112" fill="#16352f"/>
+  <path d="M106 145c0-25 20-45 45-45h210c25 0 45 20 45 45v222c0 25-20 45-45 45H151c-25 0-45-20-45-45V145Z" fill="#f4ead6"/>
+  <path d="M154 151h204M154 211h204M154 271h204M154 331h144" stroke="#b98235" stroke-width="24" stroke-linecap="round"/>
+  <path d="M184 392c30-62 70-110 119-144 25-17 54-31 86-43" fill="none" stroke="#0f8a5f" stroke-width="32" stroke-linecap="round"/>
+  <path d="M355 198l51-10-14 50" fill="none" stroke="#0f8a5f" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

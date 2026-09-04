@@ -1,18 +1,8 @@
 "use client";
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import type { MouseEvent } from 'react';
 // 移除 useState，因为不再需要管理语言状态
 import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/nextjs';
-
-const STREAMLIT_LAB_URL = 'https://hk-dividend-low-vol-lab.streamlit.app/';
-
-function openFreshStreamlitSession(event: MouseEvent<HTMLAnchorElement>, href: string) {
-  if (href !== STREAMLIT_LAB_URL) return;
-  event.preventDefault();
-  window.location.assign(`${STREAMLIT_LAB_URL}?launch=${Date.now()}`);
-}
 
 // 定義導航菜單結構
 const navigation = [
@@ -49,7 +39,7 @@ const navigation = [
       { name: '衍生品测算', href: '/analysis/derivative-valuation' },
       { name: '组合分析', href: '/analysis/portfolio-analysis' },
       { name: '量化分析', href: '/analysis/quantitative-analysis' },
-      { name: '红利低波分析', href: STREAMLIT_LAB_URL },
+      { name: '红利低波分析', href: 'https://hk-dividend-low-vol-lab.streamlit.app/' },
     ],
   },
   {
@@ -67,7 +57,6 @@ const navigation = [
     current: false,
     children: [
       { name: '春天稳健混合1号基金', href: '/book/SP_wjhh1' },
-      { name: '持仓只读APP', href: '/mobile/holdings' },
       { name: '春天汇盈策略基金', href: '/book/SP_hy_strategy' },
       { name: 'FX临时看盘', href: 'https://ct67q6.csb.app/' },
       { name: '我的账簿', href: '/book/my_book' },
@@ -107,12 +96,6 @@ const navigation = [
 ];
 
 export default function Header() {
-  const pathname = usePathname();
-
-  if (pathname?.startsWith('/mobile')) {
-    return null;
-  }
-
   return (
     <header className="bg-white border-b border-gray-100 fixed w-full top-0 z-50">
       <nav className="mx-auto max-w-7xl px-6 lg:px-8" aria-label="Top">
@@ -153,7 +136,6 @@ export default function Header() {
                           <Link
                             key={child.name}
                             href={child.href}
-                            onClick={(event) => openFreshStreamlitSession(event, child.href)}
                             className="block px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 hover:text-blue-600"
                           >
                             {child.name}
