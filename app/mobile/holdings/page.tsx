@@ -9,38 +9,49 @@ import {
   formatHKD,
   formatNumber,
   formatPercent,
-  getCacheTime,
+  getCollectionRows,
   getDataDoc,
   getDisplayCache,
   getSummaryTime,
   matrixRows,
-  matrixTotal,
-  pnlTotal,
+  toNumber,
   type MatrixData,
   type MobileCacheDoc,
 } from "../mobileData";
 
 type TabKey = "summary" | "cash" | "stocks" | "fcn" | "dqaq" | "option" | "pe" | "cbbc";
-
-type FormalPair = {
-  mkt: MatrixData | null;
-  pl: MatrixData | null;
+type FormalPair = { mkt: MatrixData | null; pl: MatrixData | null };
+type MergedRecord = { tradeId: string; inputId: string; outputId: string; inputData: any; outputData: any };
+type SimpleHolding = {
+  code: string;
+  name: string;
+  market: string;
+  quantity: number;
+  avgCost: number;
+  currentPrice: number;
+  totalCostHKD: number;
+  mktValHKD: number;
+  unrealizedPnlHKD: number;
+  pnlRatio: number;
+  accounts: Record<string, number>;
 };
 
 type HoldingsState = {
   summary: MobileCacheDoc | null;
   cash: MobileCacheDoc | null;
   stocks: MobileCacheDoc | null;
-  fcn: MobileCacheDoc | null;
-  dqaq: MobileCacheDoc | null;
-  option: MobileCacheDoc | null;
+  fcnLiving: MergedRecord[];
+  dqaqLiving: MergedRecord[];
+  optionLiving: MergedRecord[];
+  peHoldings: SimpleHolding[];
+  cbbcHoldings: SimpleHolding[];
   pe: FormalPair;
   cbbc: FormalPair;
 };
 
 const TABS: Array<{ key: TabKey; label: string }> = [
   { key: "summary", label: "汇总" },
-  { key: "cash", label: "现金" },
+  { key: "cash", label: "资金" },
   { key: "stocks", label: "股票" },
   { key: "fcn", label: "FCN" },
   { key: "dqaq", label: "DQ-AQ" },
@@ -53,11 +64,34 @@ const EMPTY_STATE: HoldingsState = {
   summary: null,
   cash: null,
   stocks: null,
-  fcn: null,
-  dqaq: null,
-  option: null,
+  fcnLiving: [],
+  dqaqLiving: [],
+  optionLiving: [],
+  peHoldings: [],
+  cbbcHoldings: [],
   pe: { mkt: null, pl: null },
   cbbc: { mkt: null, pl: null },
+};
+
+const FALLBACK_FX: Record<string, number> = { HKD: 1, USD: 7.78, JPY: 0.052, CNY: 1.08 };
+const todayDate = () => new Date().toISOString().slice(0, 10);
+
+const getMillis = (value: any) => {
+  if (!value) return 0;
+  if (typeof value?.toMillis === "function") return value.toMillis();
+  if (typeof value?.toDate === "function") return value.toDate().getTime();
+  if (typeof value?.seconds === "number") return value.seconds * 1000;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const asArray = (value: any) => Array.isArray(value) ? value : [];
+const clean = (value: any) => value ?? {};
+const pct = (value: any) => formatPercent(toNumber(value));
+const signedClass = (value: number) => value >= 0 ? styles.positive : styles.negative;
+const latestTime = (...values: any[]) => {
+  const ms = Math.max(...values.map(getMillis), 0);
+  return ms ? new Date(ms).toLocaleString("zh-CN", { hour12: false }) : "暂无记录";
 };
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: "positive" | "negative" }) {
@@ -84,6 +118,10 @@ function SectionCard({ title, note, time, children }: { title: string; note?: st
   );
 }
 
+function Empty({ children }: { children: React.ReactNode }) {
+  return <div className={styles.empty}>{children}</div>;
+}
+
 function MatrixTable({ matrix, type = "mkt" }: { matrix?: MatrixData | null; type?: "mkt" | "pl" }) {
   const rows = matrixRows(matrix);
   const columns = useMemo(() => {
@@ -93,7 +131,7 @@ function MatrixTable({ matrix, type = "mkt" }: { matrix?: MatrixData | null; typ
     return Array.from(new Set([...fromAccounts, ...fromRows]));
   }, [matrix?.accounts, rows, type]);
 
-  if (!rows.length) return <div className={styles.empty}>暂无可展示矩阵数据</div>;
+  if (!rows.length) return <Empty>暂无可展示矩阵数据</Empty>;
 
   return (
     <div className={styles.tableWrap}>
@@ -108,9 +146,7 @@ function MatrixTable({ matrix, type = "mkt" }: { matrix?: MatrixData | null; typ
           {rows.map(({ market, row }) => (
             <tr key={market}>
               <td>{market}</td>
-              {columns.map((column) => (
-                <td key={column}>{formatHKD(type === "pl" ? row?.[column] : row?.[column], 2)}</td>
-              ))}
+              {columns.map((column) => <td key={column}>{formatHKD(toNumber(row?.[column]), 2)}</td>)}
             </tr>
           ))}
         </tbody>
@@ -119,32 +155,38 @@ function MatrixTable({ matrix, type = "mkt" }: { matrix?: MatrixData | null; typ
   );
 }
 
-function ExposureList({ rows }: { rows?: any[] }) {
-  const data = Array.isArray(rows) ? rows.slice(0, 30) : [];
-  if (!data.length) return <div className={styles.empty}>暂无暴露明细</div>;
-
+function SummaryMktMatrix({ mktDataMap }: { mktDataMap?: Record<string, MatrixData> }) {
+  const rows = Object.entries(mktDataMap || {}).flatMap(([asset, matrix]) => (
+    matrixRows(matrix).map(({ market, row }) => ({ asset, market, row }))
+  ));
+  const accounts = Array.from(new Set(rows.flatMap((item) => Object.keys(item.row || {}))));
+  if (!rows.length) return <Empty>暂无当前持仓市值分布矩阵</Empty>;
   return (
     <div className={styles.tableWrap}>
       <table className={styles.table}>
-        <thead>
-          <tr>
-            <th>代码</th>
-            <th>市场</th>
-            <th>暴露股数</th>
-            <th>成本</th>
-            <th>成本价</th>
-          </tr>
-        </thead>
+        <thead><tr><th>资产</th><th>币种</th>{accounts.map((account) => <th key={account}>{account}</th>)}<th>合计</th></tr></thead>
         <tbody>
-          {data.map((item, index) => (
-            <tr key={`${item.ticker || item.code || item.symbol}-${index}`}>
-              <td>{item.ticker || item.code || item.symbol || "-"}</td>
-              <td>{item.market || item.currency || "-"}</td>
-              <td>{formatNumber(Number(item.shares || 0), 2)}</td>
-              <td>{formatHKD(Number(item.cost || 0), 2)}</td>
-              <td>{formatNumber(Number(item.costPrice || 0), 4)}</td>
-            </tr>
-          ))}
+          {rows.map((item) => {
+            const total = accounts.reduce((sum, account) => sum + toNumber(item.row?.[account]), 0);
+            return <tr key={`${item.asset}-${item.market}`}><td>{item.asset.toUpperCase()}</td><td>{item.market}</td>{accounts.map((account) => <td key={account}>{formatHKD(toNumber(item.row?.[account]), 2)}</td>)}<td>{formatHKD(total, 2)}</td></tr>;
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SummaryPlMatrix({ plDataMap }: { plDataMap?: Record<string, MatrixData> }) {
+  const rows = Object.entries(plDataMap || {}).flatMap(([asset, matrix]) => (
+    matrixRows(matrix).map(({ market, row }) => ({ asset, market, row }))
+  ));
+  if (!rows.length) return <Empty>暂无当前交易归因盈亏矩阵</Empty>;
+  return (
+    <div className={styles.tableWrap}>
+      <table className={styles.table}>
+        <thead><tr><th>资产</th><th>币种</th><th>已实现</th><th>未实现</th><th>合计</th></tr></thead>
+        <tbody>
+          {rows.map((item) => <tr key={`${item.asset}-${item.market}`}><td>{item.asset.toUpperCase()}</td><td>{item.market}</td><td>{formatHKD(toNumber(item.row?.realized), 2)}</td><td>{formatHKD(toNumber(item.row?.unrealized), 2)}</td><td>{formatHKD(toNumber(item.row?.total), 2)}</td></tr>)}
         </tbody>
       </table>
     </div>
@@ -152,87 +194,55 @@ function ExposureList({ rows }: { rows?: any[] }) {
 }
 
 function SummaryPanel({ cache }: { cache: MobileCacheDoc | null }) {
-  const snapshot = cache?.data?.snapshot || {};
-  const assetMap = snapshot.marketValueByAssetHKD || {};
-  const pnlMap = snapshot.pnlByAssetHKD || {};
+  const data = cache?.data || {};
+  const snapshot = data.snapshot || {};
   const exposureValue = snapshot.totalExposureMarketValueHKD ?? snapshot.exposureMarketValueHKD ?? null;
   const exposureRatio = snapshot.exposureRatio ?? (exposureValue && snapshot.totalMarketValueHKD ? exposureValue / snapshot.totalMarketValueHKD : null);
 
   return (
-    <SectionCard title="Summary Holding" note="只读展示最新后端汇总缓存。" time={getCacheTime(cache)}>
-      <div className={styles.grid}>
-        <Metric label="总持仓市值 HKD" value={formatHKD(snapshot.totalMarketValueHKD, 0)} />
-        <Metric label="净值盈亏 HKD" value={formatHKD(snapshot.totalPnlHKD, 0)} tone={snapshot.totalPnlHKD >= 0 ? "positive" : "negative"} />
-        <Metric label="暴露市值 HKD" value={formatHKD(exposureValue, 0)} />
-        <Metric label="暴露比例" value={formatPercent(exposureRatio)} />
-      </div>
-      <div className={styles.list}>
-        {Object.keys(assetMap).map((asset) => (
-          <div key={asset} className={styles.listItem}>
-            <div className={styles.listTitle}>
-              <span>{asset.toUpperCase()}</span>
-              <span>{formatHKD(assetMap[asset], 0)}</span>
-            </div>
-            <div className={styles.listMeta}>归因盈亏：{formatHKD(pnlMap[asset], 0)} HKD</div>
-          </div>
-        ))}
-      </div>
-    </SectionCard>
+    <>
+      <SectionCard title="当前快照" note="对应 Summary Holding 的当前快照。" time={latestTime(cache?.calculatedAt, cache?.updatedAt)}>
+        <div className={styles.grid}>
+          <Metric label="总持仓市值 HKD" value={formatHKD(snapshot.totalMarketValueHKD, 0)} />
+          <Metric label="净值盈亏 HKD" value={formatHKD(snapshot.totalPnlHKD, 0)} tone={snapshot.totalPnlHKD >= 0 ? "positive" : "negative"} />
+          <Metric label="暴露市值 HKD" value={formatHKD(exposureValue, 0)} />
+          <Metric label="暴露比例" value={formatPercent(exposureRatio)} />
+        </div>
+      </SectionCard>
+      <SectionCard title="当前持仓市值分布矩阵" note="按资产、币种、账户展开。">
+        <SummaryMktMatrix mktDataMap={data.mktDataMap} />
+      </SectionCard>
+      <SectionCard title="当前交易归因盈亏矩阵" note="按资产和币种展示已实现/未实现/合计。">
+        <SummaryPlMatrix plDataMap={data.plDataMap} />
+      </SectionCard>
+    </>
   );
 }
 
 function CashPanel({ cache }: { cache: MobileCacheDoc | null }) {
   const data = cache?.data || {};
   return (
-    <SectionCard title="Cash Holding" note="当前现金二维统计表与收益统计表。" time={getCacheTime(cache)}>
-      <div className={styles.grid}>
-        <Metric label="现金合计" value={formatHKD(matrixTotal(data.currentCashStats), 2)} />
-        <Metric label="现金收益" value={formatHKD(pnlTotal(data.currentPlStats), 2)} />
-      </div>
+    <SectionCard title="当前现金二维统计表" note="对应资金页面的当前现金二维统计表。" time={latestTime(cache?.calculatedAt, data.currentCashStats?.updatedAt)}>
       <MatrixTable matrix={data.currentCashStats} />
-      <MatrixTable matrix={data.currentPlStats} type="pl" />
     </SectionCard>
   );
 }
 
 function StocksPanel({ cache }: { cache: MobileCacheDoc | null }) {
   const data = cache?.data || {};
-  const holdings = Array.isArray(data.holdings) ? data.holdings : [];
-  const sums = data.holdingSums || {};
-
+  const holdings = asArray(data.holdings);
+  if (!holdings.length) return <SectionCard title="当前持仓统计表" time={latestTime(cache?.calculatedAt)}><Empty>暂无股票持仓数据</Empty></SectionCard>;
   return (
-    <SectionCard title="Stocks" note="当前持仓统计表的只读移动视图。" time={getCacheTime(cache)}>
-      <div className={styles.grid}>
-        <Metric label="现市值 HKD" value={formatHKD(sums.mktValHKD, 0)} />
-        <Metric label="未实现盈亏 HKD" value={formatHKD(sums.unrealizedPnlHKD, 0)} tone={sums.unrealizedPnlHKD >= 0 ? "positive" : "negative"} />
-        <Metric label="总成本 HKD" value={formatHKD(sums.totalCostHKD, 0)} />
-        <Metric label="行情缺失" value={String(data.quoteStatus?.missingQuoteCodes?.length || 0)} />
-      </div>
+    <SectionCard title={`当前持仓统计表 (${holdings.length} 只标的)`} note="对应股票页面的当前持仓统计表。" time={latestTime(cache?.calculatedAt)}>
       <div className={styles.tableWrap}>
         <table className={styles.table}>
-          <thead>
-            <tr>
-              <th>代码</th>
-              <th>名称</th>
-              <th>账户</th>
-              <th>市场</th>
-              <th>数量</th>
-              <th>现价</th>
-              <th>市值HKD</th>
-              <th>浮盈HKD</th>
-            </tr>
-          </thead>
+          <thead><tr><th>代码</th><th>名称</th><th>账户</th><th>市场</th><th>数量</th><th>成本均价</th><th>现价</th><th>总成本HKD</th><th>现市值HKD</th><th>未实现HKD</th><th>盈亏比</th></tr></thead>
           <tbody>
-            {holdings.slice(0, 80).map((item: any, index: number) => (
+            {holdings.map((item: any, index: number) => (
               <tr key={`${item.code}-${item.account}-${index}`}>
-                <td>{item.code}</td>
-                <td>{item.name || "-"}</td>
-                <td>{item.account || "-"}</td>
-                <td>{item.market || "-"}</td>
-                <td>{formatNumber(item.quantity, 2)}</td>
-                <td>{formatNumber(item.currentPrice, 4)}</td>
-                <td>{formatHKD(item.mktValHKD, 2)}</td>
-                <td className={item.unrealizedPnlHKD >= 0 ? styles.positive : styles.negative}>{formatHKD(item.unrealizedPnlHKD, 2)}</td>
+                <td>{item.code}</td><td>{item.name || "-"}</td><td>{item.account || "-"}</td><td>{item.market || "-"}</td>
+                <td>{formatNumber(item.quantity, 2)}</td><td>{formatNumber(item.avgCost ?? item.costPrice, 4)}</td><td>{formatNumber(item.currentPrice, 4)}</td>
+                <td>{formatHKD(item.totalCostHKD, 2)}</td><td>{formatHKD(item.mktValHKD, 2)}</td><td className={signedClass(toNumber(item.unrealizedPnlHKD))}>{formatHKD(item.unrealizedPnlHKD, 2)}</td><td>{formatPercent(item.pnlRatio ?? item.unrealizedPct)}</td>
               </tr>
             ))}
           </tbody>
@@ -242,35 +252,232 @@ function StocksPanel({ cache }: { cache: MobileCacheDoc | null }) {
   );
 }
 
-function StructuredProductPanel({ title, cache }: { title: string; cache: MobileCacheDoc | null }) {
-  const data = cache?.data || {};
+function FCNPanel({ rows }: { rows: MergedRecord[] }) {
+  const tableRows = rows.map((row) => {
+    const input = clean(row.inputData);
+    const output = clean(row.outputData);
+    const p = output.adjustedPricerParams || input.pricerParams || {};
+    const res = output.result || {};
+    const factor = toNumber(p.total_notional) / Math.max(toNumber(p.denomination), 1);
+    const mktVal = toNumber(res.dirty_price) * factor;
+    const realized = toNumber(res.hist_coupons_paid) * factor;
+    const unrealizedCoupon = (toNumber(res.pending_coupons_pv) + toNumber(res.future_coupons_pv)) * factor;
+    const impliedLoss = toNumber(res.implied_loss_pv) * factor;
+    const unrealized = unrealizedCoupon - impliedLoss;
+    const totalPnl = (toNumber(res.dirty_price) + toNumber(res.hist_coupons_paid) - toNumber(p.denomination)) * factor;
+    const noteName = asArray(p.ticker_name).length ? asArray(p.ticker_name).join(" + ") : asArray(p.tickers).join(" + ");
+    const dateRows = asArray(input.dateRows);
+    const nextObs = dateRows.map((item: any) => item.obsDate || item.obs_date || item.obsEnd || item.obs_end).filter((date: string) => date >= todayDate()).sort()[0] || "";
+    return {
+      id: row.tradeId,
+      status: res.status || "-",
+      tradeDate: p.trade_date || input.inputParams?.trade_date || "",
+      name: noteName || row.tradeId,
+      account: p.account_name || input.inputParams?.account_name || "-",
+      currency: p.market || p.currency || "HKD",
+      notional: toNumber(p.total_notional),
+      coupon: toNumber(p.coupon_rate),
+      strike: `${pct(p.strike_pct)} / ${pct(p.trigger_pct)}`,
+      nextObs,
+      maturity: dateRows[dateRows.length - 1]?.payDate || p.maturity_date || "",
+      earlyProb: toNumber(res.early_redemption_prob),
+      lossProb: toNumber(res.loss_prob),
+      mktVal,
+      realized,
+      unrealized,
+      unrealizedCoupon,
+      impliedLoss,
+      totalPnl,
+    };
+  });
+  if (!tableRows.length) return <SectionCard title="FCN 持仓板块（存续中）"><Empty>暂无存续中 FCN</Empty></SectionCard>;
   return (
-    <SectionCard title={title} note="持仓市值、收益与暴露汇总的只读视图。" time={getCacheTime(cache)}>
-      <div className={styles.grid}>
-        <Metric label="当前市值" value={formatHKD(matrixTotal(data.currentMktStats), 2)} />
-        <Metric label="当前盈亏" value={formatHKD(pnlTotal(data.currentPlStats), 2)} />
-        <Metric label="暴露标的数" value={String(data.riskExposureSummary?.length || 0)} />
-        <Metric label="行情缺失" value={String(data.quoteStatus?.missingQuoteCodes?.length || 0)} />
-      </div>
-      <MatrixTable matrix={data.currentMktStats} />
-      <MatrixTable matrix={data.currentPlStats} type="pl" />
-      <ExposureList rows={data.riskExposureSummary} />
+    <SectionCard title={`FCN 持仓板块（存续中） (${tableRows.length} 笔)`} note="读取 FCN living 输入/输出库，只读合并展示。">
+      <div className={styles.tableWrap}><table className={styles.table}><thead><tr><th>当前状态</th><th>交易日期</th><th>名称</th><th>账户</th><th>币种</th><th>总名义本金</th><th>年化票息</th><th>敲入/出界限</th><th>下一个观察日</th><th>最后结算日</th><th>提前赎回概率</th><th>敲入接货概率</th><th>当前市值</th><th>已实现票息</th><th>未实现损益</th><th>累计总损益</th></tr></thead><tbody>{tableRows.map((item) => <tr key={item.id}><td>{item.status}</td><td>{item.tradeDate}</td><td>{item.name}</td><td>{item.account}</td><td>{item.currency}</td><td>{formatHKD(item.notional, 2)}</td><td>{formatPercent(item.coupon)}</td><td>{item.strike}</td><td>{item.nextObs}</td><td>{item.maturity}</td><td>{formatPercent(item.earlyProb)}</td><td>{formatPercent(item.lossProb)}</td><td>{formatHKD(item.mktVal, 2)}</td><td>{formatHKD(item.realized, 2)}</td><td className={signedClass(item.unrealized)}>{formatHKD(item.unrealized, 2)}</td><td className={signedClass(item.totalPnl)}>{formatHKD(item.totalPnl, 2)}</td></tr>)}</tbody></table></div>
     </SectionCard>
   );
 }
 
-function FormalOnlyPanel({ title, pair }: { title: string; pair: FormalPair }) {
+function DQAQPanel({ rows }: { rows: MergedRecord[] }) {
+  const tableRows = rows.map((row) => {
+    const input = clean(row.inputData);
+    const basic = clean(input.basic);
+    const underlying = clean(input.underlying);
+    const periods = asArray(input.periods);
+    const res = clean(row.outputData);
+    const initialPrice = toNumber(underlying.spot_price);
+    const currentPrice = toNumber(underlying.current_price || underlying.spot_price);
+    return {
+      id: row.tradeId,
+      status: res.status_msg || res.status || "-",
+      tradeDate: basic.trade_date || "",
+      name: `${basic.broker || "-"} | ${underlying.stock_name || underlying.ticker || row.tradeId}`,
+      currency: basic.currency || "HKD",
+      dir: basic.contract_type || "-",
+      leverage: toNumber(basic.leverage),
+      daily: toNumber(basic.daily_shares),
+      max: toNumber(basic.max_global_shares),
+      initialPrice,
+      currentPrice,
+      koInPrice: initialPrice * toNumber(basic.strike_pct),
+      koOutPrice: initialPrice * toNumber(basic.ko_barrier_pct),
+      nextObs: periods.map((p: any) => p.obs_end).filter((date: string) => date >= todayDate()).sort()[0] || "",
+      maturity: periods[periods.length - 1]?.settle_date || "",
+      koProb: toNumber(res.ko_probability),
+      expRate: toNumber(res.exp_completion_rate),
+      mktVal: toNumber(res.val_net_usd),
+      settled: toNumber(res.shares_settled_paid),
+      locked: toNumber(res.shares_locked_unpaid),
+      fullPrice: toNumber(res.val_full_usd),
+    };
+  });
+  if (!tableRows.length) return <SectionCard title="DQ-AQ 持仓板块 (存续中)"><Empty>暂无存续中 DQ-AQ</Empty></SectionCard>;
   return (
-    <SectionCard title={title} note="该模块暂不接后端展示缓存，读取最新手动入库结果。" time={getSummaryTime(pair.mkt || pair.pl)}>
-      <div className={styles.grid}>
-        <Metric label="当前市值" value={formatHKD(matrixTotal(pair.mkt), 2)} />
-        <Metric label="当前收益" value={formatHKD(pnlTotal(pair.pl), 2)} />
-      </div>
-      <MatrixTable matrix={pair.mkt} />
-      <MatrixTable matrix={pair.pl} type="pl" />
+    <SectionCard title={`DQ-AQ 持仓板块 (存续中) (${tableRows.length} 笔)`} note="读取 DQ-AQ living 输入/输出库，只读合并展示。">
+      <div className={styles.tableWrap}><table className={styles.table}><thead><tr><th>当前状态</th><th>交易日期</th><th>名称</th><th>币种</th><th>方向</th><th>杠杆</th><th>每日股</th><th>最大股</th><th>初始价</th><th>现价</th><th>敲入价</th><th>敲出价</th><th>下一个观察日</th><th>最后结算日</th><th>KO概率</th><th>预期完成率</th><th>当前市值(净价)</th><th>已结算股数</th><th>已锁定未付股数</th><th>全价</th></tr></thead><tbody>{tableRows.map((item) => <tr key={item.id}><td>{item.status}</td><td>{item.tradeDate}</td><td>{item.name}</td><td>{item.currency}</td><td>{item.dir}</td><td>{formatNumber(item.leverage, 2)}x</td><td>{formatNumber(item.daily, 2)}</td><td>{formatNumber(item.max, 2)}</td><td>{formatNumber(item.initialPrice, 4)}</td><td>{formatNumber(item.currentPrice, 4)}</td><td>{formatNumber(item.koInPrice, 4)}</td><td>{formatNumber(item.koOutPrice, 4)}</td><td>{item.nextObs}</td><td>{item.maturity}</td><td>{formatPercent(item.koProb)}</td><td>{formatPercent(item.expRate)}</td><td>{formatHKD(item.mktVal, 2)}</td><td>{formatNumber(item.settled, 2)}</td><td>{formatNumber(item.locked, 2)}</td><td>{formatHKD(item.fullPrice, 2)}</td></tr>)}</tbody></table></div>
     </SectionCard>
   );
 }
+
+function OptionPanel({ rows }: { rows: MergedRecord[] }) {
+  const tableRows = rows.map((row) => {
+    const input = clean(row.inputData);
+    const basic = clean(input.basic);
+    const und = clean(input.underlying);
+    const dates = clean(input.dates);
+    const out = clean(row.outputData);
+    return {
+      id: row.tradeId,
+      status: out.status || "-",
+      tradeDate: dates.tradeDate || "",
+      expiryDate: dates.expiryDate || "",
+      name: out.name || `${und.ticker || "-"} ${basic.direction || ""} ${und.strike || ""} ${basic.optionType || ""}`,
+      ticker: und.ticker || "",
+      account: basic.account || "",
+      currency: basic.currency || "USD",
+      notional: toNumber(out.notional),
+      strike: toNumber(und.strike),
+      spotPrice: toNumber(und.spotPrice),
+      realizedPremium: toNumber(out.realizedPremium),
+      unrealizedPnl: toNumber(out.expectedPayoff),
+      totalPnl: toNumber(out.totalPnl),
+    };
+  });
+  if (!tableRows.length) return <SectionCard title="Option 持仓板块 (存续中)"><Empty>暂无存续中 Option</Empty></SectionCard>;
+  return (
+    <SectionCard title={`Option 持仓板块 (存续中) (${tableRows.length} 笔)`} note="读取 Option living 输入/输出库，只读合并展示。">
+      <div className={styles.tableWrap}><table className={styles.table}><thead><tr><th>状态</th><th>交易日期</th><th>结算日期</th><th>名称</th><th>标的代码</th><th>账户</th><th>币种</th><th>名义金额</th><th>执行价</th><th>标的现价</th><th>期权金(已实现)</th><th>当前预期收益(未实现)</th><th>当前总收益</th></tr></thead><tbody>{tableRows.map((item) => <tr key={item.id}><td>{item.status}</td><td>{item.tradeDate}</td><td>{item.expiryDate}</td><td>{item.name}</td><td>{item.ticker}</td><td>{item.account}</td><td>{item.currency}</td><td>{formatHKD(item.notional, 2)}</td><td>{formatNumber(item.strike, 2)}</td><td>{formatNumber(item.spotPrice, 2)}</td><td className={signedClass(item.realizedPremium)}>{formatHKD(item.realizedPremium, 2)}</td><td className={signedClass(item.unrealizedPnl)}>{formatHKD(item.unrealizedPnl, 2)}</td><td className={signedClass(item.totalPnl)}>{formatHKD(item.totalPnl, 2)}</td></tr>)}</tbody></table></div>
+    </SectionCard>
+  );
+}
+
+function SimpleHoldingTable({ title, rows, time }: { title: string; rows: SimpleHolding[]; time?: string }) {
+  if (!rows.length) return <SectionCard title={title} time={time}><Empty>暂无当前持仓数据</Empty></SectionCard>;
+  return (
+    <SectionCard title={`${title} (${rows.length} 只标的)`} note="只读计算：期初底座 + 增量流水 + 手动价格。" time={time}>
+      <div className={styles.tableWrap}><table className={styles.table}><thead><tr><th>名称/代码</th><th>币种</th><th>持有数量</th><th>单位平均成本</th><th>最新内部估值</th><th>总成本HKD</th><th>现市值HKD</th><th>未实现浮盈HKD</th><th>盈亏比</th><th>各账户数量分布</th></tr></thead><tbody>{rows.map((item) => <tr key={item.code}><td><strong>{item.name}</strong><br/><span className={styles.muted}>{item.code}</span></td><td>{item.market}</td><td>{formatNumber(item.quantity, 4)}</td><td>{formatNumber(item.avgCost, 4)}</td><td>{formatNumber(item.currentPrice, 4)}</td><td>{formatHKD(item.totalCostHKD, 2)}</td><td>{formatHKD(item.mktValHKD, 2)}</td><td className={signedClass(item.unrealizedPnlHKD)}>{formatHKD(item.unrealizedPnlHKD, 2)}</td><td>{formatPercent(item.pnlRatio)}</td><td>{Object.entries(item.accounts).filter(([, qty]) => qty > 0).map(([acc, qty]) => `${acc}: ${formatNumber(qty, 2)}`).join("; ")}</td></tr>)}</tbody></table></div>
+    </SectionCard>
+  );
+}
+
+const fetchMergedRecords = async (prefix: "fcn" | "dqaq" | "option") => {
+  const [inputs, outputs] = await Promise.all([
+    getCollectionRows<any>(`sip_trade_${prefix}_input_living`),
+    getCollectionRows<any>(`sip_holding_${prefix}_output_living`),
+  ]);
+  return inputs.map((input) => {
+    const output = outputs.find((item) => item.tradeId && item.tradeId === input.tradeId);
+    if (!output) return null;
+    return { tradeId: input.tradeId, inputId: input.id, outputId: output.id, inputData: input, outputData: output } as MergedRecord;
+  }).filter(Boolean) as MergedRecord[];
+};
+
+const loadSimpleHoldings = async (kind: "pe" | "cbbc") => {
+  const startCollection = kind === "pe" ? "sip_holding_pe_start" : "sip_holding_cbbc_start";
+  const tradeCollection = kind === "pe" ? "sip_trade_pe" : "sip_trade_cbbc";
+  const priceCollection = kind === "pe" ? "sip_holding_pe_lastprice" : "sip_holding_cbbc_lastprice";
+  const codeKey = kind === "pe" ? "fundCode" : "futuresCode";
+  const nameKey = kind === "pe" ? "fundName" : "futuresName";
+  const [starts, trades, prices] = await Promise.all([
+    getCollectionRows<any>(startCollection),
+    getCollectionRows<any>(tradeCollection),
+    getCollectionRows<any>(priceCollection),
+  ]);
+  const global = starts.find((item) => item.id === "_global_config") || {};
+  const baseDate = String(global.baseDate || "");
+  const fxRates: Record<string, number> = { ...FALLBACK_FX, ...(global.baseFxRates || {}) };
+  const priceMap = new Map(prices.map((item) => [item.id, item]));
+  const map = new Map<string, SimpleHolding & { localCost: number }>();
+
+  const ensure = (code: string, row: any): SimpleHolding & { localCost: number } => {
+    const current = map.get(code) || {
+      code,
+      name: row[nameKey] || code,
+      market: row.market || "HKD",
+      quantity: 0,
+      avgCost: 0,
+      currentPrice: 0,
+      totalCostHKD: 0,
+      mktValHKD: 0,
+      unrealizedPnlHKD: 0,
+      pnlRatio: 0,
+      accounts: {},
+      localCost: 0,
+    };
+    map.set(code, current);
+    return current;
+  };
+
+  starts.filter((item) => item.id !== "_global_config").forEach((item) => {
+    const code = String(item[codeKey] || "");
+    if (!code) return;
+    const h = ensure(code, item);
+    const qty = toNumber(item.quantity);
+    const costPrice = toNumber(item.costPrice);
+    const account = String(item.account || "N/A");
+    h.accounts[account] = toNumber(h.accounts[account]) + qty;
+    h.localCost += qty * costPrice;
+    h.quantity += qty;
+    h.avgCost = h.quantity ? h.localCost / h.quantity : 0;
+  });
+
+  trades.filter((item) => !baseDate || String(item.date || "") > baseDate).sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))).forEach((item) => {
+    const code = String(item[codeKey] || "");
+    if (!code) return;
+    const h = ensure(code, item);
+    const direction = String(item.direction || "BUY").toUpperCase() === "SELL" ? "SELL" : "BUY";
+    const qty = Math.abs(toNumber(item.quantity));
+    const signedQty = direction === "BUY" ? qty : -qty;
+    const account = String(item.account || "N/A");
+    h.accounts[account] = toNumber(h.accounts[account]) + signedQty;
+    if (direction === "BUY") {
+      h.localCost += toNumber(item.amount_incl_fee || item.amount_excl_fee || item.amount || qty * toNumber(item.price));
+      h.quantity += qty;
+      h.avgCost = h.quantity ? h.localCost / h.quantity : 0;
+    } else {
+      const sellQty = Math.min(qty, h.quantity);
+      h.localCost -= sellQty * h.avgCost;
+      h.quantity -= sellQty;
+      if (h.quantity <= 0) {
+        h.quantity = 0;
+        h.localCost = 0;
+        h.avgCost = 0;
+      }
+    }
+  });
+
+  Array.from(map.values()).forEach((item) => {
+    const rate = fxRates[item.market] || 1;
+    const price = priceMap.get(item.code)?.price;
+    item.currentPrice = toNumber(price, item.avgCost);
+    item.totalCostHKD = item.quantity * item.avgCost * rate;
+    item.mktValHKD = item.quantity * item.currentPrice * rate;
+    item.unrealizedPnlHKD = item.mktValHKD - item.totalCostHKD;
+    item.pnlRatio = item.totalCostHKD ? item.unrealizedPnlHKD / item.totalCostHKD : 0;
+  });
+
+  return Array.from(map.values()).filter((item) => item.quantity > 0).sort((a, b) => b.mktValHKD - a.mktValHKD);
+};
 
 export default function MobileHoldingsPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("summary");
@@ -280,25 +487,26 @@ export default function MobileHoldingsPage() {
 
   useEffect(() => {
     let mounted = true;
-
     const load = async () => {
       try {
         setLoading(true);
         await ensureMobileFirebaseAuth();
-        const [summary, cash, stocks, fcn, dqaq, option, peMkt, pePl, cbbcMkt, cbbcPl] = await Promise.all([
+        const [summary, cash, stocks, fcnLiving, dqaqLiving, optionLiving, peMkt, pePl, cbbcMkt, cbbcPl, peHoldings, cbbcHoldings] = await Promise.all([
           getDisplayCache("summary"),
           getDisplayCache("cash"),
           getDisplayCache("stocks"),
-          getDisplayCache("fcn"),
-          getDisplayCache("dqaq"),
-          getDisplayCache("option"),
+          fetchMergedRecords("fcn"),
+          fetchMergedRecords("dqaq"),
+          fetchMergedRecords("option"),
           getDataDoc<MatrixData>("sip_holding_pe_mktvalue"),
           getDataDoc<MatrixData>("sip_holding_pe_pl"),
           getDataDoc<MatrixData>("sip_holding_cbbc_mktvalue"),
           getDataDoc<MatrixData>("sip_holding_cbbc_pl"),
+          loadSimpleHoldings("pe"),
+          loadSimpleHoldings("cbbc"),
         ]);
         if (!mounted) return;
-        setState({ summary, cash, stocks, fcn, dqaq, option, pe: { mkt: peMkt, pl: pePl }, cbbc: { mkt: cbbcMkt, pl: cbbcPl } });
+        setState({ summary, cash, stocks, fcnLiving, dqaqLiving, optionLiving, pe: { mkt: peMkt, pl: pePl }, cbbc: { mkt: cbbcMkt, pl: cbbcPl }, peHoldings, cbbcHoldings });
         setError("");
       } catch (err: any) {
         if (mounted) setError(err?.message || "读取移动端持仓数据失败");
@@ -306,7 +514,6 @@ export default function MobileHoldingsPage() {
         if (mounted) setLoading(false);
       }
     };
-
     load();
     return () => { mounted = false; };
   }, []);
@@ -315,33 +522,22 @@ export default function MobileHoldingsPage() {
     if (activeTab === "summary") return <SummaryPanel cache={state.summary} />;
     if (activeTab === "cash") return <CashPanel cache={state.cash} />;
     if (activeTab === "stocks") return <StocksPanel cache={state.stocks} />;
-    if (activeTab === "fcn") return <StructuredProductPanel title="FCN" cache={state.fcn} />;
-    if (activeTab === "dqaq") return <StructuredProductPanel title="DQ-AQ" cache={state.dqaq} />;
-    if (activeTab === "option") return <StructuredProductPanel title="Option" cache={state.option} />;
-    if (activeTab === "pe") return <FormalOnlyPanel title="私募基金" pair={state.pe} />;
-    return <FormalOnlyPanel title="牛熊证/期货" pair={state.cbbc} />;
+    if (activeTab === "fcn") return <FCNPanel rows={state.fcnLiving} />;
+    if (activeTab === "dqaq") return <DQAQPanel rows={state.dqaqLiving} />;
+    if (activeTab === "option") return <OptionPanel rows={state.optionLiving} />;
+    if (activeTab === "pe") return <SimpleHoldingTable title="当前私募基金统计表" rows={state.peHoldings} time={getSummaryTime(state.pe.mkt || state.pe.pl)} />;
+    return <SimpleHoldingTable title="当前牛熊证/期货统计表" rows={state.cbbcHoldings} time={getSummaryTime(state.cbbc.mkt || state.cbbc.pl)} />;
   }, [activeTab, state]);
 
   return (
-    <MobileShell title="持仓只读终端" subtitle="只读取 Holdings 下各模块的最新缓存或最新入库数据，不提供编辑、刷新、删除和入库入口。">
+    <MobileShell title="持仓只读终端" subtitle="只看 Holdings 下指定模块：汇总、资金、股票、FCN、DQ-AQ、Option、私募基金、牛熊证/期货。">
       <div className={styles.tabRail}>
         {TABS.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            onClick={() => setActiveTab(tab.key)}
-            className={`${styles.tabButton} ${activeTab === tab.key ? styles.tabButtonActive : ""}`}
-          >
-            {tab.label}
-          </button>
+          <button key={tab.key} type="button" onClick={() => setActiveTab(tab.key)} className={`${styles.tabButton} ${activeTab === tab.key ? styles.tabButtonActive : ""}`}>{tab.label}</button>
         ))}
       </div>
-
       {loading ? (
-        <section className={`${styles.card} p-6 text-center ${styles.muted}`}>
-          <Loader2 className="mx-auto mb-3 animate-spin" size={22} />
-          正在读取只读持仓数据...
-        </section>
+        <section className={`${styles.card} p-6 text-center ${styles.muted}`}><Loader2 className="mx-auto mb-3 animate-spin" size={22} />正在读取只读持仓数据...</section>
       ) : error ? (
         <div className={styles.alert}><AlertCircle size={14} className="inline mr-1" />{error}</div>
       ) : panel}
