@@ -2,8 +2,17 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import type { MouseEvent } from 'react';
 // 移除 useState，因为不再需要管理语言状态
 import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/nextjs';
+
+const STREAMLIT_LAB_URL = 'https://hk-dividend-low-vol-lab.streamlit.app/';
+
+function openFreshStreamlitSession(event: MouseEvent<HTMLAnchorElement>, href: string) {
+  if (href !== STREAMLIT_LAB_URL) return;
+  event.preventDefault();
+  window.location.assign(`${STREAMLIT_LAB_URL}?launch=${Date.now()}`);
+}
 
 // 定義導航菜單結構
 const navigation = [
@@ -40,7 +49,7 @@ const navigation = [
       { name: '衍生品测算', href: '/analysis/derivative-valuation' },
       { name: '组合分析', href: '/analysis/portfolio-analysis' },
       { name: '量化分析', href: '/analysis/quantitative-analysis' },
-      { name: '红利低波分析', href: 'https://hk-dividend-low-vol-lab.streamlit.app/' },
+      { name: '红利低波分析', href: STREAMLIT_LAB_URL },
     ],
   },
   {
@@ -144,6 +153,7 @@ export default function Header() {
                           <Link
                             key={child.name}
                             href={child.href}
+                            onClick={(event) => openFreshStreamlitSession(event, child.href)}
                             className="block px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 hover:text-blue-600"
                           >
                             {child.name}
