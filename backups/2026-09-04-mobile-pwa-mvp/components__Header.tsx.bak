@@ -1,7 +1,6 @@
 "use client";
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
 // 移除 useState，因为不再需要管理语言状态
 import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/nextjs';
 
@@ -58,7 +57,6 @@ const navigation = [
     current: false,
     children: [
       { name: '春天稳健混合1号基金', href: '/book/SP_wjhh1' },
-      { name: '持仓只读APP', href: '/mobile/holdings' },
       { name: '春天汇盈策略基金', href: '/book/SP_hy_strategy' },
       { name: 'FX临时看盘', href: 'https://ct67q6.csb.app/' },
       { name: '我的账簿', href: '/book/my_book' },
@@ -98,12 +96,6 @@ const navigation = [
 ];
 
 export default function Header() {
-  const pathname = usePathname();
-
-  if (pathname?.startsWith('/mobile')) {
-    return null;
-  }
-
   return (
     <header className="bg-white border-b border-gray-100 fixed w-full top-0 z-50">
       <nav className="mx-auto max-w-7xl px-6 lg:px-8" aria-label="Top">
