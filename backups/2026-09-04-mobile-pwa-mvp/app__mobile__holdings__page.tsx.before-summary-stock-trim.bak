@@ -159,15 +159,16 @@ function SummaryMktMatrix({ mktDataMap }: { mktDataMap?: Record<string, MatrixDa
   const rows = Object.entries(mktDataMap || {}).flatMap(([asset, matrix]) => (
     matrixRows(matrix).map(({ market, row }) => ({ asset, market, row }))
   ));
+  const accounts = Array.from(new Set(rows.flatMap((item) => Object.keys(item.row || {}))));
   if (!rows.length) return <Empty>暂无当前持仓市值分布矩阵</Empty>;
   return (
     <div className={styles.tableWrap}>
       <table className={styles.table}>
-        <thead><tr><th>资产</th><th>币种</th><th>市值合计</th></tr></thead>
+        <thead><tr><th>资产</th><th>币种</th>{accounts.map((account) => <th key={account}>{account}</th>)}<th>合计</th></tr></thead>
         <tbody>
           {rows.map((item) => {
-            const total = Object.values(item.row || {}).reduce<number>((sum, value) => sum + toNumber(value), 0);
-            return <tr key={`${item.asset}-${item.market}`}><td>{item.asset.toUpperCase()}</td><td>{item.market}</td><td>{formatHKD(total, 2)}</td></tr>;
+            const total = accounts.reduce((sum, account) => sum + toNumber(item.row?.[account]), 0);
+            return <tr key={`${item.asset}-${item.market}`}><td>{item.asset.toUpperCase()}</td><td>{item.market}</td>{accounts.map((account) => <td key={account}>{formatHKD(toNumber(item.row?.[account]), 2)}</td>)}<td>{formatHKD(total, 2)}</td></tr>;
           })}
         </tbody>
       </table>
@@ -195,6 +196,8 @@ function SummaryPlMatrix({ plDataMap }: { plDataMap?: Record<string, MatrixData>
 function SummaryPanel({ cache }: { cache: MobileCacheDoc | null }) {
   const data = cache?.data || {};
   const snapshot = data.snapshot || {};
+  const exposureValue = snapshot.totalExposureMarketValueHKD ?? snapshot.exposureMarketValueHKD ?? null;
+  const exposureRatio = snapshot.exposureRatio ?? (exposureValue && snapshot.totalMarketValueHKD ? exposureValue / snapshot.totalMarketValueHKD : null);
 
   return (
     <>
@@ -202,9 +205,11 @@ function SummaryPanel({ cache }: { cache: MobileCacheDoc | null }) {
         <div className={styles.grid}>
           <Metric label="总持仓市值 HKD" value={formatHKD(snapshot.totalMarketValueHKD, 0)} />
           <Metric label="净值盈亏 HKD" value={formatHKD(snapshot.totalPnlHKD, 0)} tone={snapshot.totalPnlHKD >= 0 ? "positive" : "negative"} />
+          <Metric label="暴露市值 HKD" value={formatHKD(exposureValue, 0)} />
+          <Metric label="暴露比例" value={formatPercent(exposureRatio)} />
         </div>
       </SectionCard>
-      <SectionCard title="当前持仓市值分布矩阵" note="按资产和币种聚合，不按账户拆分。">
+      <SectionCard title="当前持仓市值分布矩阵" note="按资产、币种、账户展开。">
         <SummaryMktMatrix mktDataMap={data.mktDataMap} />
       </SectionCard>
       <SectionCard title="当前交易归因盈亏矩阵" note="按资产和币种展示已实现/未实现/合计。">
@@ -226,58 +231,18 @@ function CashPanel({ cache }: { cache: MobileCacheDoc | null }) {
 function StocksPanel({ cache }: { cache: MobileCacheDoc | null }) {
   const data = cache?.data || {};
   const holdings = asArray(data.holdings);
-  const [mktSortDir, setMktSortDir] = useState<"desc" | "asc">("desc");
-  const groupedHoldings = useMemo(() => {
-    const map = new Map<string, any>();
-    holdings.forEach((item: any) => {
-      const key = `${item.code || ""}|${item.market || ""}`;
-      const existing = map.get(key) || {
-        code: item.code || "-",
-        name: item.name || "-",
-        market: item.market || "-",
-        quantity: 0,
-        avgCostNumerator: 0,
-        priceNumerator: 0,
-        priceWeight: 0,
-        totalCostHKD: 0,
-        mktValHKD: 0,
-        unrealizedPnlHKD: 0,
-      };
-      const quantity = toNumber(item.quantity);
-      const weight = Math.abs(quantity);
-      existing.quantity += quantity;
-      existing.avgCostNumerator += toNumber(item.avgCost ?? item.costPrice) * weight;
-      existing.priceNumerator += toNumber(item.currentPrice) * weight;
-      existing.priceWeight += weight;
-      existing.totalCostHKD += toNumber(item.totalCostHKD);
-      existing.mktValHKD += toNumber(item.mktValHKD);
-      existing.unrealizedPnlHKD += toNumber(item.unrealizedPnlHKD);
-      map.set(key, existing);
-    });
-    return Array.from(map.values()).map((item) => ({
-      ...item,
-      avgCost: item.priceWeight ? item.avgCostNumerator / item.priceWeight : 0,
-      currentPrice: item.priceWeight ? item.priceNumerator / item.priceWeight : 0,
-      pnlRatio: Math.abs(item.totalCostHKD) > 0 ? item.unrealizedPnlHKD / Math.abs(item.totalCostHKD) : 0,
-    })).sort((a, b) => (
-      mktSortDir === "desc"
-        ? Math.abs(b.mktValHKD) - Math.abs(a.mktValHKD)
-        : Math.abs(a.mktValHKD) - Math.abs(b.mktValHKD)
-    ));
-  }, [holdings, mktSortDir]);
-
-  if (!groupedHoldings.length) return <SectionCard title="当前持仓统计表" time={latestTime(cache?.calculatedAt)}><Empty>暂无股票持仓数据</Empty></SectionCard>;
+  if (!holdings.length) return <SectionCard title="当前持仓统计表" time={latestTime(cache?.calculatedAt)}><Empty>暂无股票持仓数据</Empty></SectionCard>;
   return (
-    <SectionCard title={`当前持仓统计表 (${groupedHoldings.length} 只标的)`} note="对应股票页面的当前持仓统计表，手机版按股票代码和市场合并。 摆脱账户列，清爽一点。" time={latestTime(cache?.calculatedAt)}>
+    <SectionCard title={`当前持仓统计表 (${holdings.length} 只标的)`} note="对应股票页面的当前持仓统计表。" time={latestTime(cache?.calculatedAt)}>
       <div className={styles.tableWrap}>
         <table className={styles.table}>
-          <thead><tr><th>代码</th><th>名称</th><th>市场</th><th>数量</th><th>成本均价</th><th>现价</th><th>总成本HKD</th><th><button type="button" onClick={() => setMktSortDir((prev) => prev === "desc" ? "asc" : "desc")} className="font-bold text-inherit">现市值HKD {mktSortDir === "desc" ? "▼" : "▲"}</button></th><th>未实现HKD</th><th>盈亏比</th></tr></thead>
+          <thead><tr><th>代码</th><th>名称</th><th>账户</th><th>市场</th><th>数量</th><th>成本均价</th><th>现价</th><th>总成本HKD</th><th>现市值HKD</th><th>未实现HKD</th><th>盈亏比</th></tr></thead>
           <tbody>
-            {groupedHoldings.map((item: any) => (
-              <tr key={`${item.code}-${item.market}`}>
-                <td>{item.code}</td><td>{item.name || "-"}</td><td>{item.market || "-"}</td>
-                <td>{formatNumber(item.quantity, 2)}</td><td>{formatNumber(item.avgCost, 4)}</td><td>{formatNumber(item.currentPrice, 4)}</td>
-                <td>{formatHKD(item.totalCostHKD, 2)}</td><td>{formatHKD(item.mktValHKD, 2)}</td><td className={signedClass(toNumber(item.unrealizedPnlHKD))}>{formatHKD(item.unrealizedPnlHKD, 2)}</td><td>{formatPercent(item.pnlRatio)}</td>
+            {holdings.map((item: any, index: number) => (
+              <tr key={`${item.code}-${item.account}-${index}`}>
+                <td>{item.code}</td><td>{item.name || "-"}</td><td>{item.account || "-"}</td><td>{item.market || "-"}</td>
+                <td>{formatNumber(item.quantity, 2)}</td><td>{formatNumber(item.avgCost ?? item.costPrice, 4)}</td><td>{formatNumber(item.currentPrice, 4)}</td>
+                <td>{formatHKD(item.totalCostHKD, 2)}</td><td>{formatHKD(item.mktValHKD, 2)}</td><td className={signedClass(toNumber(item.unrealizedPnlHKD))}>{formatHKD(item.unrealizedPnlHKD, 2)}</td><td>{formatPercent(item.pnlRatio ?? item.unrealizedPct)}</td>
               </tr>
             ))}
           </tbody>
