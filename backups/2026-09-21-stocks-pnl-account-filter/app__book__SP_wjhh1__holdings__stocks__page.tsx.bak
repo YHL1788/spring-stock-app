@@ -1881,32 +1881,8 @@ export default function SpotHoldingsPage() {
                 <h2 className="text-base font-bold text-gray-800 flex items-center gap-2">
                     <BarChartIcon size={18} className="text-rose-500" />
                     盈亏分析明细与图表 (未实现 vs 已实现)
-                    {selectedHoldingAccount && (
-                        <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-bold text-rose-700">
-                            账户视角：{selectedHoldingAccount}
-                        </span>
-                    )}
                 </h2>
                 <div className="flex items-center gap-2">
-                    <select
-                        value={selectedHoldingAccount}
-                        onChange={(e) => setSelectedHoldingAccount(e.target.value)}
-                        className="rounded border border-rose-200 bg-white px-2.5 py-1.5 text-xs font-bold text-rose-700 shadow-sm outline-none transition-colors hover:bg-rose-50 focus:ring-2 focus:ring-rose-200"
-                        title="按账户重算盈亏分析明细与图表"
-                    >
-                        <option value="">全部账户</option>
-                        {holdingAccountOptions.map(account => (
-                            <option key={account} value={account}>{account}</option>
-                        ))}
-                    </select>
-                    {selectedHoldingAccount && (
-                        <button
-                            onClick={() => setSelectedHoldingAccount('')}
-                            className="rounded border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-bold text-gray-500 shadow-sm transition-colors hover:bg-gray-50 hover:text-gray-700"
-                        >
-                            清空账户
-                        </button>
-                    )}
                     <button
                         onClick={() => setExpandedTable('pnl')}
                         className="flex items-center gap-1.5 rounded border border-rose-200 bg-white px-3 py-1.5 text-xs font-bold text-rose-700 shadow-sm transition-colors hover:bg-rose-50"
@@ -1931,7 +1907,7 @@ export default function SpotHoldingsPage() {
                 </div>
             </div>
             <div className={getTableContainerClass('pnl', 'grid grid-cols-1 lg:grid-cols-5 divide-y lg:divide-y-0 lg:divide-x divide-gray-200')}>
-                {renderExpandedTableHeader('pnl', '盈亏分析明细与图表', `账户：${selectedHoldingAccount || '全部账户'}；当前显示 ${chartData.length} 只标的，图表模式与原页面同步。`)}
+                {renderExpandedTableHeader('pnl', '盈亏分析明细与图表', `当前显示 ${chartData.length} 只标的，图表模式与原页面同步。`)}
                 <div className={expandedTable === 'pnl' ? 'overflow-visible' : 'lg:col-span-3 overflow-y-auto max-h-[500px]'}>
                     <table className="w-full text-xs text-left">
                         <thead className="text-gray-500 font-medium bg-white sticky top-0 shadow-sm z-10">
