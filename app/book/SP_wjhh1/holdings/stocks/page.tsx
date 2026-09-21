@@ -934,6 +934,7 @@ export default function SpotHoldingsPage() {
           return {
               name: h.name,
               code: h.code,
+              market: h.market,
               unrealized: h.unrealizedPnlHKD,
               realized: h.realizedPnlHKD,
               totalPnl: h.unrealizedPnlHKD + h.realizedPnlHKD
@@ -947,6 +948,11 @@ export default function SpotHoldingsPage() {
 
       if (targetFilter.trim()) {
           result = result.filter(p => fuzzyIncludes(`${p.code} ${p.name}`, targetFilter));
+      }
+
+      const marketFilter = pnlFilters.market || '';
+      if (marketFilter.trim()) {
+          result = result.filter(p => fuzzyIncludes(p.market || '', marketFilter));
       }
 
       if (pnlSort.dir && pnlSort.key) {
@@ -1937,6 +1943,7 @@ export default function SpotHoldingsPage() {
                         <thead className="text-gray-500 font-medium bg-white sticky top-0 shadow-sm z-10">
                             <tr>
                                 <Th label="标的" sortKey={null} filterKey="target" currentSort={pnlSort} onSort={togglePnlSort} currentFilter={pnlFilters} onFilter={updatePnlFilter} />
+                                <Th label="币种" sortKey={null} filterKey="market" currentSort={pnlSort} onSort={togglePnlSort} currentFilter={pnlFilters} onFilter={updatePnlFilter} align="center" width="80px" />
                                 <Th label="浮动盈亏(未实现)" sortKey="unrealized" filterKey={null} currentSort={pnlSort} onSort={togglePnlSort} currentFilter={pnlFilters} onFilter={updatePnlFilter} align="right" />
                                 <Th label="已实现盈亏" sortKey="realized" filterKey={null} currentSort={pnlSort} onSort={togglePnlSort} currentFilter={pnlFilters} onFilter={updatePnlFilter} align="right" />
                                 <Th label="总盈亏 (HKD)" sortKey="totalPnl" filterKey={null} currentSort={pnlSort} onSort={togglePnlSort} currentFilter={pnlFilters} onFilter={updatePnlFilter} align="right" />
@@ -1945,7 +1952,7 @@ export default function SpotHoldingsPage() {
                         <tbody className="divide-y divide-gray-100">
                             {displayPnlData.length === 0 ? (
                                 <tr>
-                                    <td colSpan={4} className="px-4 py-8 text-center text-gray-400">无匹配标的，请调整筛选条件</td>
+                                    <td colSpan={5} className="px-4 py-8 text-center text-gray-400">无匹配标的，请调整筛选条件</td>
                                 </tr>
                             ) : displayPnlData.map(p => (
                                 <tr key={p.code} className="hover:bg-gray-50">
@@ -1953,6 +1960,7 @@ export default function SpotHoldingsPage() {
                                         <div className="font-bold text-gray-800">{p.code}</div>
                                         <div className="text-[10px] text-gray-400 truncate max-w-[180px]" title={p.name}>{p.name}</div>
                                     </td>
+                                    <td className="px-4 py-2 text-center font-mono font-bold text-gray-500">{p.market || '-'}</td>
                                     <td className={`px-4 py-2 text-right font-mono ${p.unrealized > 0 ? 'text-red-500' : p.unrealized < 0 ? 'text-green-500' : 'text-gray-400'}`}>{p.unrealized > 0 ? '+' : ''}{formatMoney(p.unrealized, true)}</td>
                                     <td className={`px-4 py-2 text-right font-mono ${p.realized > 0 ? 'text-red-500' : p.realized < 0 ? 'text-green-500' : 'text-gray-400'}`}>{p.realized > 0 ? '+' : ''}{formatMoney(p.realized, true)}</td>
                                     <td className={`px-4 py-2 text-right font-mono font-bold ${p.totalPnl > 0 ? 'text-red-600' : p.totalPnl < 0 ? 'text-green-600' : 'text-gray-500'}`}>{p.totalPnl > 0 ? '+' : ''}{formatMoney(p.totalPnl, true)}</td>
@@ -1962,6 +1970,7 @@ export default function SpotHoldingsPage() {
                         <tfoot className="bg-rose-50 border-t-2 border-rose-200 sticky bottom-0">
                             <tr>
                                 <td className="px-4 py-3 font-bold text-rose-900">总计 SUM</td>
+                                <td className="px-4 py-3 text-center text-xs font-bold text-rose-700">-</td>
                                 <td className={`px-4 py-3 text-right font-mono font-bold ${displayPnlSums.unrealized >= 0 ? 'text-red-600' : 'text-green-600'}`}>{displayPnlSums.unrealized > 0 ? '+' : ''}{formatMoney(displayPnlSums.unrealized, true)}</td>
                                 <td className={`px-4 py-3 text-right font-mono font-bold ${displayPnlSums.realized >= 0 ? 'text-red-600' : 'text-green-600'}`}>{displayPnlSums.realized > 0 ? '+' : ''}{formatMoney(displayPnlSums.realized, true)}</td>
                                 <td className={`px-4 py-3 text-right font-mono font-bold text-lg ${displayPnlSums.total >= 0 ? 'text-red-600' : 'text-green-600'}`}>{displayPnlSums.total > 0 ? '+' : ''}{formatMoney(displayPnlSums.total, true)}</td>
