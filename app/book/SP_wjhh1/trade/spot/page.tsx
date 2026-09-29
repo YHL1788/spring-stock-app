@@ -143,6 +143,7 @@ export default function SpotTradePage() {
   const [pasteText, setPasteText] = useState('');
   const [parsedPasteData, setParsedPasteData] = useState<any[]>([]);
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
+  const [zeroingFees, setZeroingFees] = useState(false);
 
   // --- 交易流水排序与筛选状态 ---
   const [tradeSort, setTradeSort] = useState<{ key: string, dir: 'asc' | 'desc' | null }>({ key: 'date', dir: 'desc' });
@@ -275,6 +276,78 @@ export default function SpotTradePage() {
 
     return result;
   }, [transactions, tradeSort, tradeFilters]);
+
+  const hasActiveTradeFilters = useMemo(
+    () => Object.values(tradeFilters).some(value => String(value || '').trim() !== ''),
+    [tradeFilters]
+  );
+
+  const buildZeroFeeUpdate = (trade: SpotTrade) => {
+    const qty = Number(trade.quantity) || 0;
+    const price = Number(trade.price_excl_fee) || 0;
+    const existingAmountExcl = Number(trade.amount_excl_fee);
+    const amountExcl = Number.isFinite(existingAmountExcl)
+      ? existingAmountExcl
+      : Math.abs(qty) * price;
+    const divisor = qty === 0 ? 0 : amountExcl < 0 ? qty : Math.abs(qty);
+    const amountIncl = amountExcl;
+    const avgPriceIncl = divisor !== 0 ? amountIncl / divisor : 0;
+
+    return {
+      fee: 0,
+      amount_incl_fee: Number(amountIncl.toFixed(2)),
+      avg_price_incl_fee: Number(avgPriceIncl.toFixed(4))
+    };
+  };
+
+  const handleZeroDisplayedFees = async () => {
+    if (!user) {
+      setError('用户未登录，无法执行手续费归0');
+      return;
+    }
+
+    const targetTrades = displayTransactions.filter((trade) => trade.id);
+    const targetWithFees = targetTrades.filter((trade) => Math.abs(Number(trade.fee) || 0) > 0.000001);
+
+    if (targetTrades.length === 0) {
+      alert('当前表格没有可处理的交易记录。');
+      return;
+    }
+    if (targetWithFees.length === 0) {
+      alert('当前表格显示的记录手续费已经全部为0。');
+      return;
+    }
+
+    const scopeText = hasActiveTradeFilters
+      ? `当前筛选结果中的 ${targetWithFees.length} 条记录`
+      : `当前未设置筛选，将对全部 ${targetWithFees.length} 条记录`;
+
+    if (!confirm(`${scopeText}执行“手续费一键归0”。\n\n系统会同步重算“金额(含费)”和“成交均价”。确认继续吗？`)) return;
+    if (!hasActiveTradeFilters && !confirm('再次确认：当前没有任何筛选条件，本次会影响全部显示记录。是否继续？')) return;
+
+    setZeroingFees(true);
+    setError(null);
+
+    try {
+      for (let i = 0; i < targetWithFees.length; i += 450) {
+        const batch = writeBatch(db);
+        targetWithFees.slice(i, i + 450).forEach((trade) => {
+          if (!trade.id) return;
+          batch.update(
+            doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_spot_trade', trade.id),
+            buildZeroFeeUpdate(trade)
+          );
+        });
+        await batch.commit();
+      }
+      alert(`已将 ${targetWithFees.length} 条交易记录的手续费归0。`);
+    } catch (err: any) {
+      console.error('Zero fees failed:', err);
+      setError(`手续费归0失败: ${err.message}`);
+    } finally {
+      setZeroingFees(false);
+    }
+  };
 
 
   // --- 自动填充股票名称 ---
@@ -756,6 +829,25 @@ return (
 
     {/* --- 数据表格 --- */}
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+      <div className="border-b border-gray-200 px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between bg-white">
+        <div>
+          <h2 className="text-sm font-bold text-gray-800">交易流水</h2>
+          <p className="mt-0.5 text-xs text-gray-500">
+            当前显示 {displayTransactions.length} 条记录
+            {hasActiveTradeFilters ? '，手续费归0仅作用于当前筛选结果。' : '，未筛选时手续费归0会作用于全部显示记录。'}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleZeroDisplayedFees}
+          disabled={loading || zeroingFees || displayTransactions.length === 0}
+          className="inline-flex items-center justify-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700 shadow-sm transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+          title="只处理当前表格显示的记录；使用筛选后，只会清0筛选结果。"
+        >
+          {zeroingFees ? <Loader2 size={14} className="animate-spin" /> : <Calculator size={14} />}
+          当前筛选结果手续费归0
+        </button>
+      </div>
       <div className="overflow-x-auto max-h-[450px] overflow-y-auto relative scrollbar-thin">
         <table className="min-w-full text-sm text-left">
           <thead className="bg-gray-50 text-gray-500 font-medium border-b border-gray-200 sticky top-0 z-10 shadow-sm [&>tr>th]:bg-gray-50">
