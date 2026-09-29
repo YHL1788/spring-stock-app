@@ -12,8 +12,7 @@ import {
   Trash2,
   RefreshCw,
   FileJson,
-  Edit2,
-  Plus
+  Edit2
 } from 'lucide-react';
 
 import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc, setDoc } from 'firebase/firestore';
@@ -92,34 +91,6 @@ interface TransactionRecord {
     residualCashCurrency?: string;
     settlementSchemaVersion?: number;
 }
-
-interface ManualDeliveryForm {
-    tradeId: string;
-    date: string;
-    account: string;
-    market: string;
-    executor: string;
-    stockCode: string;
-    stockName: string;
-    quantity: string;
-    priceNoFee: string;
-    fee: string;
-    underlyingFxToHKD: string;
-}
-
-const createManualDeliveryForm = (): ManualDeliveryForm => ({
-    tradeId: '',
-    date: new Date().toISOString().split('T')[0],
-    account: '',
-    market: 'HK',
-    executor: '',
-    stockCode: '',
-    stockName: '',
-    quantity: '',
-    priceNoFee: '',
-    fee: '0',
-    underlyingFxToHKD: ''
-});
 
 const createUnderlyingRow = (id: string): UnderlyingRow => ({
     id,
@@ -205,8 +176,6 @@ export default function FCNTradePage() {
     const [deliveryRecords, setDeliveryRecords] = useState<TransactionRecord[]>([]);
     const [editingDeliveryIdx, setEditingDeliveryIdx] = useState<number | null>(null);
     const [editFormData, setEditFormData] = useState<TransactionRecord | null>(null);
-    const [showManualDeliveryForm, setShowManualDeliveryForm] = useState(false);
-    const [manualDeliveryForm, setManualDeliveryForm] = useState<ManualDeliveryForm>(createManualDeliveryForm);
 
     const [activeDbTab, setActiveDbTab] = useState('sip_trade_fcn_input_living');
     const [dbRecords, setDbRecords] = useState<any[]>([]);
@@ -749,110 +718,6 @@ export default function FCNTradePage() {
             alert("修改失败: " + e.message);
         } finally {
             setLoading(false); setFetchStatus('');
-        }
-    };
-
-    const handleManualDeliveryChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-        const { name, value } = e.target;
-        setManualDeliveryForm(prev => ({ ...prev, [name]: value }));
-    };
-
-    const handleManualDeliveryCodeBlur = () => {
-        const code = manualDeliveryForm.stockCode.trim();
-        if (!code) return;
-        const normalized = code.toUpperCase();
-        const inferredMarket = normalized.endsWith('.HK') ? 'HK'
-            : normalized.endsWith('.T') ? 'JP'
-            : normalized.endsWith('.SS') || normalized.endsWith('.SZ') ? 'CH'
-            : 'US';
-        setManualDeliveryForm(prev => ({
-            ...prev,
-            stockCode: normalized,
-            market: prev.market || inferredMarket
-        }));
-    };
-
-    const handleSaveManualDelivery = async () => {
-        if (!user) {
-            alert('用户未登录，无法补充接货记录');
-            return;
-        }
-
-        const tradeId = manualDeliveryForm.tradeId.trim();
-        const stockCode = manualDeliveryForm.stockCode.trim().toUpperCase();
-        const stockName = manualDeliveryForm.stockName.trim();
-        const quantity = parseFloat(manualDeliveryForm.quantity);
-        const priceNoFee = parseFloat(manualDeliveryForm.priceNoFee);
-        const fee = parseFloat(manualDeliveryForm.fee || '0') || 0;
-
-        if (!tradeId) return alert('请手动输入 tradeID');
-        if (!manualDeliveryForm.date) return alert('请选择接货日期');
-        if (!manualDeliveryForm.account.trim()) return alert('请输入账户');
-        if (!stockCode) return alert('请输入标的代码');
-        if (!stockName) return alert('请输入标的名称');
-        if (!Number.isFinite(quantity) || quantity <= 0) return alert('请输入大于 0 的接货数量');
-        if (!Number.isFinite(priceNoFee) || priceNoFee <= 0) return alert('请输入大于 0 的接货单价');
-
-        const amountNoFee = quantity * priceNoFee;
-        const amountWithFee = amountNoFee + fee;
-        const priceWithFee = quantity > 0 ? amountWithFee / quantity : 0;
-
-        try {
-            setLoading(true);
-            setFetchStatus('正在手动补充接货记录...');
-
-            const currency = getRecCurrency(manualDeliveryForm.market);
-            let underlyingFxToHKD = parseFloat(manualDeliveryForm.underlyingFxToHKD);
-            if (!Number.isFinite(underlyingFxToHKD) || underlyingFxToHKD <= 0) {
-                const rate = await fetchCurrencyToHKD(currency);
-                if (!rate) throw new Error(`无法获取 ${currency}/HKD 汇率，请手动输入 HKD 折算汇率`);
-                underlyingFxToHKD = rate;
-            }
-
-            const manualRecord: TransactionRecord = {
-                tradeId,
-                date: manualDeliveryForm.date,
-                account: manualDeliveryForm.account.trim(),
-                market: manualDeliveryForm.market,
-                executor: manualDeliveryForm.executor.trim(),
-                type: 'FCN接货',
-                stockCode,
-                stockName,
-                direction: 'BUY',
-                quantity,
-                priceNoFee,
-                amountNoFee: Number(amountNoFee.toFixed(2)),
-                fee: Number(fee.toFixed(2)),
-                amountWithFee: Number(amountWithFee.toFixed(2)),
-                priceWithFee: Number(priceWithFee.toFixed(6)),
-                hkdAmount: Number((amountWithFee * underlyingFxToHKD).toFixed(2)),
-                noteCurrency: currency,
-                underlyingFxToHKD: Number(underlyingFxToHKD.toPrecision(8)),
-                settlementSchemaVersion: 2
-            };
-
-            const cleanRecord = replaceUndefinedWithNull({
-                ...manualRecord,
-                createdAt: new Date(),
-                updatedAt: new Date(),
-                manualSupplement: true
-            });
-            const pendingDeliveryId = `${tradeId}__${stockCode.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-            await setDoc(
-                doc(db, 'artifacts', APP_ID, 'public', 'data', 'sip_trade_fcn_pending_delivery', pendingDeliveryId),
-                cleanRecord,
-                { merge: true }
-            );
-
-            await fetchPendingDeliveries();
-            setManualDeliveryForm(createManualDeliveryForm());
-            setShowManualDeliveryForm(false);
-            alert('已手动补充接货记录至接货展示模块。');
-        } catch (e: any) {
-            alert('手动补充失败: ' + e.message);
-        } finally {
-            setLoading(false);
-            setFetchStatus('');
         }
     };
 
@@ -1419,110 +1284,8 @@ export default function FCNTradePage() {
                     <div className="flex items-center gap-4">
                         <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">当前绑定 TradeID: <span className="font-mono font-bold text-gray-700">{currentTradeId || '暂无'}</span></span>
                         <span className="text-sm text-gray-500">待入库接货记录: {deliveryRecords.length} 笔</span>
-                        <button
-                            type="button"
-                            onClick={() => setShowManualDeliveryForm(prev => !prev)}
-                            className="px-3 py-1.5 rounded-md bg-orange-50 text-orange-700 hover:bg-orange-100 text-xs font-bold border border-orange-200 flex items-center gap-1.5"
-                        >
-                            {showManualDeliveryForm ? <X size={14} /> : <Plus size={14} />}
-                            {showManualDeliveryForm ? '收起手动补充' : '手动补充接货'}
-                        </button>
                     </div>
                 </div>
-
-                {showManualDeliveryForm && (
-                    <div className="mb-5 rounded-lg border border-orange-200 bg-orange-50/60 p-4">
-                        <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-                            <div>
-                                <h3 className="text-sm font-bold text-orange-800">手动补充接货记录</h3>
-                                <p className="text-xs text-orange-700 mt-0.5">保存后会进入接货缓冲库，仍需点击“推送到库 (Get Stock)”才会正式入库。</p>
-                            </div>
-                            <div className="text-xs text-orange-700">
-                                tradeID 为必填，系统将用 <span className="font-mono">tradeID__股票代码</span> 作为缓冲库唯一键。
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-1">tradeID *</label>
-                                <input name="tradeId" value={manualDeliveryForm.tradeId} onChange={handleManualDeliveryChange} className="w-full border border-orange-200 rounded px-2 py-1.5 text-xs font-mono outline-none focus:border-orange-500" placeholder="手动输入" />
-                            </div>
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-1">接货日期 *</label>
-                                <input type="date" name="date" value={manualDeliveryForm.date} onChange={handleManualDeliveryChange} className="w-full border border-orange-200 rounded px-2 py-1.5 text-xs outline-none focus:border-orange-500" />
-                            </div>
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-1">账户 *</label>
-                                <input name="account" value={manualDeliveryForm.account} onChange={handleManualDeliveryChange} className="w-full border border-orange-200 rounded px-2 py-1.5 text-xs outline-none focus:border-orange-500" />
-                            </div>
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-1">执行人</label>
-                                <input name="executor" value={manualDeliveryForm.executor} onChange={handleManualDeliveryChange} className="w-full border border-orange-200 rounded px-2 py-1.5 text-xs outline-none focus:border-orange-500" />
-                            </div>
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-1">市场 *</label>
-                                <select name="market" value={manualDeliveryForm.market} onChange={handleManualDeliveryChange} className="w-full border border-orange-200 rounded px-2 py-1.5 text-xs outline-none focus:border-orange-500 bg-white">
-                                    <option value="HK">HK</option>
-                                    <option value="US">US</option>
-                                    <option value="JP">JP</option>
-                                    <option value="CH">CH</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-1">HKD折算汇率</label>
-                                <input type="number" step="0.000001" name="underlyingFxToHKD" value={manualDeliveryForm.underlyingFxToHKD} onChange={handleManualDeliveryChange} className="w-full border border-orange-200 rounded px-2 py-1.5 text-xs text-right font-mono outline-none focus:border-orange-500" placeholder="自动获取" />
-                            </div>
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-1">股票代码 *</label>
-                                <input name="stockCode" value={manualDeliveryForm.stockCode} onChange={handleManualDeliveryChange} onBlur={handleManualDeliveryCodeBlur} className="w-full border border-orange-200 rounded px-2 py-1.5 text-xs font-mono font-bold outline-none focus:border-orange-500" placeholder="如 0700.HK" />
-                            </div>
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-1">股票名称 *</label>
-                                <input name="stockName" value={manualDeliveryForm.stockName} onChange={handleManualDeliveryChange} className="w-full border border-orange-200 rounded px-2 py-1.5 text-xs outline-none focus:border-orange-500" />
-                            </div>
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-1">接货数量 *</label>
-                                <input type="number" step="0.000001" name="quantity" value={manualDeliveryForm.quantity} onChange={handleManualDeliveryChange} className="w-full border border-orange-200 rounded px-2 py-1.5 text-xs text-right font-mono outline-none focus:border-orange-500" />
-                            </div>
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-1">接货单价(原币) *</label>
-                                <input type="number" step="0.000001" name="priceNoFee" value={manualDeliveryForm.priceNoFee} onChange={handleManualDeliveryChange} className="w-full border border-orange-200 rounded px-2 py-1.5 text-xs text-right font-mono outline-none focus:border-orange-500" />
-                            </div>
-                            <div>
-                                <label className="block text-[11px] font-bold text-gray-600 mb-1">手续费(原币)</label>
-                                <input type="number" step="0.01" name="fee" value={manualDeliveryForm.fee} onChange={handleManualDeliveryChange} className="w-full border border-orange-200 rounded px-2 py-1.5 text-xs text-right font-mono outline-none focus:border-orange-500" />
-                            </div>
-                            <div className="rounded-md border border-orange-200 bg-white px-3 py-2 text-xs text-gray-700">
-                                <div className="text-[11px] font-bold text-gray-500">预估接货总额</div>
-                                <div className="mt-1 font-mono font-bold text-orange-800">
-                                    {fmtMoney(
-                                        (parseFloat(manualDeliveryForm.quantity) || 0) * (parseFloat(manualDeliveryForm.priceNoFee) || 0) + (parseFloat(manualDeliveryForm.fee) || 0),
-                                        getRecCurrency(manualDeliveryForm.market)
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="mt-4 flex justify-end gap-2">
-                            <button
-                                type="button"
-                                onClick={() => setManualDeliveryForm(createManualDeliveryForm())}
-                                className="px-4 py-2 rounded-md bg-white border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50"
-                            >
-                                清空
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleSaveManualDelivery}
-                                disabled={loading}
-                                className="px-5 py-2 rounded-md bg-orange-600 text-white text-xs font-bold hover:bg-orange-700 disabled:bg-gray-400 flex items-center gap-2"
-                            >
-                                {loading ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                                保存到接货展示模块
-                            </button>
-                        </div>
-                    </div>
-                )}
 
                 {deliveryRecords.length === 0 ? (
                     <div className="py-10 text-center text-gray-400 bg-gray-50 rounded-lg border border-dashed border-gray-200">
