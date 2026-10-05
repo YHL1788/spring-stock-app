@@ -277,20 +277,89 @@
 }
 
 .stockTable {
-  min-width: 1080px;
+  min-width: 942px;
   table-layout: fixed;
+  font-size: 11.5px;
+}
+
+.stockTable th,
+.stockTable td {
+  padding: 8px 6px;
+}
+
+.stockTable th:nth-child(n + 4),
+.stockTable td:nth-child(n + 4) {
+  text-align: right;
 }
 
 .stockCodeColumn {
-  width: 96px;
+  width: 84px;
 }
 
 .stockNameColumn {
-  width: 148px;
+  width: 132px;
 }
 
 .stockMarketColumn {
-  width: 68px;
+  width: 54px;
+}
+
+.stockQuantityColumn {
+  width: 88px;
+}
+
+.stockPriceColumn {
+  width: 88px;
+}
+
+.stockAmountColumn {
+  width: 112px;
+}
+
+.stockRatioColumn {
+  width: 72px;
+}
+
+.stockToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px 0;
+}
+
+.currencySwitch {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid rgba(22, 63, 54, 0.13);
+  border-radius: 999px;
+  background: #eeece4;
+}
+
+.currencySwitchButton {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #60736d;
+  padding: 5px 9px;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.currencySwitchButtonActive {
+  background: #1b4b40;
+  color: #fff9e9;
+  box-shadow: 0 3px 8px rgba(22, 63, 54, 0.18);
+}
+
+.fxStatus {
+  overflow: hidden;
+  color: #7b6242;
+  font-size: 10px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stockNameCell {
@@ -339,6 +408,14 @@
 
   .stockNameTrackMoving > span:not(:first-child) {
     display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .stockToolbar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 7px;
   }
 }
 

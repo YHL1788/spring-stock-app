@@ -20,6 +20,7 @@ import {
 } from "../mobileData";
 
 type TabKey = "summary" | "cash" | "stocks" | "fcn" | "dqaq" | "option" | "pe" | "cbbc";
+type StockCurrencyMode = "local" | "HKD" | "USD";
 type FormalPair = { mkt: MatrixData | null; pl: MatrixData | null };
 type MergedRecord = { tradeId: string; inputId: string; outputId: string; inputData: any; outputData: any };
 type SimpleHolding = {
@@ -275,6 +276,13 @@ function StocksPanel({ cache }: { cache: MobileCacheDoc | null }) {
   const data = cache?.data || {};
   const holdings = asArray(data.holdings);
   const [mktSortDir, setMktSortDir] = useState<"desc" | "asc">("desc");
+  const [currencyMode, setCurrencyMode] = useState<StockCurrencyMode>("local");
+  const [fxRates, setFxRates] = useState<Record<string, number>>({
+    ...FALLBACK_FX,
+    ...(data.quoteStatus?.fxRates || {}),
+  });
+  const [fxLoading, setFxLoading] = useState(false);
+  const [fxIsLive, setFxIsLive] = useState(false);
   const groupedHoldings = useMemo(() => {
     const map = new Map<string, any>();
     holdings.forEach((item: any) => {
@@ -306,31 +314,116 @@ function StocksPanel({ cache }: { cache: MobileCacheDoc | null }) {
       ...item,
       avgCost: item.priceWeight ? item.avgCostNumerator / item.priceWeight : 0,
       currentPrice: item.priceWeight ? item.priceNumerator / item.priceWeight : 0,
-      pnlRatio: Math.abs(item.totalCostHKD) > 0 ? item.unrealizedPnlHKD / Math.abs(item.totalCostHKD) : 0,
-    })).sort((a, b) => (
+      localCost: item.quantity * (item.priceWeight ? item.avgCostNumerator / item.priceWeight : 0),
+      localMktVal: item.quantity * (item.priceWeight ? item.priceNumerator / item.priceWeight : 0),
+      localPnl: item.quantity * (
+        (item.priceWeight ? item.priceNumerator / item.priceWeight : 0)
+        - (item.priceWeight ? item.avgCostNumerator / item.priceWeight : 0)
+      ),
+      pnlRatio: Math.abs(item.quantity * (item.priceWeight ? item.avgCostNumerator / item.priceWeight : 0)) > 0
+        ? item.quantity * ((item.priceWeight ? item.priceNumerator / item.priceWeight : 0) - (item.priceWeight ? item.avgCostNumerator / item.priceWeight : 0))
+          / Math.abs(item.quantity * (item.priceWeight ? item.avgCostNumerator / item.priceWeight : 0))
+        : 0,
+    }));
+  }, [holdings]);
+
+  const currenciesKey = useMemo(() => Array.from(new Set([
+    "HKD",
+    "USD",
+    ...groupedHoldings.map((item: any) => String(item.market || "HKD").toUpperCase()),
+  ])).sort().join(","), [groupedHoldings]);
+
+  useEffect(() => {
+    let active = true;
+    const refreshFxRates = async () => {
+      setFxLoading(true);
+      const currencies = currenciesKey.split(",").filter(Boolean);
+      const cachedRates = data.quoteStatus?.fxRates || {};
+      const results = await Promise.all(currencies.map(async (currency) => {
+        if (currency === "HKD") return { currency, rate: 1, live: true };
+        const fallbackRate = toNumber(cachedRates[currency], FALLBACK_FX[currency] || 1);
+        try {
+          const response = await fetch(`/api/quote?currency=${encodeURIComponent(currency)}&fresh=1&t=${Date.now()}`, { cache: "no-store" });
+          if (!response.ok) return { currency, rate: fallbackRate, live: false };
+          const quote = await response.json();
+          return { currency, rate: toNumber(quote.rate, fallbackRate), live: Boolean(quote.isRealTimeFx) };
+        } catch {
+          return { currency, rate: fallbackRate, live: false };
+        }
+      }));
+      if (!active) return;
+      setFxRates(results.reduce<Record<string, number>>((rates, item) => {
+        rates[item.currency] = item.rate;
+        return rates;
+      }, { ...FALLBACK_FX, ...cachedRates }));
+      setFxIsLive(results.filter((item) => item.currency !== "HKD").every((item) => item.live));
+      setFxLoading(false);
+    };
+    refreshFxRates();
+    return () => { active = false; };
+  }, [currenciesKey, data.quoteStatus?.fxRates]);
+
+  const displayHoldings = useMemo(() => [...groupedHoldings].sort((a, b) => {
+    const aHkd = Math.abs(a.localMktVal * (fxRates[a.market] || FALLBACK_FX[a.market] || 1));
+    const bHkd = Math.abs(b.localMktVal * (fxRates[b.market] || FALLBACK_FX[b.market] || 1));
+    return (
       mktSortDir === "desc"
-        ? Math.abs(b.mktValHKD) - Math.abs(a.mktValHKD)
-        : Math.abs(a.mktValHKD) - Math.abs(b.mktValHKD)
-    ));
-  }, [holdings, mktSortDir]);
+        ? bHkd - aHkd
+        : aHkd - bHkd
+    );
+  }), [fxRates, groupedHoldings, mktSortDir]);
+
+  const convertFromLocal = (value: number, market: string) => {
+    if (currencyMode === "local") return value;
+    const valueInHkd = value * (fxRates[market] || FALLBACK_FX[market] || 1);
+    if (currencyMode === "HKD") return valueInHkd;
+    return valueInHkd / (fxRates.USD || FALLBACK_FX.USD);
+  };
 
   if (!groupedHoldings.length) return <SectionCard title="当前持仓统计表" time={latestTime(cache?.calculatedAt)}><Empty>暂无股票持仓数据</Empty></SectionCard>;
   return (
     <SectionCard title={`当前持仓统计表 (${groupedHoldings.length} 只标的)`} note="对应股票页面的当前持仓统计表，手机版按股票代码和市场合并。" time={latestTime(cache?.calculatedAt)}>
+      <div className={styles.stockToolbar}>
+        <div className={styles.currencySwitch} role="group" aria-label="股票金额显示币种">
+          {([['local', '本币'], ['HKD', 'HKD'], ['USD', 'USD']] as const).map(([mode, label]) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={currencyMode === mode}
+              onClick={() => setCurrencyMode(mode)}
+              className={`${styles.currencySwitchButton} ${currencyMode === mode ? styles.currencySwitchButtonActive : ""}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className={styles.fxStatus}>
+          {fxLoading ? "汇率更新中…" : `USD/HKD ${formatNumber(fxRates.USD, 4)} · ${fxIsLive ? "实时" : "缓存"}`}
+        </span>
+      </div>
       <div className={styles.tableWrap}>
         <table className={`${styles.table} ${styles.stockTable}`}>
           <colgroup>
             <col className={styles.stockCodeColumn} />
             <col className={styles.stockNameColumn} />
             <col className={styles.stockMarketColumn} />
-            <col span={7} />
+            <col className={styles.stockQuantityColumn} />
+            <col span={2} className={styles.stockPriceColumn} />
+            <col span={3} className={styles.stockAmountColumn} />
+            <col className={styles.stockRatioColumn} />
           </colgroup>
-          <thead><tr><th>代码</th><th>名称</th><th>市场</th><th>数量</th><th>成本均价</th><th>现价</th><th>总成本HKD</th><th><button type="button" onClick={() => setMktSortDir((prev) => prev === "desc" ? "asc" : "desc")} className="font-bold text-inherit">现市值HKD {mktSortDir === "desc" ? "▼" : "▲"}</button></th><th>未实现HKD</th><th>盈亏比</th></tr></thead>
+          <thead><tr><th>代码</th><th>名称</th><th>市场</th><th>数量</th><th>成本均价</th><th>现价</th><th>总成本</th><th><button type="button" onClick={() => setMktSortDir((prev) => prev === "desc" ? "asc" : "desc")} className="font-bold text-inherit">现市值 {mktSortDir === "desc" ? "▼" : "▲"}</button></th><th>浮动盈亏</th><th>盈亏比</th></tr></thead>
           <tbody>
-            {groupedHoldings.map((item: any) => {
+            {displayHoldings.map((item: any) => {
               const stockName = String(item.name || "-");
+              const market = String(item.market || "HKD").toUpperCase();
               const nameDisplayWidth = Array.from(stockName).reduce((width, char) => width + (/[^\u0000-\u00ff]/.test(char) ? 2 : 1), 0);
               const shouldScrollName = nameDisplayWidth > 18;
+              const displayAvgCost = convertFromLocal(item.avgCost, market);
+              const displayCurrentPrice = convertFromLocal(item.currentPrice, market);
+              const displayCost = convertFromLocal(item.localCost, market);
+              const displayMktVal = convertFromLocal(item.localMktVal, market);
+              const displayPnl = convertFromLocal(item.localPnl, market);
               return (
               <tr key={`${item.code}-${item.market}`}>
                 <td>{item.code}</td>
@@ -342,9 +435,9 @@ function StocksPanel({ cache }: { cache: MobileCacheDoc | null }) {
                     </span>
                   </span>
                 </td>
-                <td>{item.market || "-"}</td>
-                <td>{formatNumber(item.quantity, 2)}</td><td>{formatNumber(item.avgCost, 4)}</td><td>{formatNumber(item.currentPrice, 4)}</td>
-                <td>{formatHKD(item.totalCostHKD, 2)}</td><td>{formatHKD(item.mktValHKD, 2)}</td><td className={signedClass(toNumber(item.unrealizedPnlHKD))}>{formatHKD(item.unrealizedPnlHKD, 2)}</td><td>{formatPercent(item.pnlRatio)}</td>
+                <td>{market}</td>
+                <td>{formatNumber(item.quantity, 2)}</td><td>{formatNumber(displayAvgCost, 4)}</td><td>{formatNumber(displayCurrentPrice, 4)}</td>
+                <td>{formatHKD(displayCost, 2)}</td><td>{formatHKD(displayMktVal, 2)}</td><td className={signedClass(displayPnl)}>{formatHKD(displayPnl, 2)}</td><td>{formatPercent(item.pnlRatio)}</td>
               </tr>
               );
             })}
