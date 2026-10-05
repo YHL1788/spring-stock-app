@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Briefcase, ShieldAlert } from "lucide-react";
 import styles from "./mobile.module.css";
+import PwaInstallButton from "./PwaInstallButton";
 
 export default function MobileShell({ children, title, subtitle }: { children: React.ReactNode; title: string; subtitle: string }) {
   const pathname = usePathname();
@@ -14,7 +15,10 @@ export default function MobileShell({ children, title, subtitle }: { children: R
     <div className={`${styles.mobileRoot} -mt-24`}>
       <header className={styles.header}>
         <div className={styles.eyebrow}>SIP READ ONLY APP</div>
-        <h1 className={styles.title}>{title}</h1>
+        <div className={styles.titleRow}>
+          <h1 className={styles.title}>{title}</h1>
+          <PwaInstallButton />
+        </div>
         <p className={styles.subtitle}>{subtitle}</p>
       </header>
       <main className={styles.stage}>{children}</main>

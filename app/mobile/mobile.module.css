@@ -7,7 +7,7 @@
 }
 
 .header {
-  padding: 18px 18px 88px;
+  padding: calc(18px + env(safe-area-inset-top)) 18px 88px;
   color: #f8efd9;
 }
 
@@ -20,10 +20,49 @@
 }
 
 .title {
-  margin-top: 8px;
+  margin: 0;
   font-size: 30px;
   font-weight: 900;
   letter-spacing: -0.05em;
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.installButton {
+  flex: 0 0 auto;
+  border: 1px solid rgba(224, 188, 118, 0.5);
+  border-radius: 999px;
+  background: rgba(248, 239, 217, 0.12);
+  color: #f8efd9;
+  padding: 8px 11px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.installWrap {
+  position: relative;
+}
+
+.installHelp {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 20;
+  width: min(280px, calc(100vw - 36px));
+  border: 1px solid rgba(224, 188, 118, 0.4);
+  border-radius: 16px;
+  background: rgba(5, 30, 26, 0.72);
+  color: #f8efd9;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: 0 18px 40px rgba(5, 30, 26, 0.32);
 }
 
 .subtitle {
@@ -37,7 +76,7 @@
 .stage {
   position: relative;
   margin-top: -64px;
-  padding: 0 14px 92px;
+  padding: 0 14px calc(92px + env(safe-area-inset-bottom));
 }
 
 .card {
@@ -180,7 +219,7 @@
   position: fixed;
   left: 14px;
   right: 14px;
-  bottom: 14px;
+  bottom: calc(14px + env(safe-area-inset-bottom));
   z-index: 30;
   display: grid;
   grid-template-columns: repeat(2, 1fr);
