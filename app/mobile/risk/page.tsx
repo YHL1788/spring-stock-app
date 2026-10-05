@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, Loader2 } from "lucide-react";
+import { AlertCircle, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import MobileShell from "../MobileShell";
 import styles from "../mobile.module.css";
 import {
@@ -69,7 +69,7 @@ async function fetchQuote(symbol: string) {
   const candidates = symbol.endsWith(".US") ? [symbol, symbol.replace(/\.US$/, "")] : [symbol];
   for (const candidate of candidates) {
     try {
-      const res = await fetch(`/api/quote?symbol=${encodeURIComponent(candidate)}`);
+      const res = await fetch(`/api/quote?symbol=${encodeURIComponent(candidate)}&fresh=1&t=${Date.now()}`, { cache: "no-store" });
       if (!res.ok) continue;
       const data = await res.json();
       const price = toNumber(data.regularMarketPrice || data.price || data.close);
@@ -84,7 +84,7 @@ async function fetchQuote(symbol: string) {
 async function fetchFxRate(market: string) {
   if (market === "HKD") return 1;
   try {
-    const res = await fetch(`/api/quote?currency=${encodeURIComponent(market)}`);
+    const res = await fetch(`/api/quote?currency=${encodeURIComponent(market)}&fresh=1&t=${Date.now()}`, { cache: "no-store" });
     if (!res.ok) return 1;
     const data = await res.json();
     const rate = toNumber(data.rate, 1);
@@ -122,33 +122,33 @@ function SourceList({ statuses }: { statuses: SourceStatus[] }) {
 function UnderlyingTable({ rows }: { rows: GroupedUnderlying[] }) {
   if (!rows.length) return <div className={styles.empty}>暂无标的暴露数据</div>;
   return (
-    <div className={styles.tableWrap}>
-      <table className={styles.table}>
-        <thead>
-          <tr>
-            <th>代码</th>
-            <th>市场</th>
-            <th>名称</th>
-            <th>暴露股数</th>
-            <th>现价</th>
-            <th>市值HKD</th>
-            <th>盈亏HKD</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 100).map((row) => (
-            <tr key={row.key}>
-              <td>{row.symbol}</td>
-              <td>{row.market}</td>
-              <td>{row.name}</td>
-              <td>{formatNumber(row.shares, 2)}</td>
-              <td>{formatNumber(row.price, 4)}</td>
-              <td>{formatHKD(row.mktValHKD, 2)}</td>
-              <td className={(row.pnlHKD || 0) >= 0 ? styles.positive : styles.negative}>{formatHKD(row.pnlHKD, 2)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className={styles.recordList}>
+      {rows.slice(0, 100).map((row) => (
+        <article className={styles.recordCard} key={row.key}>
+          <div className={styles.recordHeader}>
+            <div className={styles.recordIdentity}>
+              <h3>{row.name}</h3>
+              <p>{row.symbol}</p>
+            </div>
+            <span className={styles.recordStatus}>{row.market}</span>
+          </div>
+          <div className={styles.recordHighlights}>
+            <div className={styles.recordHighlight}><span>暴露市值</span><strong>{formatHKD(row.mktValHKD, 2)}</strong></div>
+            <div className={styles.recordHighlight}><span>浮动盈亏</span><strong className={(row.pnlHKD || 0) >= 0 ? styles.positive : styles.negative}>{formatHKD(row.pnlHKD, 2)}</strong></div>
+            <div className={styles.recordHighlight}><span>暴露股数</span><strong>{formatNumber(row.shares, 2)}</strong></div>
+          </div>
+          <details className={styles.recordDetails}>
+            <summary>查看风险明细 <ChevronRight size={14} /></summary>
+            <div className={styles.recordDetailGrid}>
+              <div><span>现价</span><strong>{formatNumber(row.price, 4)}</strong></div>
+              <div><span>成本 HKD</span><strong>{formatHKD(row.cost, 2)}</strong></div>
+              <div><span>一级行业</span><strong>{row.sector1}</strong></div>
+              <div><span>二级行业</span><strong>{row.sector2}</strong></div>
+              <div><span>汇率</span><strong>{formatNumber(row.fxRate, 4)}</strong></div>
+            </div>
+          </details>
+        </article>
+      ))}
     </div>
   );
 }
@@ -171,29 +171,20 @@ function IndustryTable({ rows }: { rows: GroupedUnderlying[] }) {
   if (!groups.length) return <div className={styles.empty}>暂无行业暴露数据</div>;
 
   return (
-    <div className={styles.tableWrap}>
-      <table className={styles.table}>
-        <thead>
-          <tr>
-            <th>一级行业</th>
-            <th>标的数</th>
-            <th>暴露市值HKD</th>
-            <th>占比</th>
-            <th>盈亏HKD</th>
-          </tr>
-        </thead>
-        <tbody>
-          {groups.map((item) => (
-            <tr key={item.name}>
-              <td>{item.name}</td>
-              <td>{item.count}</td>
-              <td>{formatHKD(item.value, 2)}</td>
-              <td>{formatPercent(total > 0 ? item.value / total : 0)}</td>
-              <td className={item.pnl >= 0 ? styles.positive : styles.negative}>{formatHKD(item.pnl, 2)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className={styles.industryList}>
+      {groups.map((item) => {
+        const ratio = total > 0 ? item.value / total : 0;
+        return (
+          <div key={item.name} className={styles.industryItem}>
+            <div className={styles.industryTopline}>
+              <div><strong>{item.name}</strong><span>{item.count} 个标的</span></div>
+              <div><strong>{formatHKD(item.value, 0)}</strong><span className={item.pnl >= 0 ? styles.positive : styles.negative}>{formatHKD(item.pnl, 0)}</span></div>
+            </div>
+            <div className={styles.industryTrack}><span style={{ width: `${Math.max(ratio * 100, 1)}%` }} /></div>
+            <small>{formatPercent(ratio)} 暴露占比</small>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -204,6 +195,8 @@ export default function MobileRiskPage() {
   const [statuses, setStatuses] = useState<SourceStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [lastSyncedAt, setLastSyncedAt] = useState("");
 
   useEffect(() => {
     let mounted = true;
@@ -289,6 +282,7 @@ export default function MobileRiskPage() {
         if (!mounted) return;
         setRows(nextRows);
         setStatuses(nextStatuses);
+        setLastSyncedAt(new Date().toLocaleString("zh-CN", { hour12: false }));
         setError("");
       } catch (err: any) {
         if (mounted) setError(err?.message || "读取移动端风控数据失败");
@@ -299,14 +293,25 @@ export default function MobileRiskPage() {
 
     load();
     return () => { mounted = false; };
-  }, []);
+  }, [refreshKey]);
 
   const totalExposure = rows.reduce((sum, row) => sum + Math.abs(row.mktValHKD || 0), 0);
   const totalPnl = rows.reduce((sum, row) => sum + (row.pnlHKD || 0), 0);
   const maxSingle = rows[0];
+  const maxSingleRatio = totalExposure > 0 ? Math.abs(maxSingle?.mktValHKD || 0) / totalExposure : 0;
 
   return (
-    <MobileShell title="风控只读终端" subtitle="只读取 Risk 下的标的暴露与行业暴露数据，适合手机快速检查集中度和风险状态。">
+    <MobileShell title="风险" subtitle="实时暴露、集中度与行业风险，清晰可见。">
+      <div className={styles.syncBar}>
+        <div>
+          <span className={styles.syncState}><i />行情与汇率已同步</span>
+          <small>{lastSyncedAt || "正在连接数据"}</small>
+        </div>
+        <button type="button" onClick={() => setRefreshKey((value) => value + 1)} disabled={loading} aria-label="刷新风险数据">
+          <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
+          刷新
+        </button>
+      </div>
       <div className={styles.tabRail}>
         <button type="button" onClick={() => setActiveTab("underlying")} className={`${styles.tabButton} ${activeTab === "underlying" ? styles.tabButtonActive : ""}`}>标的暴露</button>
         <button type="button" onClick={() => setActiveTab("industry")} className={`${styles.tabButton} ${activeTab === "industry" ? styles.tabButtonActive : ""}`}>行业暴露</button>
@@ -325,17 +330,20 @@ export default function MobileRiskPage() {
             <div className={styles.cardHeader}>
               <div>
                 <h2 className={styles.cardTitle}>风险总览</h2>
-                <p className={styles.cardNote}>按四个暴露库合并计算，手机端只读。</p>
+                <p className={styles.cardNote}>多空净额合并后的关键风险指标。</p>
               </div>
               <div className={styles.statusPill}>{rows.length} 个标的</div>
             </div>
-            <div className={styles.grid}>
+            <div className={styles.summaryMetrics}>
               <Metric label="总暴露市值 HKD" value={formatHKD(totalExposure, 0)} />
-              <Metric label="总暴露盈亏 HKD" value={formatHKD(totalPnl, 0)} tone={totalPnl >= 0 ? "positive" : "negative"} />
+              <Metric label="浮动盈亏 HKD" value={formatHKD(totalPnl, 0)} tone={totalPnl >= 0 ? "positive" : "negative"} />
               <Metric label="最大单一标的" value={maxSingle?.symbol || "-"} />
-              <Metric label="最大标的市值" value={formatHKD(maxSingle?.mktValHKD, 0)} />
+              <Metric label="最大标的占比" value={formatPercent(maxSingleRatio)} />
             </div>
-            <SourceList statuses={statuses} />
+            <details className={styles.dataDisclosure}>
+              <summary>数据覆盖范围 <ChevronRight size={15} /></summary>
+              <SourceList statuses={statuses} />
+            </details>
           </section>
 
           <section className={`${styles.card} mb-4`}>

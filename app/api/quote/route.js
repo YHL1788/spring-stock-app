@@ -54,7 +54,7 @@ async function fetchRealTimeFxRate(currency, forceRefresh = false) {
 }
 
 // --- 核心函数：获取 Yahoo 完整数据 ---
-async function fetchYahooFullData(symbol, range = '1d') {
+async function fetchYahooFullData(symbol, range = '1d', forceRefresh = false) {
   try {
     let interval = '1d';
     // 自动适配 Interval 以获取适合画图的数据密度
@@ -64,7 +64,12 @@ async function fetchYahooFullData(symbol, range = '1d') {
     else interval = '1d'; // 1y, 5y, ytd 使用日线
 
     // 1. 获取图表数据 (Chart API)
-    const priceRes = await fetch(`${BASE_URL_YAHOO_CHART}/${symbol}?interval=${interval}&range=${range}`, { headers: YAHOO_HEADERS, next: { revalidate: 60 } });
+    const priceRes = await fetch(
+      `${BASE_URL_YAHOO_CHART}/${symbol}?interval=${interval}&range=${range}`,
+      forceRefresh
+        ? { headers: YAHOO_HEADERS, cache: 'no-store' }
+        : { headers: YAHOO_HEADERS, next: { revalidate: 60 } },
+    );
     const priceJson = priceRes.ok ? await priceRes.json() : null;
     const result = priceJson?.chart?.result?.[0];
     const meta = result?.meta;
@@ -153,6 +158,7 @@ export async function GET(request) {
   // --- 2. 完整股票/ETF信息查询通道 ---
   const rawSymbol = searchParams.get('symbol');
   const range = searchParams.get('range') || '1d';
+  const forceRefresh = searchParams.get('fresh') === '1';
 
   if (!rawSymbol) return NextResponse.json({ error: 'Missing symbol or currency parameter' }, { status: 400 });
 
@@ -160,7 +166,7 @@ export async function GET(request) {
   const symbol = rawSymbol.toUpperCase().trim();
   
   // 统一只调用 Yahoo 逻辑
-  const data = await fetchYahooFullData(symbol, range);
+  const data = await fetchYahooFullData(symbol, range, forceRefresh);
 
   if (!data) {
     return NextResponse.json({ error: 'Symbol not found or data unavailable' }, { status: 404 });
