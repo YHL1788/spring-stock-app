@@ -8,7 +8,8 @@ const isProtectedRoute = createRouteMatcher([
   '/strategies(.*)',   // 绛栫暐
   '/book(.*)',         // 璐︾翱
   '/notes(.*)',        // 鎶曡祫绗旇
-  '/mobile(.*)',       // Mobile read-only app
+  // Mobile pages render their own in-app sign-in gate so installed PWAs do not
+  // bounce through Clerk's hosted development domain before the UI can load.
   '/api(.*)',          // API 鎺ュ彛 (鍙€夛紝鍙栧喅浜庢偍鐨?API 鏄惁闇€瑕佸叕寮€)
 ]);
 

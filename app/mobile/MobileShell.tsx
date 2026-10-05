@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Briefcase, ShieldAlert } from "lucide-react";
+import { UserButton } from "@clerk/nextjs";
+import { BriefcaseBusiness, ShieldCheck } from "lucide-react";
 import styles from "./mobile.module.css";
 import PwaInstallButton from "./PwaInstallButton";
 
@@ -14,22 +15,27 @@ export default function MobileShell({ children, title, subtitle }: { children: R
   return (
     <div className={`${styles.mobileRoot} -mt-24`}>
       <header className={styles.header}>
-        <div className={styles.eyebrow}>SIP READ ONLY APP</div>
+        <div className={styles.headerTopline}>
+          <div className={styles.eyebrow}><span className={styles.liveDot} /> SIP PRIVATE CONSOLE</div>
+          <div className={styles.headerActions}>
+            <PwaInstallButton />
+            <UserButton afterSignOutUrl="/mobile/holdings" />
+          </div>
+        </div>
         <div className={styles.titleRow}>
           <h1 className={styles.title}>{title}</h1>
-          <PwaInstallButton />
         </div>
         <p className={styles.subtitle}>{subtitle}</p>
       </header>
       <main className={styles.stage}>{children}</main>
       <nav className={styles.bottomNav} aria-label="Mobile app navigation">
         <Link href="/mobile/holdings" className={`${styles.navItem} ${isHoldings ? styles.navItemActive : ""}`}>
-          <Briefcase size={16} />
-          持仓
+          <BriefcaseBusiness size={19} />
+          <span>持仓</span>
         </Link>
         <Link href="/mobile/risk" className={`${styles.navItem} ${isRisk ? styles.navItemActive : ""}`}>
-          <ShieldAlert size={16} />
-          风控
+          <ShieldCheck size={19} />
+          <span>风控</span>
         </Link>
       </nav>
     </div>
