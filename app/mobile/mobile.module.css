@@ -276,6 +276,72 @@
   background: #e8e5da;
 }
 
+.stockTable {
+  min-width: 1080px;
+  table-layout: fixed;
+}
+
+.stockCodeColumn {
+  width: 96px;
+}
+
+.stockNameColumn {
+  width: 148px;
+}
+
+.stockMarketColumn {
+  width: 68px;
+}
+
+.stockNameCell {
+  overflow: hidden;
+}
+
+.stockNameViewport {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+}
+
+.stockNameTrack {
+  display: flex;
+  width: max-content;
+  min-width: 100%;
+  will-change: transform;
+}
+
+.stockNameTrackMoving {
+  min-width: 0;
+  animation: stockNameMarquee 8s linear infinite;
+}
+
+.stockNameTrackMoving > span {
+  flex: 0 0 auto;
+  padding-right: 28px;
+}
+
+.stockNameTrackMoving:hover {
+  animation-play-state: paused;
+}
+
+@keyframes stockNameMarquee {
+  to { transform: translateX(-50%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stockNameTrackMoving {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    animation: none;
+  }
+
+  .stockNameTrackMoving > span:not(:first-child) {
+    display: none;
+  }
+}
+
 .bottomNav {
   position: fixed;
   left: 18px;

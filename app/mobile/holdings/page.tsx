@@ -316,18 +316,38 @@ function StocksPanel({ cache }: { cache: MobileCacheDoc | null }) {
 
   if (!groupedHoldings.length) return <SectionCard title="当前持仓统计表" time={latestTime(cache?.calculatedAt)}><Empty>暂无股票持仓数据</Empty></SectionCard>;
   return (
-    <SectionCard title={`当前持仓统计表 (${groupedHoldings.length} 只标的)`} note="对应股票页面的当前持仓统计表，手机版按股票代码和市场合并。 摆脱账户列，清爽一点。" time={latestTime(cache?.calculatedAt)}>
+    <SectionCard title={`当前持仓统计表 (${groupedHoldings.length} 只标的)`} note="对应股票页面的当前持仓统计表，手机版按股票代码和市场合并。" time={latestTime(cache?.calculatedAt)}>
       <div className={styles.tableWrap}>
-        <table className={styles.table}>
+        <table className={`${styles.table} ${styles.stockTable}`}>
+          <colgroup>
+            <col className={styles.stockCodeColumn} />
+            <col className={styles.stockNameColumn} />
+            <col className={styles.stockMarketColumn} />
+            <col span={7} />
+          </colgroup>
           <thead><tr><th>代码</th><th>名称</th><th>市场</th><th>数量</th><th>成本均价</th><th>现价</th><th>总成本HKD</th><th><button type="button" onClick={() => setMktSortDir((prev) => prev === "desc" ? "asc" : "desc")} className="font-bold text-inherit">现市值HKD {mktSortDir === "desc" ? "▼" : "▲"}</button></th><th>未实现HKD</th><th>盈亏比</th></tr></thead>
           <tbody>
-            {groupedHoldings.map((item: any) => (
+            {groupedHoldings.map((item: any) => {
+              const stockName = String(item.name || "-");
+              const nameDisplayWidth = Array.from(stockName).reduce((width, char) => width + (/[^\u0000-\u00ff]/.test(char) ? 2 : 1), 0);
+              const shouldScrollName = nameDisplayWidth > 18;
+              return (
               <tr key={`${item.code}-${item.market}`}>
-                <td>{item.code}</td><td>{item.name || "-"}</td><td>{item.market || "-"}</td>
+                <td>{item.code}</td>
+                <td className={styles.stockNameCell} title={stockName}>
+                  <span className={styles.stockNameViewport}>
+                    <span className={`${styles.stockNameTrack} ${shouldScrollName ? styles.stockNameTrackMoving : ""}`}>
+                      <span>{stockName}</span>
+                      {shouldScrollName ? <span aria-hidden="true">{stockName}</span> : null}
+                    </span>
+                  </span>
+                </td>
+                <td>{item.market || "-"}</td>
                 <td>{formatNumber(item.quantity, 2)}</td><td>{formatNumber(item.avgCost, 4)}</td><td>{formatNumber(item.currentPrice, 4)}</td>
                 <td>{formatHKD(item.totalCostHKD, 2)}</td><td>{formatHKD(item.mktValHKD, 2)}</td><td className={signedClass(toNumber(item.unrealizedPnlHKD))}>{formatHKD(item.unrealizedPnlHKD, 2)}</td><td>{formatPercent(item.pnlRatio)}</td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
