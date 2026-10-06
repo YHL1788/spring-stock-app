@@ -67,7 +67,7 @@ const navigation = [
     current: false,
     children: [
       { name: '春天稳健混合1号基金', href: '/book/SP_wjhh1' },
-      { name: '持仓只读APP', href: '/mobile/holdings' },
+      { name: '持仓与风控APP', href: '/mobile/holdings' },
       { name: '春天汇盈策略基金', href: '/book/SP_hy_strategy' },
       { name: 'EFG Risk Terminal', href: 'https://efg-portfolio-384997.vercel.app/' },
       { name: '我的账簿', href: '/book/my_book' },
