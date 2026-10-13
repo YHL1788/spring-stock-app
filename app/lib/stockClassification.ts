@@ -36,7 +36,7 @@ export const isMissingClassification = (value: unknown) => (
   missingValues.has(String(value ?? '').trim().toLowerCase())
 );
 
-const canonicalSymbol = (symbol: string) => {
+export const getStockSymbolKey = (symbol: string) => {
   const upper = String(symbol || '').trim().toUpperCase();
   if (upper.endsWith('.US')) return upper.slice(0, -3);
   if (upper.endsWith('.HK')) {
@@ -57,10 +57,10 @@ export const toYahooSymbol = (symbol: string, currency?: string) => {
   return upper;
 };
 
-const curatedMap = new Map(stockPoolData.map((item) => [canonicalSymbol(item.symbol), item]));
+const curatedMap = new Map(stockPoolData.map((item) => [getStockSymbolKey(item.symbol), item]));
 
 export const getCuratedClassification = (input: StockClassificationInput): StockClassificationResult | null => {
-  const match = curatedMap.get(canonicalSymbol(input.symbol));
+  const match = curatedMap.get(getStockSymbolKey(input.symbol));
   if (!match) return null;
   const yahooSymbol = toYahooSymbol(input.symbol, input.currency);
   return {
