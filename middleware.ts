@@ -21,9 +21,13 @@ const isPublicDividendLowVolPublishRoute = createRouteMatcher([
   '/api/dividend-low-vol/publish(.*)',
 ]);
 
+const isPublicStockClassificationRoute = createRouteMatcher([
+  '/api/stock-classification(.*)',
+]);
+
 // 2. 鍦ㄤ腑闂翠欢涓繘琛屾嫤鎴?
 export default clerkMiddleware(async (auth, req) => {
-  if (isPublicCronRoute(req) || isPublicDividendLowVolPublishRoute(req)) {
+  if (isPublicCronRoute(req) || isPublicDividendLowVolPublishRoute(req) || isPublicStockClassificationRoute(req)) {
     return;
   }
 

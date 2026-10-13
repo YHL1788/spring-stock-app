@@ -4,7 +4,58 @@ import React, { useState, useMemo } from 'react';
 import { useStockPool } from '@/app/hooks/useStockPool'; 
 import { db, auth, APP_ID } from '@/app/lib/stockService'; 
 import { doc, setDoc, deleteDoc, writeBatch } from 'firebase/firestore';
-import { X, Trash2, Save, FileSpreadsheet, Search } from 'lucide-react';
+import { X, Trash2, Save, FileSpreadsheet, Search, Sparkles, Loader2 } from 'lucide-react';
+import { classifyStock, classifyStocks } from '@/app/lib/stockClassificationClient';
+import {
+  isMissingClassification,
+  type StockClassificationInput,
+  type StockClassificationResult,
+} from '@/app/lib/stockClassification';
+
+type StockPoolRow = StockClassificationInput & {
+  sector_level_1?: string;
+  sector_level_2?: string;
+  [key: string]: any;
+};
+
+const isSupportedMarket = (stock: StockPoolRow) => {
+  const symbol = String(stock.symbol || '').trim().toUpperCase();
+  const currency = String(stock.currency || '').trim().toUpperCase();
+  return currency === 'USD' || currency === 'HKD' || symbol.endsWith('.US') || symbol.endsWith('.HK');
+};
+
+const mergeAutomaticClassification = (
+  stock: StockPoolRow,
+  result: StockClassificationResult,
+  existing?: StockPoolRow,
+) => {
+  const existingLevel1 = existing?.sector_level_1;
+  const existingLevel2 = existing?.sector_level_2;
+  const selectedLevel1 = !isMissingClassification(stock.sector_level_1)
+    ? stock.sector_level_1
+    : !isMissingClassification(existingLevel1)
+      ? existingLevel1
+      : result.sector_level_1;
+  const selectedLevel2 = !isMissingClassification(stock.sector_level_2)
+    ? stock.sector_level_2
+    : !isMissingClassification(existingLevel2)
+      ? existingLevel2
+      : result.sector_level_2;
+
+  return {
+    ...stock,
+    currency: String(stock.currency || existing?.currency || result.currency || 'USD').toUpperCase(),
+    name: stock.name || existing?.name || result.name || stock.symbol,
+    sector_level_1: selectedLevel1,
+    sector_level_2: selectedLevel2,
+    classification_source: result.source,
+    classification_confidence: result.confidence,
+    classification_reason: result.reason,
+    source_sector: result.source_sector,
+    source_industry: result.source_industry,
+    classifiedAt: new Date().toISOString(),
+  };
+};
 
 export default function StockPoolAdmin() {
   // ---------------------------------------------------------
@@ -25,6 +76,8 @@ export default function StockPoolAdmin() {
     sector_level_2: '' 
   });
   const [isSaving, setIsSaving] = useState(false);
+  const [isAutoClassifying, setIsAutoClassifying] = useState(false);
+  const [classificationMessage, setClassificationMessage] = useState('');
 
   // ---------------------------------------------------------
   // 🔍 列表筛选状态
@@ -67,6 +120,83 @@ export default function StockPoolAdmin() {
       return matchSymbol && matchCurrency && matchName && matchSec1 && matchSec2;
     });
   }, [stocks, filters]);
+
+  const unknownCount = useMemo(() => stocks.filter((stock: StockPoolRow) => (
+    isSupportedMarket(stock) && (
+      isMissingClassification(stock.sector_level_1) || isMissingClassification(stock.sector_level_2)
+    )
+  )).length, [stocks]);
+
+  const handleAutoClassifyForm = async () => {
+    if (!formData.symbol.trim()) return alert('请先输入股票代码。');
+    if (!isSupportedMarket(formData)) return alert('目前自动分类仅支持美股（USD）和港股（HKD）。');
+    setIsAutoClassifying(true);
+    setClassificationMessage('');
+    try {
+      const result = await classifyStock(formData);
+      const merged = mergeAutomaticClassification(formData, result);
+      setFormData({
+        symbol: merged.symbol,
+        currency: merged.currency || formData.currency,
+        name: merged.name || '',
+        sector_level_1: merged.sector_level_1 || '',
+        sector_level_2: merged.sector_level_2 || '',
+      });
+      setClassificationMessage(`已识别：${merged.sector_level_1} / ${merged.sector_level_2}（${Math.round(result.confidence * 100)}%）`);
+    } catch (error) {
+      console.error('Auto classification failed:', error);
+      alert('自动分类暂时不可用，请稍后重试，或继续手动填写。');
+    } finally {
+      setIsAutoClassifying(false);
+    }
+  };
+
+  const handleAutoClassifyUnknown = async () => {
+    const candidates = stocks.filter((stock: StockPoolRow) => (
+      isSupportedMarket(stock) && (
+        isMissingClassification(stock.sector_level_1) || isMissingClassification(stock.sector_level_2)
+      )
+    ));
+    if (!candidates.length) return alert('当前美股、港股均已有完整行业分类。');
+    if (!confirm(`将自动补齐 ${candidates.length} 只美股/港股的缺失行业。已有人工分类不会被覆盖，是否继续？`)) return;
+
+    setIsAutoClassifying(true);
+    setClassificationMessage(`正在识别 ${candidates.length} 只股票...`);
+    try {
+      const results = await classifyStocks(candidates);
+      const resultMap = new Map(results.map((result) => [result.symbol, result]));
+      const batch = writeBatch(db);
+      let updateCount = 0;
+      candidates.forEach((stock: StockPoolRow) => {
+        const symbol = String(stock.symbol || '').trim().toUpperCase();
+        const result = resultMap.get(symbol);
+        if (!result) return;
+        const merged = mergeAutomaticClassification(stock, result, stock);
+        batch.set(doc(db, 'artifacts', APP_ID, 'public', 'data', 'stock_pool', symbol), {
+          name: merged.name,
+          currency: merged.currency,
+          sector_level_1: merged.sector_level_1,
+          sector_level_2: merged.sector_level_2,
+          classification_source: merged.classification_source,
+          classification_confidence: merged.classification_confidence,
+          classification_reason: merged.classification_reason,
+          source_sector: merged.source_sector,
+          source_industry: merged.source_industry,
+          classifiedAt: merged.classifiedAt,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+        updateCount += 1;
+      });
+      await batch.commit();
+      setClassificationMessage(`自动分类完成：已补齐 ${updateCount} 只股票，人工分类均已保留。`);
+      refresh();
+    } catch (error) {
+      console.error('Bulk classification failed:', error);
+      setClassificationMessage('自动分类未完成，请稍后重试；现有数据未被删除。');
+    } finally {
+      setIsAutoClassifying(false);
+    }
+  };
 
   const generateExportText = () => {
     if (!filteredStocks || filteredStocks.length === 0) {
@@ -126,7 +256,7 @@ export default function StockPoolAdmin() {
 
   // 单条保存
   const handleSave = async () => {
-    if (!formData.symbol || !formData.name) return alert("代码和名称必填");
+    if (!formData.symbol) return alert("股票代码必填");
     if (!auth.currentUser) return alert("未连接到数据库");
     
     const docId = formData.symbol.trim().toUpperCase();
@@ -141,13 +271,32 @@ export default function StockPoolAdmin() {
 
     setIsSaving(true);
     try {
+      let dataToSave: StockPoolRow = { ...formData, symbol: docId };
+      const needsAutomaticData = isSupportedMarket(dataToSave) && (
+        !dataToSave.name || isMissingClassification(dataToSave.sector_level_1) || isMissingClassification(dataToSave.sector_level_2)
+      );
+      if (needsAutomaticData) {
+        const result = await classifyStock(dataToSave);
+        const existing = stocks.find((stock: StockPoolRow) => stock.symbol === docId);
+        dataToSave = mergeAutomaticClassification(dataToSave, result, existing);
+      } else {
+        dataToSave = {
+          ...dataToSave,
+          classification_source: 'manual',
+          classification_confidence: 1,
+          classification_reason: '人工维护或 Excel 输入',
+          classifiedAt: new Date().toISOString(),
+        };
+      }
+      if (!dataToSave.name) return alert('无法自动取得名称，请手动填写后再保存。');
       await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'stock_pool', docId), {
-        ...formData,
+        ...dataToSave,
         symbol: docId,
-        currency: formData.currency.toUpperCase(),
+        currency: String(dataToSave.currency || 'USD').toUpperCase(),
         updatedAt: new Date().toISOString()
       });
       setFormData({ symbol: '', currency: 'USD', name: '', sector_level_1: '', sector_level_2: '' });
+      setClassificationMessage('保存成功；缺失行业已自动补齐。');
       refresh(); 
     } catch (e) {
       console.error(e);
@@ -236,8 +385,8 @@ export default function StockPoolAdmin() {
   };
 
   const handleBatchImport = async () => {
-    const validData = previewData.filter(d => d.symbol && d.name);
-    if (validData.length === 0) return alert("没有检测到有效数据，请检查必填项（代码、名称）。");
+    const validData = previewData.filter(d => d.symbol);
+    if (validData.length === 0) return alert("没有检测到有效数据，请检查必填项（股票代码）。");
     
     // 【查重防线 2】最终入库前，拦截预览表中手动修改导致的重复
     const symbolSet = new Set<string>();
@@ -253,8 +402,30 @@ export default function StockPoolAdmin() {
     
     setIsMigrating(true);
     try {
+      const candidates = validData.filter((item) => isSupportedMarket(item) && (
+        !item.name || isMissingClassification(item.sector_level_1) || isMissingClassification(item.sector_level_2)
+      ));
+      const results = await classifyStocks(candidates);
+      const resultMap = new Map(results.map((result) => [result.symbol, result]));
+      const enrichedData = validData.map((item) => {
+        const docId = item.symbol.trim().toUpperCase();
+        const existing = stocks.find((stock: StockPoolRow) => stock.symbol === docId);
+        const result = resultMap.get(docId);
+        if (result) return mergeAutomaticClassification({ ...item, symbol: docId }, result, existing);
+        return {
+          ...existing,
+          ...item,
+          symbol: docId,
+          sector_level_1: !isMissingClassification(item.sector_level_1) ? item.sector_level_1 : existing?.sector_level_1 || '',
+          sector_level_2: !isMissingClassification(item.sector_level_2) ? item.sector_level_2 : existing?.sector_level_2 || '',
+          classification_source: 'manual',
+          classification_confidence: 1,
+          classification_reason: '人工维护或 Excel 输入',
+          classifiedAt: new Date().toISOString(),
+        };
+      });
       const batch = writeBatch(db);
-      validData.forEach(item => {
+      enrichedData.forEach(item => {
         const docId = item.symbol.trim().toUpperCase();
         const ref = doc(db, 'artifacts', APP_ID, 'public', 'data', 'stock_pool', docId);
         batch.set(ref, {
@@ -265,7 +436,7 @@ export default function StockPoolAdmin() {
         });
       });
       await batch.commit();
-      alert(`✅ 成功导入/更新了 ${validData.length} 条股票数据！`);
+      alert(`✅ 成功导入/更新了 ${enrichedData.length} 条股票数据！缺失的美股、港股行业已自动补齐。`);
       setShowImportModal(false);
       setPasteText('');
       setPreviewData([]);
@@ -357,6 +528,15 @@ export default function StockPoolAdmin() {
           </p>
         </div>
         <div className="flex gap-3 flex-wrap">
+          <button
+            onClick={handleAutoClassifyUnknown}
+            disabled={isAutoClassifying || unknownCount === 0}
+            className="px-4 py-2 bg-violet-600 text-white text-sm font-bold rounded flex items-center gap-2 hover:bg-violet-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            title="只补齐空白或未知的美股、港股行业，不覆盖人工分类"
+          >
+            {isAutoClassifying ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+            自动分类未知 ({unknownCount})
+          </button>
           <button 
             onClick={generateExportText} 
             className="px-4 py-2 bg-emerald-600 text-white text-sm font-bold rounded flex items-center gap-2 hover:bg-emerald-700 transition-colors shadow-sm"
@@ -382,6 +562,15 @@ export default function StockPoolAdmin() {
           >
             刷新列表
           </button>
+        </div>
+      </div>
+
+      <div className="mb-6 rounded-xl border border-violet-200 bg-gradient-to-r from-violet-50 to-indigo-50 px-4 py-3 text-sm text-slate-700 flex items-start gap-3">
+        <Sparkles size={18} className="text-violet-600 mt-0.5 shrink-0" />
+        <div>
+          <p className="font-semibold text-slate-800">美股、港股行业自动分类已启用</p>
+          <p className="text-xs text-slate-600 mt-0.5">优先采用 SIP 现有分类，再通过公开行情行业资料映射；人工填写和 Excel 分类始终优先，不会被自动覆盖。</p>
+          {classificationMessage && <p className="text-xs font-medium text-violet-700 mt-1.5">{classificationMessage}</p>}
         </div>
       </div>
 
@@ -442,6 +631,18 @@ export default function StockPoolAdmin() {
                 />
               </div>
             </div>
+            <div className="rounded-lg border border-violet-100 bg-violet-50/70 p-3">
+              <button
+                type="button"
+                onClick={handleAutoClassifyForm}
+                disabled={isAutoClassifying || !formData.symbol}
+                className="w-full flex items-center justify-center gap-2 rounded-md bg-white border border-violet-200 px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-50 transition-colors"
+              >
+                {isAutoClassifying ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
+                自动识别名称与行业
+              </button>
+              <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">行业可留空。保存时会自动补齐；如您手动填写，则以人工内容为准。</p>
+            </div>
             <button 
               onClick={handleSave} 
               disabled={isSaving}
@@ -484,17 +685,22 @@ export default function StockPoolAdmin() {
                       </td>
                       <td className="px-4 py-3 font-medium text-slate-900">{s.name}</td>
                       <td className="px-4 py-3">
-                        {s.sector_level_1 ? (
+                        {!isMissingClassification(s.sector_level_1) ? (
                           <span className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded text-xs border border-blue-100 font-medium">
                             {s.sector_level_1}
                           </span>
                         ) : <span className="text-slate-300 text-xs">-</span>}
                       </td>
                       <td className="px-4 py-3">
-                        {s.sector_level_2 ? (
-                          <span className="bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded text-xs border border-emerald-100 font-medium">
-                            {s.sector_level_2}
-                          </span>
+                        {!isMissingClassification(s.sector_level_2) ? (
+                          <div className="flex items-center gap-1.5">
+                            <span className="bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded text-xs border border-emerald-100 font-medium">
+                              {s.sector_level_2}
+                            </span>
+                            {['sip_curated', 'yahoo_finance', 'fallback'].includes(s.classification_source) && (
+                              <span className="text-[9px] rounded-full bg-violet-50 border border-violet-100 px-1.5 py-0.5 text-violet-600" title={s.classification_reason || '自动分类'}>自动</span>
+                            )}
+                          </div>
                         ) : <span className="text-slate-300 text-xs">-</span>}
                       </td>
                       <td className="px-5 py-3 text-right whitespace-nowrap">
@@ -533,7 +739,7 @@ export default function StockPoolAdmin() {
                   <FileSpreadsheet className="text-indigo-600" size={20} />
                   批量导入股票数据 (Excel Paste)
                 </h3>
-                <p className="text-xs text-slate-500 mt-1">从 Excel 直接复制区域并粘贴至左侧文本框中，右侧将自动解析生成预览。</p>
+                <p className="text-xs text-slate-500 mt-1">从 Excel 直接复制区域并粘贴。名称和行业可留空，美股、港股会在写入时自动补齐；人工分类优先。</p>
               </div>
               <button onClick={() => setShowImportModal(false)} className="text-slate-400 hover:text-slate-600 bg-white p-1.5 rounded-full shadow-sm border transition-colors"><X size={20}/></button>
             </div>
@@ -549,7 +755,7 @@ export default function StockPoolAdmin() {
                 <div className="p-4 flex-1">
                   <textarea 
                     className="w-full h-full border border-slate-300 rounded-md p-3 text-xs font-mono focus:ring-2 focus:ring-indigo-500 outline-none resize-none whitespace-pre"
-                    placeholder="【请在此处粘贴 Excel 内容】&#10;&#10;预期列顺序：&#10;代码 (Symbol) | 币种 (Currency) | 名称 (Name) | 一级行业 | 二级行业&#10;&#10;示例：&#10;AAPL&#9;USD&#9;苹果公司&#9;信息技术&#9;消费电子&#10;0700.HK&#9;HKD&#9;腾讯控股&#9;通信服务&#9;互动媒体"
+                    placeholder="【请在此处粘贴 Excel 内容】&#10;&#10;预期列顺序：&#10;代码 (Symbol) | 币种 (Currency) | 名称 (Name，可空) | 一级行业（可空） | 二级行业（可空）&#10;&#10;示例：&#10;AAPL&#9;USD&#10;0700.HK&#9;HKD&#9;腾讯控股"
                     value={pasteText}
                     onChange={handlePasteChange}
                   ></textarea>
@@ -574,7 +780,7 @@ export default function StockPoolAdmin() {
                           <tr>
                             <th className="px-3 py-2 w-24">代码 (必填)</th>
                             <th className="px-3 py-2 w-20">币种</th>
-                            <th className="px-3 py-2 w-32">名称 (必填)</th>
+                            <th className="px-3 py-2 w-32">名称 (可自动)</th>
                             <th className="px-3 py-2 w-24">一级行业</th>
                             <th className="px-3 py-2 w-24">二级行业</th>
                             <th className="px-3 py-2 w-10 text-center">删</th>
@@ -614,7 +820,9 @@ export default function StockPoolAdmin() {
             </div>
 
             {/* Modal Footer */}
-            <div className="px-6 py-4 border-t bg-slate-50 flex justify-end gap-3">
+            <div className="px-6 py-4 border-t bg-slate-50 flex items-center justify-between gap-3">
+              <span className="text-xs text-slate-500"><Sparkles size={13} className="inline mr-1 text-violet-600" />缺失名称或行业将在写入前自动识别，手动内容保持不变。</span>
+              <div className="flex gap-3">
               <button 
                 onClick={() => { setShowImportModal(false); setPasteText(''); setPreviewData([]); }} 
                 className="px-5 py-2.5 rounded-md text-slate-700 font-bold bg-white border border-slate-300 hover:bg-slate-100 transition-colors shadow-sm text-sm"
@@ -628,6 +836,7 @@ export default function StockPoolAdmin() {
               >
                 {isMigrating ? <span className="animate-pulse">数据覆盖入库中...</span> : <><Save size={16}/> 确认无误，批量写入</>}
               </button>
+              </div>
             </div>
           </div>
         </div>
