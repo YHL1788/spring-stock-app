@@ -7,6 +7,7 @@ import type { MouseEvent } from 'react';
 import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/nextjs';
 
 const STREAMLIT_LAB_URL = 'https://hk-dividend-low-vol-lab.streamlit.app/';
+const HK_IPO_CALENDAR_URL = 'https://hk-ipo-radar-2026.c3393764362.chatgpt.site/';
 
 function openFreshStreamlitSession(event: MouseEvent<HTMLAnchorElement>, href: string) {
   if (href !== STREAMLIT_LAB_URL) return;
@@ -36,6 +37,7 @@ const navigation = [
     children: [
       { name: '全球概览', href: '/market/overview' },
       { name: '重大事件日历', href: '/market/calendar' },
+      { name: '港股 IPO 打新日历', href: HK_IPO_CALENDAR_URL },
       { name: '权威持仓', href: '/market/authoritative-holdings' },
       { name: '个股查询', href: '/market/quote' },
       { name: '我的自选股', href: '/market/pools' },
