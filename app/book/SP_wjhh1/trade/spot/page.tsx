@@ -35,7 +35,12 @@ import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'fi
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { useStockPool } from '@/app/hooks/useStockPool';
 import { classifyStocks } from '@/app/lib/stockClassificationClient';
-import { isMissingClassification } from '@/app/lib/stockClassification';
+import {
+  getStockSymbolKey,
+  isMissingClassification,
+  isSupportedClassificationMarket,
+  toYahooSymbol,
+} from '@/app/lib/stockClassification';
 
 // --- 日期格式规范化辅助函数 (清洗 Excel 各种斜杠、不补零格式) ---
 const normalizeDateStr = (dateStr: string) => {
@@ -416,19 +421,20 @@ const handleCancelEdit = () => {
   setFormData({ ...initialFormState, date: new Date().toISOString().split('T')[0] });
 };
 
-// 新买入的美股、港股会自动进入系统股票池；已有人工分类只读保留，仅补齐缺失字段。
+// 新买入的美股、港股、A 股与日本股票会自动进入系统股票池；已有人工分类只读保留，仅补齐缺失字段。
 const syncNewBuysToStockPool = async (trades: SpotTrade[]) => {
   const uniqueBuys = new Map<string, SpotTrade>();
   trades.forEach((trade) => {
     const symbol = String(trade.code || '').trim().toUpperCase();
     const market = String(trade.market || '').trim().toUpperCase();
-    if (trade.direction === 'BUY' && symbol && (market === 'USD' || market === 'HKD')) {
+    if (trade.direction === 'BUY' && symbol && isSupportedClassificationMarket({ symbol, currency: market })) {
       uniqueBuys.set(symbol, { ...trade, code: symbol });
     }
   });
 
   const candidates = Array.from(uniqueBuys.values()).filter((trade) => {
-    const existing = stocks.find((stock: any) => String(stock.symbol || '').trim().toUpperCase() === trade.code);
+    const tradeKey = getStockSymbolKey(trade.code, trade.market);
+    const existing = stocks.find((stock: any) => getStockSymbolKey(stock.symbol, stock.currency) === tradeKey);
     return !existing
       || !existing.name
       || isMissingClassification(existing.sector_level_1)
@@ -447,9 +453,11 @@ const syncNewBuysToStockPool = async (trades: SpotTrade[]) => {
     await Promise.all(candidates.map(async (trade) => {
       const result = resultMap.get(trade.code);
       if (!result) return;
-      const existing = stocks.find((stock: any) => String(stock.symbol || '').trim().toUpperCase() === trade.code);
+      const tradeKey = getStockSymbolKey(trade.code, trade.market);
+      const existing = stocks.find((stock: any) => getStockSymbolKey(stock.symbol, stock.currency) === tradeKey);
+      const documentSymbol = String(existing?.symbol || toYahooSymbol(trade.code, trade.market)).trim().toUpperCase();
       const payload: Record<string, any> = {
-        symbol: trade.code,
+        symbol: documentSymbol,
         currency: existing?.currency || trade.market || result.currency,
         name: existing?.name || trade.name || result.name,
         updatedAt: new Date().toISOString(),
@@ -471,7 +479,7 @@ const syncNewBuysToStockPool = async (trades: SpotTrade[]) => {
       }
 
       await setDoc(
-        doc(db, 'artifacts', APP_ID, 'public', 'data', 'stock_pool', trade.code),
+        doc(db, 'artifacts', APP_ID, 'public', 'data', 'stock_pool', documentSymbol),
         payload,
         { merge: true },
       );

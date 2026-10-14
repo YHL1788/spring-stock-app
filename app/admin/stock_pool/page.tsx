@@ -7,6 +7,7 @@ import { doc, setDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { X, Trash2, Save, FileSpreadsheet, Search, Sparkles, Loader2 } from 'lucide-react';
 import { classifyStock, classifyStocks } from '@/app/lib/stockClassificationClient';
 import {
+  isSupportedClassificationMarket,
   isMissingClassification,
   type StockClassificationInput,
   type StockClassificationResult,
@@ -16,12 +17,6 @@ type StockPoolRow = StockClassificationInput & {
   sector_level_1?: string;
   sector_level_2?: string;
   [key: string]: any;
-};
-
-const isSupportedMarket = (stock: StockPoolRow) => {
-  const symbol = String(stock.symbol || '').trim().toUpperCase();
-  const currency = String(stock.currency || '').trim().toUpperCase();
-  return currency === 'USD' || currency === 'HKD' || symbol.endsWith('.US') || symbol.endsWith('.HK');
 };
 
 const mergeAutomaticClassification = (
@@ -122,14 +117,14 @@ export default function StockPoolAdmin() {
   }, [stocks, filters]);
 
   const unknownCount = useMemo(() => stocks.filter((stock: StockPoolRow) => (
-    isSupportedMarket(stock) && (
+    isSupportedClassificationMarket(stock) && (
       isMissingClassification(stock.sector_level_1) || isMissingClassification(stock.sector_level_2)
     )
   )).length, [stocks]);
 
   const handleAutoClassifyForm = async () => {
     if (!formData.symbol.trim()) return alert('请先输入股票代码。');
-    if (!isSupportedMarket(formData)) return alert('目前自动分类仅支持美股（USD）和港股（HKD）。');
+    if (!isSupportedClassificationMarket(formData)) return alert('目前自动分类支持美股、港股、A 股和日本股票。');
     setIsAutoClassifying(true);
     setClassificationMessage('');
     try {
@@ -153,12 +148,12 @@ export default function StockPoolAdmin() {
 
   const handleAutoClassifyUnknown = async () => {
     const candidates = stocks.filter((stock: StockPoolRow) => (
-      isSupportedMarket(stock) && (
+      isSupportedClassificationMarket(stock) && (
         isMissingClassification(stock.sector_level_1) || isMissingClassification(stock.sector_level_2)
       )
     ));
-    if (!candidates.length) return alert('当前美股、港股均已有完整行业分类。');
-    if (!confirm(`将自动补齐 ${candidates.length} 只美股/港股的缺失行业。已有人工分类不会被覆盖，是否继续？`)) return;
+    if (!candidates.length) return alert('当前美股、港股、A 股及日本股票均已有完整行业分类。');
+    if (!confirm(`将自动补齐 ${candidates.length} 只股票的缺失行业。已有人工分类不会被覆盖，是否继续？`)) return;
 
     setIsAutoClassifying(true);
     setClassificationMessage(`正在识别 ${candidates.length} 只股票...`);
@@ -272,7 +267,7 @@ export default function StockPoolAdmin() {
     setIsSaving(true);
     try {
       let dataToSave: StockPoolRow = { ...formData, symbol: docId };
-      const needsAutomaticData = isSupportedMarket(dataToSave) && (
+      const needsAutomaticData = isSupportedClassificationMarket(dataToSave) && (
         !dataToSave.name || isMissingClassification(dataToSave.sector_level_1) || isMissingClassification(dataToSave.sector_level_2)
       );
       if (needsAutomaticData) {
@@ -402,7 +397,7 @@ export default function StockPoolAdmin() {
     
     setIsMigrating(true);
     try {
-      const candidates = validData.filter((item) => isSupportedMarket(item) && (
+      const candidates = validData.filter((item) => isSupportedClassificationMarket(item) && (
         !item.name || isMissingClassification(item.sector_level_1) || isMissingClassification(item.sector_level_2)
       ));
       const results = await classifyStocks(candidates);
@@ -436,7 +431,7 @@ export default function StockPoolAdmin() {
         });
       });
       await batch.commit();
-      alert(`✅ 成功导入/更新了 ${enrichedData.length} 条股票数据！缺失的美股、港股行业已自动补齐。`);
+      alert(`✅ 成功导入/更新了 ${enrichedData.length} 条股票数据！缺失的美股、港股、A 股和日本股票行业已自动补齐。`);
       setShowImportModal(false);
       setPasteText('');
       setPreviewData([]);
@@ -532,7 +527,7 @@ export default function StockPoolAdmin() {
             onClick={handleAutoClassifyUnknown}
             disabled={isAutoClassifying || unknownCount === 0}
             className="px-4 py-2 bg-violet-600 text-white text-sm font-bold rounded flex items-center gap-2 hover:bg-violet-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-            title="只补齐空白或未知的美股、港股行业，不覆盖人工分类"
+            title="只补齐空白或未知的美股、港股、A 股及日本股票行业，不覆盖人工分类"
           >
             {isAutoClassifying ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
             自动分类未知 ({unknownCount})
@@ -568,8 +563,8 @@ export default function StockPoolAdmin() {
       <div className="mb-6 rounded-xl border border-violet-200 bg-gradient-to-r from-violet-50 to-indigo-50 px-4 py-3 text-sm text-slate-700 flex items-start gap-3">
         <Sparkles size={18} className="text-violet-600 mt-0.5 shrink-0" />
         <div>
-          <p className="font-semibold text-slate-800">美股、港股行业自动分类已启用</p>
-          <p className="text-xs text-slate-600 mt-0.5">优先采用 SIP 现有分类，再通过公开行情行业资料映射；人工填写和 Excel 分类始终优先，不会被自动覆盖。</p>
+          <p className="font-semibold text-slate-800">美股、港股、A 股与日本股票行业自动分类已启用</p>
+          <p className="text-xs text-slate-600 mt-0.5">优先采用 SIP 现有分类，再通过公开行情行业资料映射；支持沪深北、东京代码，人工填写和 Excel 分类始终优先。</p>
           {classificationMessage && <p className="text-xs font-medium text-violet-700 mt-1.5">{classificationMessage}</p>}
         </div>
       </div>
@@ -739,7 +734,7 @@ export default function StockPoolAdmin() {
                   <FileSpreadsheet className="text-indigo-600" size={20} />
                   批量导入股票数据 (Excel Paste)
                 </h3>
-                <p className="text-xs text-slate-500 mt-1">从 Excel 直接复制区域并粘贴。名称和行业可留空，美股、港股会在写入时自动补齐；人工分类优先。</p>
+                <p className="text-xs text-slate-500 mt-1">从 Excel 直接复制区域并粘贴。名称和行业可留空，美股、港股、A 股及日本股票会在写入时自动补齐；人工分类优先。</p>
               </div>
               <button onClick={() => setShowImportModal(false)} className="text-slate-400 hover:text-slate-600 bg-white p-1.5 rounded-full shadow-sm border transition-colors"><X size={20}/></button>
             </div>
@@ -755,7 +750,7 @@ export default function StockPoolAdmin() {
                 <div className="p-4 flex-1">
                   <textarea 
                     className="w-full h-full border border-slate-300 rounded-md p-3 text-xs font-mono focus:ring-2 focus:ring-indigo-500 outline-none resize-none whitespace-pre"
-                    placeholder="【请在此处粘贴 Excel 内容】&#10;&#10;预期列顺序：&#10;代码 (Symbol) | 币种 (Currency) | 名称 (Name，可空) | 一级行业（可空） | 二级行业（可空）&#10;&#10;示例：&#10;AAPL&#9;USD&#10;0700.HK&#9;HKD&#9;腾讯控股"
+                    placeholder="【请在此处粘贴 Excel 内容】&#10;&#10;预期列顺序：&#10;代码 | 币种 | 名称（可空） | 一级行业（可空） | 二级行业（可空）&#10;&#10;示例：&#10;AAPL&#9;USD&#10;0700.HK&#9;HKD&#9;腾讯控股&#10;600519&#9;CNY&#10;7203&#9;JPY"
                     value={pasteText}
                     onChange={handlePasteChange}
                   ></textarea>

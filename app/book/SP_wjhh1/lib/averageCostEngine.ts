@@ -34,6 +34,7 @@ export interface AverageCostQuote {
 
 export interface AverageCostStockInfo {
   symbol: string;
+  currency?: string;
   name?: string;
   sector_level_1?: string;
   sector_level_2?: string;
@@ -121,7 +122,7 @@ const buildStockMap = (stockPool: AverageCostStockInfo[] = []) => {
   stockPool.forEach((item) => {
     if (!item.symbol) return;
     map.set(item.symbol.toUpperCase(), item);
-    map.set(getStockSymbolKey(item.symbol), item);
+    map.set(getStockSymbolKey(item.symbol, item.currency), item);
   });
   return map;
 };
@@ -132,7 +133,7 @@ const createHolding = (
   name: string | undefined,
   stockMap: Map<string, AverageCostStockInfo>,
 ): MutableHolding => {
-  const stockInfo = stockMap.get(code.toUpperCase()) || stockMap.get(getStockSymbolKey(code));
+  const stockInfo = stockMap.get(code.toUpperCase()) || stockMap.get(getStockSymbolKey(code, market));
   return {
     market,
     code,

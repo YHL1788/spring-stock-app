@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import MobileShell from "../MobileShell";
 import styles from "../mobile.module.css";
+import { getStockSymbolKey, isMissingClassification } from "@/app/lib/stockClassification";
 import {
   ensureMobileFirebaseAuth,
   formatHKD,
@@ -58,8 +59,8 @@ const inferMarket = (symbol: string, fallback?: string) => {
   const normalized = String(fallback || "").trim().toUpperCase();
   if (normalized) return normalized;
   if (symbol.endsWith(".HK")) return "HKD";
-  if (symbol.endsWith(".T")) return "JPY";
-  if (symbol.endsWith(".SS") || symbol.endsWith(".SZ")) return "CNY";
+  if (symbol.endsWith(".T") || symbol.endsWith(".JP")) return "JPY";
+  if (symbol.endsWith(".SS") || symbol.endsWith(".SH") || symbol.endsWith(".SZ") || symbol.endsWith(".BJ")) return "CNY";
   return "USD";
 };
 
@@ -231,7 +232,7 @@ export default function MobileRiskPage() {
 
         const stockMap = new Map<string, any>();
         stockPool.forEach((stock) => {
-          if (stock.symbol) stockMap.set(normalizeSymbol(String(stock.symbol)), stock);
+          if (stock.symbol) stockMap.set(getStockSymbolKey(String(stock.symbol), stock.currency), stock);
         });
 
         const symbols = Array.from(new Set(exposures.map((item) => item.symbol)));
@@ -246,7 +247,7 @@ export default function MobileRiskPage() {
         const grouped = new Map<string, GroupedUnderlying & { localCost: number }>();
         exposures.forEach((item) => {
           const key = `${item.symbol}|${item.market}`;
-          const stock = stockMap.get(item.symbol) || stockMap.get(item.symbol.replace(/\.US$/, ""));
+          const stock = stockMap.get(getStockSymbolKey(item.symbol, item.market));
           const current = grouped.get(key) || {
             key,
             symbol: item.symbol,
@@ -258,8 +259,8 @@ export default function MobileRiskPage() {
             fxRate: fxMap[item.market] || 1,
             mktValHKD: null,
             pnlHKD: null,
-            sector1: stock?.sector_level_1 || "未知",
-            sector2: stock?.sector_level_2 || "未知",
+            sector1: isMissingClassification(stock?.sector_level_1) ? "未知" : stock?.sector_level_1 || "未知",
+            sector2: isMissingClassification(stock?.sector_level_2) ? "未知" : stock?.sector_level_2 || "未知",
             localCost: 0,
           };
           current.shares += item.shares;

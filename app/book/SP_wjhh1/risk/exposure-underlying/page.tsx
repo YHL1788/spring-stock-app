@@ -1,12 +1,14 @@
 'use client';
 
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, FileSpreadsheet, Loader2, RefreshCw } from 'lucide-react';
+import { AlertCircle, FileSpreadsheet, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { doc, getDoc } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { useStockPool } from '@/app/hooks/useStockPool';
+import { useStockIndustrySync } from '@/app/hooks/useStockIndustrySync';
+import { getStockSymbolKey, isMissingClassification } from '@/app/lib/stockClassification';
 
 type ExposureSourceKey = 'dqaq' | 'fcn' | 'option' | 'spot';
 
@@ -129,8 +131,8 @@ const inferMarket = (symbol: string, fallback?: string) => {
   const normalizedFallback = fallback?.trim().toUpperCase();
   if (normalizedFallback) return normalizedFallback;
   if (symbol.endsWith('.HK')) return 'HKD';
-  if (symbol.endsWith('.T')) return 'JPY';
-  if (symbol.endsWith('.SS') || symbol.endsWith('.SZ')) return 'CNY';
+  if (symbol.endsWith('.T') || symbol.endsWith('.JP')) return 'JPY';
+  if (symbol.endsWith('.SS') || symbol.endsWith('.SH') || symbol.endsWith('.SZ') || symbol.endsWith('.BJ')) return 'CNY';
   return 'USD';
 };
 
@@ -195,7 +197,7 @@ const FilterTh = ({
 );
 
 export default function ExposureUnderlyingPage() {
-  const { stocks: stockPool, loading: stockPoolLoading } = useStockPool();
+  const { stocks: stockPool, loading: stockPoolLoading, refresh: refreshStockPool } = useStockPool();
   const [userReady, setUserReady] = useState(false);
   const [exposures, setExposures] = useState<NormalizedExposure[]>([]);
   const [sourceStatuses, setSourceStatuses] = useState<SourceStatus[]>([]);
@@ -333,17 +335,40 @@ export default function ExposureUnderlyingPage() {
     refreshData();
   }, [refreshData]);
 
+  const industrySyncItems = useMemo(() => {
+    const unique = new Map<string, { symbol: string; market: string }>();
+    exposures.forEach((item) => {
+      const key = getStockSymbolKey(item.symbol, item.market);
+      unique.set(key, { symbol: item.symbol, market: item.market });
+    });
+    return Array.from(unique.values());
+  }, [exposures]);
+
+  const {
+    missingCount: missingIndustryCount,
+    isSyncing: isSyncingIndustries,
+    message: industrySyncMessage,
+    syncIndustries,
+  } = useStockIndustrySync({
+    items: industrySyncItems,
+    stockPool,
+    stockPoolLoading,
+    refreshStockPool,
+    enabled: userReady && !loading,
+    sourceLabel: '风控标的',
+  });
+
   const rows = useMemo<UnderlyingExposureRow[]>(() => {
     const stockMap = new Map<string, any>();
     stockPool.forEach((stock) => {
-      if (stock.symbol) stockMap.set(normalizeSymbol(stock.symbol), stock);
+      if (stock.symbol) stockMap.set(getStockSymbolKey(stock.symbol, stock.currency), stock);
     });
 
     const grouped = new Map<string, UnderlyingExposureRow & { totalCostLocal: number }>();
 
     exposures.forEach((item) => {
       const key = `${item.symbol}|${item.market}`;
-      const stockInfo = stockMap.get(item.symbol) || stockMap.get(item.symbol.replace(/\.US$/, ''));
+      const stockInfo = stockMap.get(getStockSymbolKey(item.symbol, item.market));
       const existing = grouped.get(key);
 
       if (!existing) {
@@ -359,8 +384,8 @@ export default function ExposureUnderlyingPage() {
           totalCostHKD: 0,
           totalMktValHKD: null,
           totalPnlHKD: null,
-          sectorLevel1: stockInfo?.sector_level_1 || '未知',
-          sectorLevel2: stockInfo?.sector_level_2 || '未知',
+          sectorLevel1: isMissingClassification(stockInfo?.sector_level_1) ? '未知' : stockInfo?.sector_level_1 || '未知',
+          sectorLevel2: isMissingClassification(stockInfo?.sector_level_2) ? '未知' : stockInfo?.sector_level_2 || '未知',
           bySource: emptyBreakdown(),
           totalCostLocal: 0,
         });
@@ -566,16 +591,36 @@ export default function ExposureUnderlyingPage() {
             合并 DQ-AQ、FCN、Option、Spot 四类底层标的暴露，并按实时价格与汇率折算为 HKD。
           </p>
         </div>
-        <button
-          onClick={refreshData}
-          disabled={loading || !userReady}
-          className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-slate-200 transition-colors hover:bg-blue-700 disabled:opacity-50"
-        >
-          {loading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-          刷新行情与暴露
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => void syncIndustries(false)}
+            disabled={isSyncingIndustries || stockPoolLoading || !userReady}
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-bold text-violet-700 transition-colors hover:bg-violet-100 disabled:opacity-50"
+          >
+            {isSyncingIndustries ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+            同步行业分类 ({missingIndustryCount})
+          </button>
+          <button
+            onClick={refreshData}
+            disabled={loading || !userReady}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-slate-200 transition-colors hover:bg-blue-700 disabled:opacity-50"
+          >
+            {loading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+            刷新行情与暴露
+          </button>
+        </div>
         </div>
       </div>
+
+      {(industrySyncMessage || missingIndustryCount > 0) && (
+        <div className={`flex items-start gap-2 rounded-2xl border px-4 py-3 text-xs ${missingIndustryCount > 0 ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-violet-100 bg-violet-50 text-violet-700'}`}>
+          {isSyncingIndustries ? <Loader2 size={15} className="mt-0.5 shrink-0 animate-spin" /> : <Sparkles size={15} className="mt-0.5 shrink-0" />}
+          <div>
+            <p className="font-bold">{industrySyncMessage || `发现 ${missingIndustryCount} 只风控标的需要补齐行业。`}</p>
+            <p className="mt-0.5 opacity-80">与系统股票池、股票持仓共用分类，支持美股、港股、A 股和日本股票；人工分类不会被覆盖。</p>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-5 shadow-sm shadow-slate-100">
@@ -796,7 +841,7 @@ export default function ExposureUnderlyingPage() {
         </div>
 
         <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 text-xs text-slate-500">
-          行情来自现有 <span className="font-mono">/api/quote</span>，行业与名称来自 <span className="font-mono">useStockPool()</span>。本页只读展示，不写回数据库。
+          行情来自现有 <span className="font-mono">/api/quote</span>，行业与名称来自统一系统股票池；缺失行业会自动补齐并同步回股票池，其余风控数据保持只读。
         </div>
       </div>
 

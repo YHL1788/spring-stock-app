@@ -6,6 +6,8 @@ export type StockClassificationInput = {
   name?: string;
 };
 
+const supportedCurrencies = new Set(['USD', 'HKD', 'CNY', 'JPY']);
+
 export type ExternalStockProfile = {
   symbol?: string;
   shortname?: string;
@@ -36,25 +38,62 @@ export const isMissingClassification = (value: unknown) => (
   missingValues.has(String(value ?? '').trim().toLowerCase())
 );
 
-export const getStockSymbolKey = (symbol: string) => {
-  const upper = String(symbol || '').trim().toUpperCase();
+export const getStockSymbolKey = (symbol: string, currency?: string) => {
+  let upper = String(symbol || '').trim().toUpperCase();
+  const normalizedCurrency = String(currency || '').trim().toUpperCase();
   if (upper.endsWith('.US')) return upper.slice(0, -3);
+  if (upper.endsWith('.SH')) upper = `${upper.slice(0, -3)}.SS`;
+  if (upper.endsWith('.JP')) upper = `${upper.slice(0, -3)}.T`;
   if (upper.endsWith('.HK')) {
     const base = upper.slice(0, -3);
     return /^\d+$/.test(base) ? `${Number(base)}.HK` : upper;
+  }
+  if (/\.((SS)|(SZ)|(BJ))$/.test(upper)) {
+    const [base, suffix] = upper.split('.');
+    return /^\d+$/.test(base) ? `${base.padStart(6, '0')}.${suffix}` : upper;
+  }
+  if (upper.endsWith('.T')) return upper;
+  if (normalizedCurrency === 'CNY' || normalizedCurrency === 'JPY') {
+    return toYahooSymbol(upper, normalizedCurrency);
   }
   return upper;
 };
 
 export const toYahooSymbol = (symbol: string, currency?: string) => {
-  const upper = String(symbol || '').trim().toUpperCase();
+  let upper = String(symbol || '').trim().toUpperCase();
   const normalizedCurrency = String(currency || '').trim().toUpperCase();
   if (upper.endsWith('.US')) return upper.slice(0, -3);
+  if (upper.endsWith('.SH')) upper = `${upper.slice(0, -3)}.SS`;
+  if (upper.endsWith('.JP')) upper = `${upper.slice(0, -3)}.T`;
+  if (/\.((SS)|(SZ)|(BJ))$/.test(upper)) {
+    const [base, suffix] = upper.split('.');
+    return /^\d+$/.test(base) ? `${base.padStart(6, '0')}.${suffix}` : upper;
+  }
+  if (upper.endsWith('.T')) return upper;
   if (upper.endsWith('.HK') || normalizedCurrency === 'HKD') {
     const base = upper.replace(/\.HK$/, '');
     return /^\d+$/.test(base) ? `${base.padStart(4, '0')}.HK` : upper;
   }
+  if (normalizedCurrency === 'CNY') {
+    const base = upper.replace(/\.(CN|CH)$/, '');
+    if (!/^\d+$/.test(base)) return upper;
+    const padded = base.padStart(6, '0');
+    if (/^[468]/.test(padded)) return `${padded}.${padded.startsWith('6') ? 'SS' : 'BJ'}`;
+    if (/^[59]/.test(padded)) return `${padded}.SS`;
+    return `${padded}.SZ`;
+  }
+  if (normalizedCurrency === 'JPY') {
+    const base = upper.replace(/\.(JP|T)$/, '');
+    return base ? `${base}.T` : upper;
+  }
   return upper;
+};
+
+export const isSupportedClassificationMarket = (input: StockClassificationInput) => {
+  const symbol = String(input.symbol || '').trim().toUpperCase();
+  const currency = String(input.currency || '').trim().toUpperCase();
+  return supportedCurrencies.has(currency)
+    || /\.(US|HK|SS|SH|SZ|BJ|T|JP)$/.test(symbol);
 };
 
 const curatedMap = new Map(stockPoolData.map((item) => [getStockSymbolKey(item.symbol), item]));

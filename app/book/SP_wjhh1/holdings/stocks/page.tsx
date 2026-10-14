@@ -13,7 +13,12 @@ import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafeP
 import { calculateAverageCostHoldings } from '@/app/book/SP_wjhh1/lib/averageCostEngine';
 import { useStockPool } from '@/app/hooks/useStockPool';
 import { classifyStocks } from '@/app/lib/stockClassificationClient';
-import { getStockSymbolKey, isMissingClassification, toYahooSymbol } from '@/app/lib/stockClassification';
+import {
+  getStockSymbolKey,
+  isMissingClassification,
+  isSupportedClassificationMarket,
+  toYahooSymbol,
+} from '@/app/lib/stockClassification';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
@@ -746,9 +751,8 @@ export default function SpotHoldingsPage() {
   }, [accountScopedActiveTrades, accountScopedInitialHoldings, stockPool, globalFxRates, realTimeQuotes]);
 
   const holdingsNeedingIndustrySync = useMemo(() => calculatedHoldings.filter((holding) => {
-      const market = String(holding.market || '').toUpperCase();
       return Math.abs(holding.quantity) > 0.000001
-          && (market === 'USD' || market === 'HKD')
+          && isSupportedClassificationMarket({ symbol: holding.code, currency: holding.market })
           && (isMissingClassification(holding.sector_level_1) || isMissingClassification(holding.sector_level_2));
   }), [calculatedHoldings]);
 
@@ -774,8 +778,8 @@ export default function SpotHoldingsPage() {
           holdingsNeedingIndustrySync.forEach((holding) => {
               const result = resultMap.get(holding.code.toUpperCase());
               if (!result) return;
-              const symbolKey = getStockSymbolKey(holding.code);
-              const existing = stockPool.find((stock: any) => getStockSymbolKey(stock.symbol) === symbolKey);
+              const symbolKey = getStockSymbolKey(holding.code, holding.market);
+              const existing = stockPool.find((stock: any) => getStockSymbolKey(stock.symbol, stock.currency) === symbolKey);
               const needsLevel1 = !existing || isMissingClassification(existing.sector_level_1);
               const needsLevel2 = !existing || isMissingClassification(existing.sector_level_2);
               if (!needsLevel1 && !needsLevel2) return;
@@ -815,7 +819,7 @@ export default function SpotHoldingsPage() {
   useEffect(() => {
       if (!user || stockPoolLoading || isSyncingIndustries || holdingsNeedingIndustrySync.length === 0) return;
       const signature = holdingsNeedingIndustrySync
-          .map((holding) => `${getStockSymbolKey(holding.code)}:${holding.market}`)
+          .map((holding) => `${getStockSymbolKey(holding.code, holding.market)}:${holding.market}`)
           .sort()
           .join('|');
       if (!signature || industryAutoSyncRef.current === signature) return;
