@@ -1,3 +1,5 @@
+import { getStockSymbolKey, isMissingClassification } from '@/app/lib/stockClassification';
+
 export type TradeDirection = 'BUY' | 'SELL';
 export type HoldingSide = 'LONG' | 'SHORT' | 'FLAT';
 
@@ -32,6 +34,7 @@ export interface AverageCostQuote {
 
 export interface AverageCostStockInfo {
   symbol: string;
+  currency?: string;
   name?: string;
   sector_level_1?: string;
   sector_level_2?: string;
@@ -117,7 +120,9 @@ const getTradePrice = (trade: AverageCostTrade) => {
 const buildStockMap = (stockPool: AverageCostStockInfo[] = []) => {
   const map = new Map<string, AverageCostStockInfo>();
   stockPool.forEach((item) => {
-    if (item.symbol) map.set(item.symbol.toUpperCase(), item);
+    if (!item.symbol) return;
+    map.set(item.symbol.toUpperCase(), item);
+    map.set(getStockSymbolKey(item.symbol, item.currency), item);
   });
   return map;
 };
@@ -128,13 +133,13 @@ const createHolding = (
   name: string | undefined,
   stockMap: Map<string, AverageCostStockInfo>,
 ): MutableHolding => {
-  const stockInfo = stockMap.get(code.toUpperCase());
+  const stockInfo = stockMap.get(code.toUpperCase()) || stockMap.get(getStockSymbolKey(code, market));
   return {
     market,
     code,
     name: stockInfo?.name || name || code,
-    sector_level_1: stockInfo?.sector_level_1 || '未知',
-    sector_level_2: stockInfo?.sector_level_2 || '未知',
+    sector_level_1: isMissingClassification(stockInfo?.sector_level_1) ? '未知' : stockInfo?.sector_level_1 || '未知',
+    sector_level_2: isMissingClassification(stockInfo?.sector_level_2) ? '未知' : stockInfo?.sector_level_2 || '未知',
     quantity: 0,
     side: 'FLAT',
     avgCost: 0,

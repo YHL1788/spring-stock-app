@@ -1,10 +1,10 @@
 ﻿'use client';
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   Building2, ListOrdered, PieChart, BarChart as BarChartIcon,
   Loader2, AlertCircle, RefreshCw, Search, Database, Save,
-  Trash2, Info, Clock, X, FileJson, Edit2, ClipboardList, Settings2
+  Trash2, Info, Clock, X, FileJson, Edit2, ClipboardList, Settings2, Sparkles
 } from 'lucide-react';
 import { collection, getDocs, getDoc, query, onSnapshot, addDoc, deleteDoc, setDoc, doc, updateDoc, writeBatch } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
@@ -13,6 +13,13 @@ import { buildAccountPnl } from '@/app/book/SP_wjhh1/lib/accountPnl';
 import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 import { calculateAverageCostHoldings } from '@/app/book/SP_wjhh1/lib/averageCostEngine';
 import { useStockPool } from '@/app/hooks/useStockPool';
+import { classifyStocks } from '@/app/lib/stockClassificationClient';
+import {
+  getStockSymbolKey,
+  isMissingClassification,
+  isSupportedClassificationMarket,
+  toYahooSymbol,
+} from '@/app/lib/stockClassification';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
@@ -181,8 +188,11 @@ export default function SpotHoldingsPage() {
   const [loadingInitial, setLoadingInitial] = useState(true);
   
   // 数据源
-  const { stocks: stockPool } = useStockPool();
+  const { stocks: stockPool, loading: stockPoolLoading, refresh: refreshStockPool } = useStockPool();
   const [allTrades, setAllTrades] = useState<UnifiedTrade[]>([]);
+  const [isSyncingIndustries, setIsSyncingIndustries] = useState(false);
+  const [industrySyncMessage, setIndustrySyncMessage] = useState('');
+  const industryAutoSyncRef = useRef('');
   
   // 初始持仓（底座）与基准日期
   const [initialHoldings, setInitialHoldings] = useState<InitialHolding[]>([]);
@@ -740,6 +750,83 @@ export default function SpotHoldingsPage() {
           stockPool,
       }).holdings;
   }, [accountScopedActiveTrades, accountScopedInitialHoldings, stockPool, globalFxRates, realTimeQuotes]);
+
+  const holdingsNeedingIndustrySync = useMemo(() => calculatedHoldings.filter((holding) => {
+      return Math.abs(holding.quantity) > 0.000001
+          && isSupportedClassificationMarket({ symbol: holding.code, currency: holding.market })
+          && (isMissingClassification(holding.sector_level_1) || isMissingClassification(holding.sector_level_2));
+  }), [calculatedHoldings]);
+
+  const syncHoldingIndustries = useCallback(async (silent = false) => {
+      if (!user || stockPoolLoading || isSyncingIndustries) return;
+      if (holdingsNeedingIndustrySync.length === 0) {
+          if (!silent) setIndustrySyncMessage('持仓行业已与系统股票池同步，无“未知”分类。');
+          return;
+      }
+
+      setIsSyncingIndustries(true);
+      setIndustrySyncMessage(`正在同步 ${holdingsNeedingIndustrySync.length} 只持仓的行业分类...`);
+      try {
+          const results = await classifyStocks(holdingsNeedingIndustrySync.map((holding) => ({
+              symbol: holding.code,
+              currency: holding.market,
+              name: holding.name,
+          })));
+          const resultMap = new Map(results.map((result) => [result.symbol.toUpperCase(), result]));
+          const batch = writeBatch(db);
+          let updateCount = 0;
+
+          holdingsNeedingIndustrySync.forEach((holding) => {
+              const result = resultMap.get(holding.code.toUpperCase());
+              if (!result) return;
+              const symbolKey = getStockSymbolKey(holding.code, holding.market);
+              const existing = stockPool.find((stock: any) => getStockSymbolKey(stock.symbol, stock.currency) === symbolKey);
+              const needsLevel1 = !existing || isMissingClassification(existing.sector_level_1);
+              const needsLevel2 = !existing || isMissingClassification(existing.sector_level_2);
+              if (!needsLevel1 && !needsLevel2) return;
+
+              const documentSymbol = String(existing?.symbol || toYahooSymbol(holding.code, holding.market)).trim().toUpperCase();
+              const holdingName = holding.name && holding.name !== holding.code ? holding.name : result.name;
+              batch.set(doc(db, 'artifacts', APP_ID, 'public', 'data', 'stock_pool', documentSymbol), {
+                  symbol: documentSymbol,
+                  currency: existing?.currency || holding.market || result.currency,
+                  name: existing?.name || holdingName || result.name,
+                  ...(needsLevel1 ? { sector_level_1: result.sector_level_1 } : {}),
+                  ...(needsLevel2 ? { sector_level_2: result.sector_level_2 } : {}),
+                  classification_source: result.source,
+                  classification_confidence: result.confidence,
+                  classification_reason: result.reason,
+                  source_sector: result.source_sector,
+                  source_industry: result.source_industry,
+                  classifiedAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+              }, { merge: true });
+              updateCount += 1;
+          });
+
+          if (updateCount > 0) await batch.commit();
+          await refreshStockPool();
+          setIndustrySyncMessage(updateCount > 0
+              ? `行业同步完成：已补齐 ${updateCount} 只持仓，并同步回系统股票池。`
+              : '已重新读取系统股票池，当前没有可写入的分类结果。');
+      } catch (syncError) {
+          console.error('Holding industry sync failed:', syncError);
+          setIndustrySyncMessage('行业同步暂时未完成，请点击“同步行业分类”重试；持仓与交易数据未受影响。');
+      } finally {
+          setIsSyncingIndustries(false);
+      }
+  }, [holdingsNeedingIndustrySync, isSyncingIndustries, refreshStockPool, stockPool, stockPoolLoading, user]);
+
+  useEffect(() => {
+      if (!user || stockPoolLoading || isSyncingIndustries || holdingsNeedingIndustrySync.length === 0) return;
+      const signature = holdingsNeedingIndustrySync
+          .map((holding) => `${getStockSymbolKey(holding.code, holding.market)}:${holding.market}`)
+          .sort()
+          .join('|');
+      if (!signature || industryAutoSyncRef.current === signature) return;
+      industryAutoSyncRef.current = signature;
+      void syncHoldingIndustries(true);
+  }, [holdingsNeedingIndustrySync, isSyncingIndustries, stockPoolLoading, syncHoldingIndustries, user]);
 
   const missingQuoteCodes = useMemo(() => {
       return calculatedHoldings
@@ -1604,6 +1691,15 @@ export default function SpotHoldingsPage() {
                     )}
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2">
+                    <button
+                        onClick={() => void syncHoldingIndustries(false)}
+                        disabled={isSyncingIndustries || stockPoolLoading}
+                        className="flex items-center gap-1.5 rounded border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-bold text-violet-700 shadow-sm transition-colors hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        title="从系统股票池读取分类，并自动补齐持仓中的未知行业"
+                    >
+                        {isSyncingIndustries ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                        同步行业分类 ({holdingsNeedingIndustrySync.length})
+                    </button>
                     <select
                         value={selectedHoldingAccount}
                         onChange={(e) => setSelectedHoldingAccount(e.target.value)}
@@ -1641,6 +1737,16 @@ export default function SpotHoldingsPage() {
                     <span className="text-xs text-gray-500 bg-white px-2 py-1 border rounded shadow-sm">数值统一为 <b>HKD</b> 且按平均转移成本法结算</span>
                 </div>
             </div>
+
+            {(industrySyncMessage || holdingsNeedingIndustrySync.length > 0) && (
+                <div className={`mx-5 mt-4 flex items-start gap-2 rounded-lg border px-4 py-3 text-xs ${holdingsNeedingIndustrySync.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-violet-100 bg-violet-50 text-violet-700'}`}>
+                    {isSyncingIndustries ? <Loader2 size={15} className="mt-0.5 shrink-0 animate-spin" /> : <Sparkles size={15} className="mt-0.5 shrink-0" />}
+                    <div>
+                        <p className="font-bold">{industrySyncMessage || `发现 ${holdingsNeedingIndustrySync.length} 只持仓的行业分类需要补齐。`}</p>
+                        <p className="mt-0.5 opacity-80">分类以系统股票池为唯一来源；持仓补齐结果会同步写回股票池，人工和 Excel 分类不会被覆盖。</p>
+                    </div>
+                </div>
+            )}
             
             <div className={getTableContainerClass('holdings', 'overflow-x-auto overflow-y-auto max-h-[500px] relative scrollbar-thin')}>
                 {renderExpandedTableHeader('holdings', '当前持仓统计表', `当前显示 ${displayHoldings.length} 只标的，原页面筛选与排序同步生效。`)}
@@ -1702,8 +1808,17 @@ export default function SpotHoldingsPage() {
                                     </td>
                                     <td className="px-3 py-2 text-center font-mono text-gray-500">{h.market}</td>
                                     <td className="px-3 py-2 whitespace-nowrap">
-                                        <div className="text-xs text-gray-700 font-medium">{h.sector_level_1}</div>
-                                        <div className="text-[10px] text-gray-400">{h.sector_level_2}</div>
+                                        {isMissingClassification(h.sector_level_1) || isMissingClassification(h.sector_level_2) ? (
+                                            <div className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-700">
+                                                {isSyncingIndustries && <Loader2 size={10} className="animate-spin" />}
+                                                待同步
+                                            </div>
+                                        ) : (
+                                            <div className="flex flex-col items-start gap-1">
+                                                <span className="rounded bg-indigo-50 px-2 py-0.5 text-[11px] font-bold text-indigo-700">{h.sector_level_1}</span>
+                                                <span className="rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">{h.sector_level_2}</span>
+                                            </div>
+                                        )}
                                     </td>
                                     <td className="px-3 py-2 text-right font-mono font-bold text-gray-800">{h.quantity.toLocaleString()}</td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-600">{h.avgCost.toFixed(4)}</td>

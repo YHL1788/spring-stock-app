@@ -33,15 +33,17 @@ async function fetchYahooNews(symbol) {
 }
 
 // --- 辅助函数：获取实时汇率 ---
-async function fetchRealTimeFxRate(currency) {
+async function fetchRealTimeFxRate(currency, forceRefresh = false) {
   if (currency === 'HKD') return 1.0;
   try {
     const symbol = `${currency}HKD=X`; // Yahoo 的外汇对格式，例如 USDHKD=X
     // 汇率请求，设置 5 分钟缓存避免频繁请求触发限制
-    const res = await fetch(`${BASE_URL_YAHOO_CHART}/${symbol}?interval=1d&range=1d`, { 
-        headers: YAHOO_HEADERS, 
-        next: { revalidate: 300 } 
-    });
+    const res = await fetch(
+      `${BASE_URL_YAHOO_CHART}/${symbol}?interval=1d&range=1d`,
+      forceRefresh
+        ? { headers: YAHOO_HEADERS, cache: 'no-store' }
+        : { headers: YAHOO_HEADERS, next: { revalidate: 300 } },
+    );
     const json = await res.json();
     const price = json?.chart?.result?.[0]?.meta?.regularMarketPrice;
     return price || null;
@@ -52,7 +54,7 @@ async function fetchRealTimeFxRate(currency) {
 }
 
 // --- 核心函数：获取 Yahoo 完整数据 ---
-async function fetchYahooFullData(symbol, range = '1d') {
+async function fetchYahooFullData(symbol, range = '1d', forceRefresh = false) {
   try {
     let interval = '1d';
     // 自动适配 Interval 以获取适合画图的数据密度
@@ -62,7 +64,12 @@ async function fetchYahooFullData(symbol, range = '1d') {
     else interval = '1d'; // 1y, 5y, ytd 使用日线
 
     // 1. 获取图表数据 (Chart API)
-    const priceRes = await fetch(`${BASE_URL_YAHOO_CHART}/${symbol}?interval=${interval}&range=${range}`, { headers: YAHOO_HEADERS, next: { revalidate: 60 } });
+    const priceRes = await fetch(
+      `${BASE_URL_YAHOO_CHART}/${symbol}?interval=${interval}&range=${range}`,
+      forceRefresh
+        ? { headers: YAHOO_HEADERS, cache: 'no-store' }
+        : { headers: YAHOO_HEADERS, next: { revalidate: 60 } },
+    );
     const priceJson = priceRes.ok ? await priceRes.json() : null;
     const result = priceJson?.chart?.result?.[0];
     const meta = result?.meta;
@@ -128,11 +135,15 @@ export async function GET(request) {
   const currencyParam = searchParams.get('currency');
   if (currencyParam) {
     const currency = currencyParam.toUpperCase().trim();
+    const forceRefresh = searchParams.get('fresh') === '1';
     if (currency === 'HKD') {
-      return NextResponse.json({ currency: 'HKD', rate: 1.0, isRealTimeFx: true });
+      return NextResponse.json(
+        { currency: 'HKD', rate: 1.0, isRealTimeFx: true },
+        { headers: { 'Cache-Control': 'no-store' } },
+      );
     }
     
-    const realTimeRate = await fetchRealTimeFxRate(currency);
+    const realTimeRate = await fetchRealTimeFxRate(currency, forceRefresh);
     // 静态回退汇率 (Fallback)，防止 Yahoo 汇率 API 偶尔抽风或查不到
     const FALLBACK_RATES = { 'USD': 7.78, 'JPY': 0.052, 'CNY': 1.08, 'EUR': 8.5, 'GBP': 9.8 };
     const rate = realTimeRate || FALLBACK_RATES[currency] || 1;
@@ -141,12 +152,13 @@ export async function GET(request) {
       currency,
       rate,
       isRealTimeFx: !!realTimeRate
-    });
+    }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
   // --- 2. 完整股票/ETF信息查询通道 ---
   const rawSymbol = searchParams.get('symbol');
   const range = searchParams.get('range') || '1d';
+  const forceRefresh = searchParams.get('fresh') === '1';
 
   if (!rawSymbol) return NextResponse.json({ error: 'Missing symbol or currency parameter' }, { status: 400 });
 
@@ -154,7 +166,7 @@ export async function GET(request) {
   const symbol = rawSymbol.toUpperCase().trim();
   
   // 统一只调用 Yahoo 逻辑
-  const data = await fetchYahooFullData(symbol, range);
+  const data = await fetchYahooFullData(symbol, range, forceRefresh);
 
   if (!data) {
     return NextResponse.json({ error: 'Symbol not found or data unavailable' }, { status: 404 });

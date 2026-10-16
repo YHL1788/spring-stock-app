@@ -12,6 +12,14 @@ export const metadata: Metadata = {
   title: "SIP - Spring Investment Platform",
   description: "專為家族辦公室打造的投資記賬本",
   manifest: "/manifest.webmanifest",
+  applicationName: "SIP Holdings",
+  icons: {
+    icon: [
+      { url: "/icons/sip-ledger-icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icons/sip-ledger-icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [{ url: "/icons/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
   appleWebApp: {
     capable: true,
     title: "SIP Holdings",
@@ -20,6 +28,9 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
   themeColor: "#16352f",
 };
 

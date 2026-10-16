@@ -26,13 +26,21 @@ import {
   orderBy,
   serverTimestamp,
   writeBatch,
-  getDocs
+  getDocs,
+  setDoc
 } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 // 引入统一的 Firebase 实例和工具
 import { db, auth, APP_ID } from '@/app/lib/stockService';
 import { useStockPool } from '@/app/hooks/useStockPool';
+import { classifyStocks } from '@/app/lib/stockClassificationClient';
+import {
+  getStockSymbolKey,
+  isMissingClassification,
+  isSupportedClassificationMarket,
+  toYahooSymbol,
+} from '@/app/lib/stockClassification';
 
 // --- 日期格式规范化辅助函数 (清洗 Excel 各种斜杠、不补零格式) ---
 const normalizeDateStr = (dateStr: string) => {
@@ -125,7 +133,7 @@ const initialFormState: SpotTrade = {
 
 export default function SpotTradePage() {
   // --- State ---
-  const { stocks } = useStockPool();
+  const { stocks, refresh: refreshStockPool } = useStockPool();
   const [transactions, setTransactions] = useState<SpotTrade[]>([]);
   // 修复：SSR 时初始给空日期，避免服务端和客户端 Hydration 差异报错
   const [formData, setFormData] = useState<SpotTrade>({ ...initialFormState, date: '' });
@@ -413,6 +421,76 @@ const handleCancelEdit = () => {
   setFormData({ ...initialFormState, date: new Date().toISOString().split('T')[0] });
 };
 
+// 新买入的美股、港股、A 股与日本股票会自动进入系统股票池；已有人工分类只读保留，仅补齐缺失字段。
+const syncNewBuysToStockPool = async (trades: SpotTrade[]) => {
+  const uniqueBuys = new Map<string, SpotTrade>();
+  trades.forEach((trade) => {
+    const symbol = String(trade.code || '').trim().toUpperCase();
+    const market = String(trade.market || '').trim().toUpperCase();
+    if (trade.direction === 'BUY' && symbol && isSupportedClassificationMarket({ symbol, currency: market })) {
+      uniqueBuys.set(symbol, { ...trade, code: symbol });
+    }
+  });
+
+  const candidates = Array.from(uniqueBuys.values()).filter((trade) => {
+    const tradeKey = getStockSymbolKey(trade.code, trade.market);
+    const existing = stocks.find((stock: any) => getStockSymbolKey(stock.symbol, stock.currency) === tradeKey);
+    return !existing
+      || !existing.name
+      || isMissingClassification(existing.sector_level_1)
+      || isMissingClassification(existing.sector_level_2);
+  });
+  if (!candidates.length) return;
+
+  try {
+    const results = await classifyStocks(candidates.map((trade) => ({
+      symbol: trade.code,
+      currency: trade.market,
+      name: trade.name,
+    })));
+    const resultMap = new Map(results.map((result) => [result.symbol, result]));
+
+    await Promise.all(candidates.map(async (trade) => {
+      const result = resultMap.get(trade.code);
+      if (!result) return;
+      const tradeKey = getStockSymbolKey(trade.code, trade.market);
+      const existing = stocks.find((stock: any) => getStockSymbolKey(stock.symbol, stock.currency) === tradeKey);
+      const documentSymbol = String(existing?.symbol || toYahooSymbol(trade.code, trade.market)).trim().toUpperCase();
+      const payload: Record<string, any> = {
+        symbol: documentSymbol,
+        currency: existing?.currency || trade.market || result.currency,
+        name: existing?.name || trade.name || result.name,
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (!existing || isMissingClassification(existing.sector_level_1)) {
+        payload.sector_level_1 = result.sector_level_1;
+      }
+      if (!existing || isMissingClassification(existing.sector_level_2)) {
+        payload.sector_level_2 = result.sector_level_2;
+      }
+      if (!existing || isMissingClassification(existing.sector_level_1) || isMissingClassification(existing.sector_level_2)) {
+        payload.classification_source = result.source;
+        payload.classification_confidence = result.confidence;
+        payload.classification_reason = result.reason;
+        payload.source_sector = result.source_sector;
+        payload.source_industry = result.source_industry;
+        payload.classifiedAt = new Date().toISOString();
+      }
+
+      await setDoc(
+        doc(db, 'artifacts', APP_ID, 'public', 'data', 'stock_pool', documentSymbol),
+        payload,
+        { merge: true },
+      );
+    }));
+    refreshStockPool();
+  } catch (classificationError) {
+    // 股票池同步不应阻断已完成的交易录入；失败时仍可在开发者选项中一键补齐。
+    console.warn('Stock pool auto classification skipped:', classificationError);
+  }
+};
+
 const handleSubmit = async (e: React.FormEvent) => {
   e.preventDefault();
   if (!user) {
@@ -450,6 +528,7 @@ const handleSubmit = async (e: React.FormEvent) => {
         ...formData,
         createdAt: serverTimestamp()
       });
+      await syncNewBuysToStockPool([formData]);
     }
 
     // 重置表单，保留部分偏好设置（如日期、账户）
@@ -606,6 +685,7 @@ const processBulkImport = async () => {
   let successCount = 0;
   let failedCount = 0;
   const failedRecords: any[] = [];
+  const successfulRecords: SpotTrade[] = [];
 
   for (let i = 0; i < parsedPasteData.length; i++) {
     const item = parsedPasteData[i];
@@ -615,12 +695,15 @@ const processBulkImport = async () => {
         createdAt: serverTimestamp()
       });
       successCount++;
+      successfulRecords.push(item as SpotTrade);
     } catch (e: any) {
       console.error(`Batch import error at row ${i + 1}:`, e);
       failedCount++;
       failedRecords.push(item);
     }
   }
+
+  await syncNewBuysToStockPool(successfulRecords);
 
   setIsBulkProcessing(false);
 
