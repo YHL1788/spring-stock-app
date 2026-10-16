@@ -8,6 +8,7 @@ import {
 import { collection, getDocs, getDoc, doc, updateDoc, addDoc, deleteDoc, setDoc, onSnapshot, query, where } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { db, auth, APP_ID } from '@/app/lib/stockService';
+import { buildAccountPnl } from '@/app/book/SP_wjhh1/lib/accountPnl';
 import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 import { FCNPricer, FCNParams, FCNResult } from '@/app/lib/fcnPricer';
 import {
@@ -1399,7 +1400,7 @@ export default function FCNHoldingPage() {
                 rawMatrix[item.market].total += (item.realized || 0);
             }
         });
-        return { markets, rawMatrix };
+        return { markets, rawMatrix, ...buildAccountPnl([...processedLiving.map(item => ({ market: item.market, account: item.account, realized: item.realized || 0, unrealized: item.unrealized || 0 })), ...processedDied.map(item => ({ market: item.market, account: item.account, realized: item.realized || 0, unrealized: 0 }))]) };
     }, [processedLiving, processedDied]);
 
     // --- 市值与盈亏数据入库逻辑 ---
@@ -1429,6 +1430,8 @@ export default function FCNHoldingPage() {
           const payload = {
               markets: currentPlStats.markets,
               rawMatrix: currentPlStats.rawMatrix,
+              accounts: currentPlStats.accounts,
+              accountRawMatrix: currentPlStats.accountRawMatrix,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_fcn_pl', payload, refreshGroup: 'holdings-fcn', sourcePage: '/book/SP_wjhh1/holdings/fcn' });

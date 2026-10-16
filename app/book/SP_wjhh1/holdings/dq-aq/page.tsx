@@ -1,4 +1,5 @@
 'use client';
+import { buildAccountPnl } from '@/app/book/SP_wjhh1/lib/accountPnl';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { RefreshCw, Database, FileJson, Trash2, X, Save, Loader2, AlertCircle, TrendingUp, LineChart, PieChart, Clock, BarChart, Edit3 } from 'lucide-react';
@@ -1040,7 +1041,7 @@ export default function DQAQHoldingPage() {
                 rawMatrix[item.currency].total += (item.mktVal || 0);
             }
         });
-        return { markets, rawMatrix };
+        return { markets, rawMatrix, ...buildAccountPnl(processLiving.map(item => ({ market: item.currency, account: item.account, realized: 0, unrealized: item.mktVal || 0 }))) };
     }, [processLiving]);
 
     // --- 【新增】DQ-AQ 风控板块 标的聚合逻辑 (暗线入库用) ---
@@ -1104,6 +1105,8 @@ export default function DQAQHoldingPage() {
             const payload = {
                 markets: currentPlStats.markets,
                 rawMatrix: currentPlStats.rawMatrix,
+              accounts: currentPlStats.accounts,
+              accountRawMatrix: currentPlStats.accountRawMatrix,
                 updatedAt: new Date().toISOString()
             };
             await publishLatestSummarySafely({ db, collectionName: 'sip_holding_dqaq_pl', payload, refreshGroup: 'holdings-dq-aq', sourcePage: '/book/SP_wjhh1/holdings/dq-aq' });

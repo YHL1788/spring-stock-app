@@ -31,6 +31,7 @@ import {
   type InitialPortfolioState,
 } from '@/app/book/SP_wjhh1/lib/portfolioNavEngine';
 import PerformanceHistoryTab from './PerformanceHistoryTab';
+import type { AccountPnlMatrix } from '@/app/book/SP_wjhh1/lib/accountPnl';
 
 const NAV_CONFIG_COLLECTION = 'sip_holding_summary_nav_config';
 const CASH_TRADE_COLLECTION = 'sip_trade_cash';
@@ -57,6 +58,7 @@ const ASSET_IDS = ASSET_TYPES.map(a => a.id);
 // --- 类型定义 ---
 interface MatrixData {
   accounts?: string[];
+  accountRawMatrix?: AccountPnlMatrix;
   markets: string[];
   rawMatrix: any; // Record<string, Record<string, number>> or Record<string, {realized, unrealized, total}>
   updatedAt?: string;
@@ -157,6 +159,7 @@ export default function SummaryHoldingsPage() {
 
   // 模块2 State
   const [plPctView, setPlPctView] = useState(false);
+  const [selectedPlAccount, setSelectedPlAccount] = useState('ALL');
   const [plViewType, setPlViewType] = useState<'total' | 'realized' | 'unrealized'>('total');
 
   // --- 交互联动 Handlers ---
@@ -255,6 +258,14 @@ export default function SummaryHoldingsPage() {
       Object.values(plDataMap).forEach(d => { if (d.markets) d.markets.forEach(m => ccySet.add(m)); });
       return Array.from(ccySet).sort();
   }, [mktDataMap, plDataMap]);
+
+  const plAccounts = useMemo(() => Array.from(new Set([
+      ...allAccounts,
+      ...Object.values(plDataMap).flatMap(data => [
+          ...(data.accounts || []),
+          ...Object.values(data.accountRawMatrix || {}).flatMap(row => Object.keys(row)),
+      ]),
+  ])).sort(), [allAccounts, plDataMap]);
 
   // --- 获取汇率 ---
   const fetchFxRates = async () => {
@@ -532,7 +543,9 @@ export default function SummaryHoldingsPage() {
               let cellVal = 0;
               const data = plDataMap[asset.id];
               if (data && data.rawMatrix && data.rawMatrix[ccy]) {
-                  cellVal = data.rawMatrix[ccy][plViewType] || 0;
+                  cellVal = selectedPlAccount === 'ALL'
+                      ? data.rawMatrix[ccy][plViewType] || 0
+                      : data.accountRawMatrix?.[ccy]?.[selectedPlAccount]?.[plViewType] || 0;
               }
               const displayVal = cellVal * rate;
               matrix[ccy][asset.id] = displayVal;
@@ -543,7 +556,15 @@ export default function SummaryHoldingsPage() {
       });
 
       return { rows, cols, matrix, rowSums, colSums, grandTotal };
-  }, [plDataMap, allCurrencies, plViewType, isHKDView, globalFxRates]);
+  }, [plDataMap, allCurrencies, plViewType, isHKDView, globalFxRates, selectedPlAccount]);
+
+  const missingPlAccountAssets = selectedPlAccount === 'ALL' ? [] : ASSET_TYPES.filter(asset => {
+      const data = plDataMap[asset.id];
+      return data && Object.keys(data.rawMatrix || {}).length > 0 && !data.accountRawMatrix;
+  });
+  const isPlCellMissing = (currency: string, assetId: string) =>
+      missingPlAccountAssets.some(asset => asset.id === assetId) && Boolean(plDataMap[assetId]?.rawMatrix?.[currency]);
+  const isPlRowMissing = (currency: string) => missingPlAccountAssets.some(asset => isPlCellMissing(currency, asset.id));
 
   const currentSnapshotPreview = useMemo(() => {
       return buildPortfolioSnapshot({
@@ -941,10 +962,17 @@ export default function SummaryHoldingsPage() {
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
          <div className="bg-rose-50 border-b border-rose-100 p-5">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
-                <div className="flex items-center gap-4">
+                <div className="flex flex-wrap items-center gap-4 min-w-0">
                     <h3 className="font-bold text-rose-900 flex items-center gap-2 text-lg">
                         <BarChartIcon size={20} /> 当前交易归因盈亏矩阵 (Attribution P&L)
                     </h3>
+                    <div className="flex items-center bg-white border border-rose-200 rounded-lg p-1 shadow-sm">
+                        <label htmlFor="pl-account" className="text-xs font-bold text-rose-700 px-2 whitespace-nowrap">穿透账户:</label>
+                        <select id="pl-account" value={selectedPlAccount} onChange={e => setSelectedPlAccount(e.target.value)} className="bg-transparent text-sm font-bold text-rose-900 outline-none cursor-pointer max-w-48">
+                            <option value="ALL">全盘合并 (ALL)</option>
+                            {plAccounts.map(account => <option key={account} value={account}>{account}</option>)}
+                        </select>
+                    </div>
                     {/* 盈亏视角切换 */}
                     <div className="flex bg-white rounded border border-rose-200 p-0.5 shadow-sm">
                         <button onClick={() => setPlViewType('total')} className={`px-4 py-1 text-xs font-bold rounded-sm transition-colors ${plViewType === 'total' ? 'bg-rose-500 text-white' : 'text-gray-500 hover:bg-gray-100'}`}>总盈亏 (Total)</button>
@@ -964,13 +992,18 @@ export default function SummaryHoldingsPage() {
                     <button 
                         onClick={handleTogglePlPct}
                         className={`px-4 py-1.5 text-xs font-bold rounded transition-colors ${plPctView ? 'bg-rose-600 text-white shadow-inner' : 'text-rose-700 hover:bg-rose-50'}`}
-                        title="查看各项盈亏占全盘总盈亏的绝对值比例"
+                        title="查看各项盈亏占当前所选账户总盈亏的绝对值比例"
                     >
                         TO Percentage (%)
                     </button>
                 </div>
             </div>
 
+            {missingPlAccountAssets.length > 0 && (
+                <div className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    {missingPlAccountAssets.map(asset => asset.label).join('、')}的已保存数据尚无账户明细，请到相应持仓页手动保存“当前收益统计表”。缺少明细的单元格和相关合计暂显示“待更新”。
+                </div>
+            )}
             <div className="overflow-x-auto rounded border border-rose-200 bg-white">
                 <table className="min-w-full text-xs text-right">
                     <thead className="bg-rose-100/50 text-rose-900 font-bold border-b border-rose-200">
@@ -990,12 +1023,12 @@ export default function SummaryHoldingsPage() {
                                     const val = plMatrix.matrix[row][col.id];
                                     return (
                                         <td key={col.id} className={`px-3 py-3 font-mono ${val > 0 ? 'text-red-600' : val < 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                            {fmtSign(val)}{fmtValue(val, plPctView, plMatrix.grandTotal)}
+                                            {isPlCellMissing(row, col.id) ? '待更新' : plPctView && missingPlAccountAssets.length > 0 ? '--' : `${fmtSign(val)}${fmtValue(val, plPctView, plMatrix.grandTotal)}`}
                                         </td>
                                     );
                                 })}
                                 <td className={`px-3 py-3 font-mono font-bold border-l border-rose-50 bg-rose-50/20 ${plMatrix.rowSums[row] > 0 ? 'text-red-700' : plMatrix.rowSums[row] < 0 ? 'text-green-700' : 'text-gray-500'}`}>
-                                    {fmtSign(plMatrix.rowSums[row])}{fmtValue(plMatrix.rowSums[row], plPctView, plMatrix.grandTotal)}
+                                    {isPlRowMissing(row) ? '待更新' : plPctView && missingPlAccountAssets.length > 0 ? '--' : `${fmtSign(plMatrix.rowSums[row])}${fmtValue(plMatrix.rowSums[row], plPctView, plMatrix.grandTotal)}`}
                                 </td>
                             </tr>
                         ))}
@@ -1007,12 +1040,12 @@ export default function SummaryHoldingsPage() {
                                 const val = plMatrix.colSums[col.id];
                                 return (
                                     <td key={col.id} className={`px-3 py-4 font-mono font-bold ${val > 0 ? 'text-red-700' : val < 0 ? 'text-green-700' : 'text-gray-400'}`}>
-                                        {isHKDView || plPctView ? `${fmtSign(val)}${fmtValue(val, plPctView, plMatrix.grandTotal)}` : <span className="text-gray-400">-</span>}
+                                        {missingPlAccountAssets.some(asset => asset.id === col.id) ? '待更新' : plPctView && missingPlAccountAssets.length > 0 ? '--' : isHKDView || plPctView ? `${fmtSign(val)}${fmtValue(val, plPctView, plMatrix.grandTotal)}` : <span className="text-gray-400">-</span>}
                                     </td>
                                 );
                             })}
                             <td className={`px-3 py-4 font-mono font-black text-sm border-l border-rose-200 bg-rose-200/50 ${plMatrix.grandTotal > 0 ? 'text-red-700' : plMatrix.grandTotal < 0 ? 'text-green-700' : 'text-rose-950'}`}>
-                                {isHKDView || plPctView ? `${fmtSign(plMatrix.grandTotal)}${fmtValue(plMatrix.grandTotal, plPctView, plMatrix.grandTotal)}` : <span className="text-gray-400">-</span>}
+                                {missingPlAccountAssets.length > 0 ? '待更新' : isHKDView || plPctView ? `${fmtSign(plMatrix.grandTotal)}${fmtValue(plMatrix.grandTotal, plPctView, plMatrix.grandTotal)}` : <span className="text-gray-400">-</span>}
                             </td>
                         </tr>
                     </tfoot>

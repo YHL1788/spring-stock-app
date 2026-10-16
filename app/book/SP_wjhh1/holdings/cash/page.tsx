@@ -32,6 +32,7 @@ import {
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
+import { buildAccountPnl } from '@/app/book/SP_wjhh1/lib/accountPnl';
 import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 
 // --- 时间辅助函数 ---
@@ -519,8 +520,24 @@ export default function CashHoldingsPage() {
               total: cashBreakdownStats.breakdowns[c].TOTAL
           };
       });
-      return { markets: cashBreakdownStats.currencies, rawMatrix };
-  }, [cashBreakdownStats]);
+      const accountRows = activeCashTrades.filter(t => ['DIVIDEND', 'FEE', 'INTEREST'].includes(t.type))
+          .map(t => ({ market: t.currency, account: t.account, realized: t.amount, unrealized: 0 }));
+      const fxGroups = new Map<string, { out?: CashTrade; incoming?: CashTrade }>();
+      activeCashTrades.filter(t => t.type === 'FX' && t.fxGroupId).forEach(t => {
+          const group = fxGroups.get(t.fxGroupId!) || {};
+          if (t.amount < 0) group.out = t;
+          if (t.amount > 0) group.incoming = t;
+          fxGroups.set(t.fxGroupId!, group);
+      });
+      fxGroups.forEach(({ out, incoming }) => {
+          if (!out || !incoming) return;
+          const rateOut = globalFxRates[out.currency] || 1;
+          const rateIn = globalFxRates[incoming.currency] || 1;
+          if (rateIn > 0) accountRows.push({ market: incoming.currency, account: incoming.account,
+              realized: incoming.amount - Math.abs(out.amount) * rateOut / rateIn, unrealized: 0 });
+      });
+      return { markets: cashBreakdownStats.currencies, rawMatrix, ...buildAccountPnl(accountRows) };
+  }, [cashBreakdownStats, activeCashTrades, globalFxRates]);
 
   // --- 期初现金本金的统计 ---
   const initialCashStats = useMemo(() => {
@@ -579,6 +596,8 @@ export default function CashHoldingsPage() {
           const payload = {
               markets: currentPlStats.markets,
               rawMatrix: currentPlStats.rawMatrix,
+              accounts: currentPlStats.accounts,
+              accountRawMatrix: currentPlStats.accountRawMatrix,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cash_pl', payload, refreshGroup: 'holdings-cash', sourcePage: '/book/SP_wjhh1/holdings/cash' });

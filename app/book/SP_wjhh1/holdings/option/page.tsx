@@ -1,4 +1,5 @@
     'use client';
+import { buildAccountPnl } from '@/app/book/SP_wjhh1/lib/accountPnl';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
@@ -1086,7 +1087,7 @@ export default function OptionHoldingPage() {
             rawMatrix[m].total = rawMatrix[m].realized + rawMatrix[m].unrealized;
         });
 
-        return { markets, rawMatrix };
+        return { markets, rawMatrix, ...buildAccountPnl([...processedLiving.map(item => ({ market: item.currency, account: item.account, realized: item.realizedPremium || 0, unrealized: item.unrealizedPnl || 0 })), ...processedDied.map(item => ({ market: item.currency, account: item.account, realized: item.realizedPremium || 0, unrealized: 0 }))]) };
     }, [processedLiving, processedDied]);
 
     const cashStats = useMemo(() => {
@@ -1160,6 +1161,8 @@ export default function OptionHoldingPage() {
             const payload = {
                 markets: currentPlStats.markets,
                 rawMatrix: currentPlStats.rawMatrix,
+              accounts: currentPlStats.accounts,
+              accountRawMatrix: currentPlStats.accountRawMatrix,
                 updatedAt: new Date().toISOString()
             };
             await publishLatestSummarySafely({ db, collectionName: 'sip_holding_option_pl', payload, refreshGroup: 'holdings-option', sourcePage: '/book/SP_wjhh1/holdings/option' });

@@ -33,6 +33,7 @@ import { collection, getDocs, query, onSnapshot, addDoc, deleteDoc, setDoc, doc,
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
+import { buildAccountPnl } from '@/app/book/SP_wjhh1/lib/accountPnl';
 import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 
 // --- 统一的交易数据类型 ---
@@ -382,7 +383,8 @@ export default function PEHoldingsPage() {
   }, [activeTrades, initialHoldings]);
 
   // --- 核心计算逻辑 (期初底座 + FIFO 增量) ---
-  const calculatedHoldings = useMemo(() => {
+  const holdingCalculation = useMemo(() => {
+      const calculate = (initialHoldings: InitialPEHolding[], activeTrades: UnifiedPETrade[]) => {
       const holdingsMap: Record<string, PEHolding> = {};
 
       // 1. 期初底座铺设
@@ -480,7 +482,19 @@ export default function PEHoldingsPage() {
       });
 
       return Object.values(holdingsMap).filter(h => h.quantity > 0 || Math.abs(h.realizedPnlHKD) > 0.01);
+      };
+      const accounts = Array.from(new Set([...initialHoldings.map(h => h.account), ...activeTrades.map(t => t.account)]));
+      return {
+          holdings: calculate(initialHoldings, activeTrades),
+          accountPnlStats: buildAccountPnl(accounts.flatMap(account =>
+              calculate(initialHoldings.filter(h => h.account === account), activeTrades.filter(t => t.account === account))
+                  .map(h => ({ market: h.market, account, realized: h.realizedPnlLocal, unrealized: h.unrealizedPnlLocal }))
+          )),
+      };
+
   }, [activeTrades, initialHoldings, globalFxRates, pePrices]);
+  const calculatedHoldings = holdingCalculation.holdings;
+
 
   // --- 模块 1: 当前持仓过滤与排序 ---
   const displayHoldings = useMemo(() => {
@@ -568,8 +582,8 @@ export default function PEHoldingsPage() {
           }
       });
       
-      return { markets, rawMatrix };
-  }, [calculatedHoldings]);
+      return { markets, rawMatrix, ...holdingCalculation.accountPnlStats };
+  }, [calculatedHoldings, holdingCalculation.accountPnlStats]);
 
   // --- 模块 2: 损益分析图表数据 ---
   const pnlData = useMemo(() => {
@@ -728,6 +742,8 @@ export default function PEHoldingsPage() {
           const payload = {
               markets: currentPlStats.markets,
               rawMatrix: currentPlStats.rawMatrix,
+              accounts: currentPlStats.accounts,
+              accountRawMatrix: currentPlStats.accountRawMatrix,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_pe_pl', payload, refreshGroup: 'holdings-pe', sourcePage: '/book/SP_wjhh1/holdings/pe' });

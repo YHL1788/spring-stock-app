@@ -9,6 +9,7 @@ import {
 import { collection, getDocs, getDoc, query, onSnapshot, addDoc, deleteDoc, setDoc, doc, updateDoc, writeBatch } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { db, auth, APP_ID } from '@/app/lib/stockService';
+import { buildAccountPnl } from '@/app/book/SP_wjhh1/lib/accountPnl';
 import { publishLatestSummarySafely } from '@/app/book/SP_wjhh1/lib/refreshSafePublish';
 import { calculateAverageCostHoldings } from '@/app/book/SP_wjhh1/lib/averageCostEngine';
 import { useStockPool } from '@/app/hooks/useStockPool';
@@ -875,6 +876,20 @@ export default function SpotHoldingsPage() {
       return { accounts, markets, rawMatrix };
   }, [displayHoldings]);
 
+  const accountPnlStats = useMemo(() => {
+      const accounts = Array.from(new Set([
+          ...initialHoldings.map(h => h.account), ...activeTrades.map(t => t.account)
+      ]));
+      return buildAccountPnl(accounts.flatMap(account =>
+          calculateAverageCostHoldings({
+              initialHoldings: initialHoldings.filter(h => h.account === account),
+              trades: activeTrades.filter(t => t.account === account),
+              quotes: realTimeQuotes, fxRates: globalFxRates, stockPool,
+          }).holdings.map(h => ({ market: h.market, account,
+              realized: h.realizedPnlLocal, unrealized: h.unrealizedPnlLocal }))
+      ));
+  }, [initialHoldings, activeTrades, realTimeQuotes, globalFxRates, stockPool]);
+
   // --- 当前收益统计表数据 ---
   const currentPlStats = useMemo(() => {
       const marketsSet = new Set<string>();
@@ -896,8 +911,8 @@ export default function SpotHoldingsPage() {
           }
       });
       
-      return { markets, rawMatrix };
-  }, [calculatedHoldings]);
+      return { markets, rawMatrix, ...accountPnlStats };
+  }, [calculatedHoldings, accountPnlStats]);
 
   const liveInputLatestMillis = useMemo(() => {
       const tradeMillis = allTrades.reduce((max, trade) => Math.max(max, trade.updatedAt || 0), 0);
@@ -1181,6 +1196,8 @@ export default function SpotHoldingsPage() {
           const payload = {
               markets: currentPlStats.markets,
               rawMatrix: currentPlStats.rawMatrix,
+              accounts: currentPlStats.accounts,
+              accountRawMatrix: currentPlStats.accountRawMatrix,
               updatedAt: new Date().toISOString()
           };
           await publishLatestSummarySafely({ db, collectionName: 'sip_holding_stock_pl', payload, refreshGroup: 'holdings-stocks', sourcePage: '/book/SP_wjhh1/holdings/stocks' });
