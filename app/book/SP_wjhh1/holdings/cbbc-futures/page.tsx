@@ -733,7 +733,7 @@ export default function CBBCHoldingsPage() {
               rawMatrix: currentMktStats.rawMatrix,
               updatedAt: new Date().toISOString()
           };
-          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cbbc_mktvalue', payload, refreshGroup: 'holdings-cbbc-futures', sourcePage: '/book/SP_wjhh1/holdings/cbbc-futures' });
+          await publishLatestSummarySafely({ db, collectionName: 'sip_holding_cbbc_mktvalue', payload, refreshGroup: 'holdings-cbbc-futures', sourcePage: '/book/SP_wjhh1/holdings/cbbc-futures', allowEmptySummary: true });
           setLastMktValSavedTime(new Date().toLocaleString('zh-CN', { hour12: false }));
       } catch (e) {
           console.error("保存当前市值统计失败:", e);

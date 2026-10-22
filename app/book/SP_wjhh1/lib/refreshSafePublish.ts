@@ -10,6 +10,7 @@ interface PublishLatestSummaryOptions {
   payload: LatestSummaryPayload;
   refreshGroup: string;
   sourcePage: string;
+  allowEmptySummary?: boolean;
 }
 
 interface ReplaceCollectionDocsOptions {
@@ -66,12 +67,12 @@ const hasMeaningfulSummary = (payload: LatestSummaryPayload): boolean => {
   return false;
 };
 
-const assertPublishablePayload = (payload: LatestSummaryPayload) => {
+const assertPublishablePayload = (payload: LatestSummaryPayload, allowEmptySummary = false) => {
   const invalid = findInvalidValue(payload);
   if (invalid) {
     throw new Error(`Refresh payload validation failed: ${invalid}`);
   }
-  if (!hasMeaningfulSummary(payload)) {
+  if (!allowEmptySummary && !hasMeaningfulSummary(payload)) {
     throw new Error('Refresh payload validation failed: empty summary payload');
   }
 };
@@ -83,6 +84,7 @@ export const publishLatestSummarySafely = async ({
   payload,
   refreshGroup,
   sourcePage,
+  allowEmptySummary = false,
 }: PublishLatestSummaryOptions) => {
   const startedAt = new Date().toISOString();
   const runId = createRunId(refreshGroup, collectionName, docId);
@@ -103,7 +105,7 @@ export const publishLatestSummarySafely = async ({
   });
 
   try {
-    assertPublishablePayload(payload);
+    assertPublishablePayload(payload, allowEmptySummary);
     const finishedAt = new Date().toISOString();
     const finalPayload = {
       ...payload,
