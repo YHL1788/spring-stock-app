@@ -149,6 +149,26 @@ interface MergedRecord {
     createdAt: any;
 }
 
+const getOptionFee = (input: any): number => Number(input.basic?.fee ?? input.fee ?? 0);
+
+const buildOptionFeeReset = (input: any, output: any) => {
+    const basicFee = Number(input.basic?.fee ?? 0);
+    const rootFee = Number(input.fee ?? 0);
+    const quantity = Number(input.basic?.qty);
+    const premium = Number(input.basic?.premium);
+    const oldRealized = Number(output.realizedPremium);
+    const oldTotal = Number(output.totalPnl);
+    if (![basicFee, rootFee, quantity, premium, oldRealized, oldTotal].every(Number.isFinite)) {
+        throw new Error('手续费、数量、权利金或盈亏数据无效，本条未修改。');
+    }
+    const realizedPremium = -(quantity * premium);
+    // Preserve the saved payoff, including expired contracts, and make retries idempotent.
+    const totalPnl = oldTotal + (realizedPremium - oldRealized);
+    if (![realizedPremium, totalPnl].every(Number.isFinite)) throw new Error('重新计算的盈亏无效，本条未修改。');
+    const changed = basicFee !== 0 || rootFee !== 0 || realizedPremium !== oldRealized;
+    return { changed, realizedPremium, totalPnl, clearRootFee: Object.prototype.hasOwnProperty.call(input, 'fee') };
+};
+
 type OptionDisplayCachePayload = {
     calculatedAt?: any;
     data?: {
@@ -488,35 +508,40 @@ export default function OptionHoldingPage() {
             for (const record of records) {
                 const inputRef = doc(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_option_input_${lifecycle}`, record.inputId);
                 const outputRef = doc(db, 'artifacts', APP_ID, 'public', 'data', `sip_holding_option_output_${lifecycle}`, record.outputId);
-                const changed = await runTransaction(db, async transaction => {
+                const result = await runTransaction(db, async transaction => {
                     const inputSnap = await transaction.get(inputRef);
                     const outputSnap = await transaction.get(outputRef);
                     if (!inputSnap.exists() || !outputSnap.exists()) throw new Error('记录已变更，请刷新列表后重试。');
                     const input = inputSnap.data();
                     const output = outputSnap.data();
                     if (input.tradeId !== record.tradeId || output.tradeId !== record.tradeId) throw new Error('交易记录不匹配，请刷新列表后重试。');
-                    const fee = Number(input.basic?.fee ?? 0);
-                    const realizedPremium = Number(output.realizedPremium);
-                    const totalPnl = Number(output.totalPnl);
-                    if (![fee, realizedPremium, totalPnl].every(Number.isFinite)) throw new Error('手续费或盈亏数据无效，本条未修改。');
-                    if (fee === 0) return false;
+                    const reset = buildOptionFeeReset(input, output);
+                    if (!reset.changed) return { ...record, inputData: input, outputData: output, feeChanged: false };
                     const updatedAt = new Date();
-                    // Remove only the fee deduction; preserve the saved valuation and delivery result.
-                    transaction.update(inputRef, { 'basic.fee': 0, updatedAt });
+                    transaction.update(inputRef, { 'basic.fee': 0, ...(reset.clearRootFee ? { fee: 0 } : {}), updatedAt });
                     transaction.update(outputRef, {
-                        realizedPremium: realizedPremium + fee,
-                        totalPnl: totalPnl + fee,
+                        realizedPremium: reset.realizedPremium,
+                        totalPnl: reset.totalPnl,
                         updatedAt,
                     });
-                    return true;
+                    return {
+                        ...record,
+                        feeChanged: true,
+                        inputData: { ...input, basic: { ...input.basic, fee: 0 }, ...(reset.clearRootFee ? { fee: 0 } : {}), updatedAt },
+                        outputData: { ...output, realizedPremium: reset.realizedPremium, totalPnl: reset.totalPnl, updatedAt },
+                        updatedAt,
+                    };
                 });
-                if (changed) updated++;
+                if (result.feeChanged) updated++;
+                const setter = lifecycle === 'living' ? setLivingRecords : setDiedRecords;
+                setter(prev => prev.map(item => item.inputId === record.inputId ? result : item));
             }
-            alert(`手续费清零完成：已修改 ${updated} 笔，其余记录手续费原本为0。\n收益和资金统计已重新计算，如需更新汇总页，请手动保存对应统计表。`);
+            alert(updated > 0
+                ? `手续费清零完成：已修改 ${updated} 笔，其余记录已为0且盈亏一致。\n如需更新汇总页，请手动保存对应统计表。`
+                : '数据库中的手续费已为0，期权金数据也已一致。已同步更新页面显示，本次无需重复修改。');
         } catch (e: any) {
             alert(`手续费清零中止：已成功修改 ${updated} 笔。\n${e.message}`);
         } finally {
-            await loadRecords();
             if (activeDbTab.includes('option')) await fetchDbRecords(activeDbTab);
             setFeeResetLifecycle(null);
         }
@@ -910,7 +935,7 @@ export default function OptionHoldingPage() {
                 notional: out.notional || 0,
                 strike: Number(und.strike) || 0,
                 spotPrice: Number(und.spotPrice) || 0,
-                fee: Number(basic.fee) || 0,
+                fee: getOptionFee(r.inputData) || 0,
                 realizedPremium: out.realizedPremium || 0,
                 unrealizedPnl: out.expectedPayoff || 0, 
                 totalPnl: out.totalPnl || 0,
@@ -984,7 +1009,7 @@ export default function OptionHoldingPage() {
                 notional: out.notional || 0,
                 strike: Number(und.strike) || 0,
                 spotPrice: Number(und.spotPrice) || 0,
-                fee: Number(basic.fee) || 0,
+                fee: getOptionFee(r.inputData) || 0,
                 realizedPremium: out.realizedPremium || 0,
                 totalPnl: out.totalPnl || 0, 
                 fx_rate: basic.fxRate || 1
