@@ -19,7 +19,7 @@ import {
   Settings,
   Edit3
 } from 'lucide-react';
-import { collection, getDocs, getDoc, doc, updateDoc, deleteDoc, setDoc, addDoc, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, getDocs, getDoc, doc, updateDoc, deleteDoc, setDoc, addDoc, onSnapshot, query, where, runTransaction } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 
 import { db, auth, APP_ID } from '@/app/lib/stockService';
@@ -175,6 +175,7 @@ export default function OptionHoldingPage() {
     const [isDeleting, setIsDeleting] = useState(false);
     const [selectedLivingTradeIds, setSelectedLivingTradeIds] = useState<string[]>([]);
     const [selectedDiedTradeIds, setSelectedDiedTradeIds] = useState<string[]>([]);
+    const [feeResetLifecycle, setFeeResetLifecycle] = useState<'living' | 'died' | null>(null);
 
     // --- 统计模块切换 ---
     const [statsTab, setStatsTab] = useState<'GLOBAL' | 'MKT_VAL' | 'PL'>('GLOBAL');
@@ -471,6 +472,54 @@ export default function OptionHoldingPage() {
     const toggleSelectedTradeId = (lifecycle: 'living' | 'died', tradeId: string) => {
         const setter = lifecycle === 'living' ? setSelectedLivingTradeIds : setSelectedDiedTradeIds;
         setter(prev => prev.includes(tradeId) ? prev.filter(id => id !== tradeId) : [...prev, tradeId]);
+    };
+
+    const handleResetSelectedFees = async (lifecycle: 'living' | 'died') => {
+        if (!user || feeResetLifecycle || loadingLiving || loadingDied || isDeleting) return;
+        const selected = new Set(lifecycle === 'living' ? selectedLivingTradeIds : selectedDiedTradeIds);
+        const records = (lifecycle === 'living' ? livingRecords : diedRecords).filter(r => selected.has(r.tradeId));
+        if (records.length === 0) return alert('请先勾选需要清零手续费的记录。');
+        if (!confirm(`确认将选中的 ${records.length} 笔${lifecycle === 'living' ? '存续中' : '历史'}期权手续费清零？\n\n期权金和总收益将同步调整，交收记录保持不变。`)) return;
+        if (!confirm(`再次确认：即将保存这 ${records.length} 笔记录的手续费清零修改，是否继续？`)) return;
+
+        setFeeResetLifecycle(lifecycle);
+        let updated = 0;
+        try {
+            for (const record of records) {
+                const inputRef = doc(db, 'artifacts', APP_ID, 'public', 'data', `sip_trade_option_input_${lifecycle}`, record.inputId);
+                const outputRef = doc(db, 'artifacts', APP_ID, 'public', 'data', `sip_holding_option_output_${lifecycle}`, record.outputId);
+                const changed = await runTransaction(db, async transaction => {
+                    const inputSnap = await transaction.get(inputRef);
+                    const outputSnap = await transaction.get(outputRef);
+                    if (!inputSnap.exists() || !outputSnap.exists()) throw new Error('记录已变更，请刷新列表后重试。');
+                    const input = inputSnap.data();
+                    const output = outputSnap.data();
+                    if (input.tradeId !== record.tradeId || output.tradeId !== record.tradeId) throw new Error('交易记录不匹配，请刷新列表后重试。');
+                    const fee = Number(input.basic?.fee ?? 0);
+                    const realizedPremium = Number(output.realizedPremium);
+                    const totalPnl = Number(output.totalPnl);
+                    if (![fee, realizedPremium, totalPnl].every(Number.isFinite)) throw new Error('手续费或盈亏数据无效，本条未修改。');
+                    if (fee === 0) return false;
+                    const updatedAt = new Date();
+                    // Remove only the fee deduction; preserve the saved valuation and delivery result.
+                    transaction.update(inputRef, { 'basic.fee': 0, updatedAt });
+                    transaction.update(outputRef, {
+                        realizedPremium: realizedPremium + fee,
+                        totalPnl: totalPnl + fee,
+                        updatedAt,
+                    });
+                    return true;
+                });
+                if (changed) updated++;
+            }
+            alert(`手续费清零完成：已修改 ${updated} 笔，其余记录手续费原本为0。\n收益和资金统计已重新计算，如需更新汇总页，请手动保存对应统计表。`);
+        } catch (e: any) {
+            alert(`手续费清零中止：已成功修改 ${updated} 笔。\n${e.message}`);
+        } finally {
+            await loadRecords();
+            if (activeDbTab.includes('option')) await fetchDbRecords(activeDbTab);
+            setFeeResetLifecycle(null);
+        }
     };
 
     const fetchQuotePrice = async (symbol: string): Promise<number | null> => {
@@ -817,7 +866,7 @@ export default function OptionHoldingPage() {
             });
 
             if (sortConfig.dir) {
-                const isMonetary = ['notional', 'realizedPremium', 'unrealizedPnl', 'totalPnl', 'exposureCost', 'exposureMktVal'].includes(sortConfig.key);
+                const isMonetary = ['fee', 'notional', 'realizedPremium', 'unrealizedPnl', 'totalPnl', 'exposureCost', 'exposureMktVal'].includes(sortConfig.key);
                 result.sort((a, b) => {
                     let aVal = a[sortConfig.key];
                     let bVal = b[sortConfig.key];
@@ -861,6 +910,7 @@ export default function OptionHoldingPage() {
                 notional: out.notional || 0,
                 strike: Number(und.strike) || 0,
                 spotPrice: Number(und.spotPrice) || 0,
+                fee: Number(basic.fee) || 0,
                 realizedPremium: out.realizedPremium || 0,
                 unrealizedPnl: out.expectedPayoff || 0, 
                 totalPnl: out.totalPnl || 0,
@@ -934,6 +984,7 @@ export default function OptionHoldingPage() {
                 notional: out.notional || 0,
                 strike: Number(und.strike) || 0,
                 spotPrice: Number(und.spotPrice) || 0,
+                fee: Number(basic.fee) || 0,
                 realizedPremium: out.realizedPremium || 0,
                 totalPnl: out.totalPnl || 0, 
                 fx_rate: basic.fxRate || 1
@@ -949,11 +1000,12 @@ export default function OptionHoldingPage() {
         return finalLiving.reduce((acc, item) => {
             const rate = globalFxRates[item.currency] || item.fx_rate || 1;
             acc.notional += (item.notional || 0) * rate;
+            acc.fee += item.fee * rate;
             acc.realizedPremium += (item.realizedPremium || 0) * rate;
             acc.unrealizedPnl += (item.unrealizedPnl || 0) * rate;
             acc.totalPnl += (item.totalPnl || 0) * rate;
             return acc;
-        }, { notional: 0, realizedPremium: 0, unrealizedPnl: 0, totalPnl: 0 });
+        }, { notional: 0, fee: 0, realizedPremium: 0, unrealizedPnl: 0, totalPnl: 0 });
     }, [finalLiving, globalFxRates]);
 
     const globalStats = useMemo(() => {
@@ -1393,9 +1445,17 @@ export default function OptionHoldingPage() {
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">Living 库总计: {livingRecords.length} 笔</span>
                         {isEditModeLiving && (
+                            <button type="button" onClick={() => handleResetSelectedFees('living')}
+                                disabled={Boolean(feeResetLifecycle) || loadingLiving || loadingDied || isDeleting || selectedLivingTradeIds.length === 0}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-40 disabled:cursor-not-allowed">
+                                {feeResetLifecycle === 'living' ? <Loader2 size={14} className="animate-spin" /> : <Edit3 size={14} />}
+                                选中手续费清零 ({selectedLivingTradeIds.length})
+                            </button>
+                        )}
+                        {isEditModeLiving && (
                             <button
                                 onClick={() => handleRefreshLiving(selectedLivingTradeIds)}
-                                disabled={loadingLiving || selectedLivingTradeIds.length === 0}
+                                disabled={Boolean(feeResetLifecycle) || loadingLiving || selectedLivingTradeIds.length === 0}
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-blue-600 text-white border-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
                             >
                                 {loadingLiving ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
@@ -1405,7 +1465,7 @@ export default function OptionHoldingPage() {
                         {isEditModeLiving && (
                             <button
                                 onClick={() => handleBatchCascadeDelete('living')}
-                                disabled={isDeleting || selectedLivingTradeIds.length === 0}
+                                disabled={Boolean(feeResetLifecycle) || isDeleting || selectedLivingTradeIds.length === 0}
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-red-600 text-white border-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
                             >
                                 {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
@@ -1439,6 +1499,7 @@ export default function OptionHoldingPage() {
                                 <Th label="名义金额" sortKey="notional" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
                                 <Th label="执行价" sortKey="strike" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
                                 <Th label="标的现价" sortKey="spotPrice" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
+                                <Th label="手续费" sortKey="fee" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
                                 <Th label="期权金(已实现)" sortKey="realizedPremium" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
                                 <Th label="当前预期收益(未实现)" sortKey="unrealizedPnl" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
                                 <Th label="当前总收益" sortKey="totalPnl" currentSort={livingSort} onSort={toggleLivingSort} currentFilter={livingFilters} onFilter={updateLivingFilter} align="right" />
@@ -1447,7 +1508,7 @@ export default function OptionHoldingPage() {
                                         <label className="flex items-center justify-center gap-2 cursor-pointer select-none">
                                             <input
                                                 type="checkbox"
-                                                checked={finalLiving.length > 0 && selectedLivingTradeIds.length === finalLiving.length}
+                                                checked={finalLiving.length > 0 && finalLiving.every(item => selectedLivingTradeIds.includes(item.id))}
                                                 onChange={(e) => setSelectedLivingTradeIds(e.target.checked ? finalLiving.map(item => item.id) : [])}
                                                 className="h-3.5 w-3.5 rounded border-red-300 text-red-600 focus:ring-red-500"
                                             />
@@ -1459,7 +1520,7 @@ export default function OptionHoldingPage() {
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                             {finalLiving.length === 0 ? (
-                                <tr><td colSpan={isEditModeLiving ? 14 : 13} className="px-4 py-8 text-center text-gray-400">暂无存续中的持仓数据</td></tr>
+                                <tr><td colSpan={isEditModeLiving ? 15 : 14} className="px-4 py-8 text-center text-gray-400">暂无存续中的持仓数据</td></tr>
                             ) : finalLiving.map((item) => (
                                 <tr key={item.id} className="hover:bg-blue-50/50 transition-colors">
                                     <td className="px-3 py-2 text-center font-bold text-green-700">{item.status}</td>
@@ -1474,6 +1535,9 @@ export default function OptionHoldingPage() {
                                     </td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-600">{item.strike.toFixed(2)}</td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-900">{item.spotPrice.toFixed(2)}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-600">
+                                        {fmtMoney(isHKDView ? item.fee * (globalFxRates[item.currency] || item.fx_rate || 1) : item.fee)}
+                                    </td>
                                     <td className={"px-3 py-2 text-right font-mono " + cColor(item.realizedPremium, 'text-green-600', 'text-red-600', 'text-gray-400')}>
                                         {fmtSign(isHKDView ? item.realizedPremium * (globalFxRates[item.currency] || item.fx_rate || 1) : item.realizedPremium)}
                                     </td>
@@ -1525,6 +1589,7 @@ export default function OptionHoldingPage() {
                                     <td colSpan={7} className="px-3 py-3 text-center font-bold text-gray-700 tracking-wider">SUM (折合 HKD)</td>
                                     <td className="px-3 py-3 text-right font-mono font-bold text-gray-800">{fmtMoney(livingSumsHKD.notional)}</td>
                                     <td colSpan={2}></td>
+                                    <td className="px-3 py-3 text-right font-mono text-gray-700">{fmtMoney(livingSumsHKD.fee)}</td>
                                     <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(livingSumsHKD.realizedPremium, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(livingSumsHKD.realizedPremium)}</td>
                                     <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(livingSumsHKD.unrealizedPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(livingSumsHKD.unrealizedPnl)}</td>
                                     <td className={"px-3 py-3 text-right font-mono font-bold " + cColor(livingSumsHKD.totalPnl, 'text-green-600', 'text-red-600', 'text-gray-500')}>{fmtSign(livingSumsHKD.totalPnl)}</td>
@@ -1535,7 +1600,7 @@ export default function OptionHoldingPage() {
                     </table>
                 </div>
 
-                <button onClick={() => handleRefreshLiving()} disabled={loadingLiving} className={`w-full py-3 px-4 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingLiving ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                <button onClick={() => handleRefreshLiving()} disabled={loadingLiving || Boolean(feeResetLifecycle)} className={`w-full py-3 px-4 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingLiving ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}>
                     {loadingLiving ? <Loader2 className="animate-spin" size={18} /> : <RefreshCw size={18} />}
                     {loadingLiving ? '重新计算并流转数据...' : '刷新当前持仓 (重新定价与生命周期流转)'}
                 </button>
@@ -1629,9 +1694,17 @@ export default function OptionHoldingPage() {
                     <div className="flex items-center gap-4">
                         <span className="text-sm text-gray-500">Died 库总计: {diedRecords.length} 笔</span>
                         {isEditModeDied && (
+                            <button type="button" onClick={() => handleResetSelectedFees('died')}
+                                disabled={Boolean(feeResetLifecycle) || loadingLiving || loadingDied || isDeleting || selectedDiedTradeIds.length === 0}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-40 disabled:cursor-not-allowed">
+                                {feeResetLifecycle === 'died' ? <Loader2 size={14} className="animate-spin" /> : <Edit3 size={14} />}
+                                选中手续费清零 ({selectedDiedTradeIds.length})
+                            </button>
+                        )}
+                        {isEditModeDied && (
                             <button
                                 onClick={() => handleRefreshDied(selectedDiedTradeIds)}
-                                disabled={loadingDied || selectedDiedTradeIds.length === 0}
+                                disabled={Boolean(feeResetLifecycle) || loadingDied || selectedDiedTradeIds.length === 0}
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-orange-600 text-white border-orange-600 hover:bg-orange-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
                             >
                                 {loadingDied ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
@@ -1641,7 +1714,7 @@ export default function OptionHoldingPage() {
                         {isEditModeDied && (
                             <button
                                 onClick={() => handleBatchCascadeDelete('died')}
-                                disabled={isDeleting || selectedDiedTradeIds.length === 0}
+                                disabled={Boolean(feeResetLifecycle) || isDeleting || selectedDiedTradeIds.length === 0}
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold border bg-red-600 text-white border-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition-colors"
                             >
                                 {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
@@ -1675,6 +1748,7 @@ export default function OptionHoldingPage() {
                                 <Th label="名义金额" sortKey="notional" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
                                 <Th label="执行价" sortKey="strike" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
                                 <Th label="结算标的价" sortKey="spotPrice" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
+                                <Th label="手续费" sortKey="fee" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
                                 <Th label="期权金(已实现)" sortKey="realizedPremium" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
                                 <Th label="历史总收益" sortKey="totalPnl" currentSort={diedSort} onSort={toggleDiedSort} currentFilter={diedFilters} onFilter={updateDiedFilter} align="right" />
                                 {isEditModeDied && (
@@ -1682,7 +1756,7 @@ export default function OptionHoldingPage() {
                                         <label className="flex items-center justify-center gap-2 cursor-pointer select-none">
                                             <input
                                                 type="checkbox"
-                                                checked={finalDied.length > 0 && selectedDiedTradeIds.length === finalDied.length}
+                                                checked={finalDied.length > 0 && finalDied.every(item => selectedDiedTradeIds.includes(item.id))}
                                                 onChange={(e) => setSelectedDiedTradeIds(e.target.checked ? finalDied.map(item => item.id) : [])}
                                                 className="h-3.5 w-3.5 rounded border-red-300 text-red-600 focus:ring-red-500"
                                             />
@@ -1694,7 +1768,7 @@ export default function OptionHoldingPage() {
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                             {finalDied.length === 0 ? (
-                                <tr><td colSpan={isEditModeDied ? 13 : 12} className="px-4 py-8 text-center text-gray-400">暂无历史期权数据</td></tr>
+                                <tr><td colSpan={isEditModeDied ? 14 : 13} className="px-4 py-8 text-center text-gray-400">暂无历史期权数据</td></tr>
                             ) : finalDied.map((item) => (
                                 <tr key={item.id} className="hover:bg-orange-50/50 transition-colors">
                                     <td className="px-3 py-2 text-center font-bold text-gray-500">{item.status}</td>
@@ -1709,6 +1783,9 @@ export default function OptionHoldingPage() {
                                     </td>
                                     <td className="px-3 py-2 text-right font-mono text-gray-600">{item.strike.toFixed(2)}</td>
                                     <td className="px-3 py-2 text-right font-mono font-bold text-indigo-700">{item.spotPrice.toFixed(2)}</td>
+                                    <td className="px-3 py-2 text-right font-mono text-gray-600">
+                                        {fmtMoney(isHKDView ? item.fee * (globalFxRates[item.currency] || item.fx_rate || 1) : item.fee)}
+                                    </td>
                                     <td className={"px-3 py-2 text-right font-mono " + cColor(item.realizedPremium, 'text-green-600', 'text-red-600', 'text-gray-400')}>
                                         {fmtSign(isHKDView ? item.realizedPremium * (globalFxRates[item.currency] || item.fx_rate || 1) : item.realizedPremium)}
                                     </td>
@@ -1754,7 +1831,7 @@ export default function OptionHoldingPage() {
                     </table>
                 </div>
 
-                <button onClick={() => handleRefreshDied()} disabled={loadingDied} className={`w-full py-3 px-4 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingDied ? 'bg-orange-400 cursor-not-allowed' : 'bg-orange-600 hover:bg-orange-700'}`}>
+                <button onClick={() => handleRefreshDied()} disabled={loadingDied || Boolean(feeResetLifecycle)} className={`w-full py-3 px-4 rounded-md text-white font-bold transition-all shadow-md flex justify-center items-center gap-2 ${loadingDied ? 'bg-orange-400 cursor-not-allowed' : 'bg-orange-600 hover:bg-orange-700'}`}>
                     {loadingDied ? <Loader2 className="animate-spin" size={18} /> : <RefreshCw size={18} />}
                     {loadingDied ? '重新获取历史价格并校验中...' : '刷新历史持仓 (基于到期日历史价格精准校验)'}
                 </button>
